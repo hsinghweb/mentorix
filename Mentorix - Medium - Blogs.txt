@@ -1,0 +1,33 @@
+🟢 Blog 1
+Mentorix – Part 1: Why Education Needs Agentic AI (The Problem & Vision)
+
+Focus:
+Deep problem framing
+Why LLM chatbots are not enough
+Why agentic systems are required
+
+🟢 Blog 2
+Mentorix – Part 2: Designing a Multi-Agent Learning System (Architecture Deep Dive)
+
+Focus:
+Why multi-agent over monolithic LLM
+Memory architecture
+Orchestration philosophy
+
+🟢 Blog 3
+Mentorix – Part 3: Building Autonomous Learning Agents (Technical Decisions & Trade-offs)
+
+Focus:
+Tech stack choices
+Why custom orchestration
+Memory challenges
+What broke during implementation
+
+🟢 Blog 4
+Mentorix – Part 4: Demo, Results & What I Learned
+
+Focus:
+Demo screenshots
+System behavior
+Unexpected insights
+Next roadmap
