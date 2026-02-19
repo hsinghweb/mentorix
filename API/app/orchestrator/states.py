@@ -1,0 +1,28 @@
+from enum import Enum
+
+
+class SessionState(str, Enum):
+    INITIALIZE_SESSION = "INITIALIZE_SESSION"
+    LOAD_PROFILE = "LOAD_PROFILE"
+    SELECT_CONCEPT = "SELECT_CONCEPT"
+    GENERATE_CONTENT = "GENERATE_CONTENT"
+    APPLY_ADAPTATION = "APPLY_ADAPTATION"
+    DELIVER = "DELIVER"
+    ASSESS = "ASSESS"
+    UPDATE_MEMORY = "UPDATE_MEMORY"
+    REFLECT = "REFLECT"
+    TERMINATE = "TERMINATE"
+
+
+STATE_ORDER = [
+    SessionState.INITIALIZE_SESSION,
+    SessionState.LOAD_PROFILE,
+    SessionState.SELECT_CONCEPT,
+    SessionState.GENERATE_CONTENT,
+    SessionState.APPLY_ADAPTATION,
+    SessionState.DELIVER,
+    SessionState.ASSESS,
+    SessionState.UPDATE_MEMORY,
+    SessionState.REFLECT,
+    SessionState.TERMINATE,
+]

@@ -1,0 +1,32 @@
+# API
+APP_ENV=dev
+APP_HOST=0.0.0.0
+APP_PORT=8000
+LOG_LEVEL=INFO
+
+# Postgres
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=mentorix
+POSTGRES_USER=mentorix
+POSTGRES_PASSWORD=mentorix
+DATABASE_URL=postgresql+asyncpg://mentorix:mentorix@postgres:5432/mentorix
+
+# Redis
+REDIS_URL=redis://redis:6379/0
+SESSION_TTL_SECONDS=3600
+
+# LLM
+GEMINI_API_KEY=
+LLM_PROVIDER=gemini
+LLM_MODEL=gemini-1.5-flash
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=qwen2.5:3b
+
+# Embedding
+EMBEDDING_PROVIDER=local
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+
+# Guardrails
+MAX_STATE_TRANSITIONS=10
+MAX_ADAPTATION_SHIFTS_PER_CONCEPT=2
