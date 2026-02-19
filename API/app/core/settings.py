@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     embedding_provider: str = "ollama"
     embedding_model: str = "nomic-embed-text"
+    embedding_dimensions: int = 768
     web_search_provider: str = "duckduckgo"
 
     max_state_transitions: int = 10

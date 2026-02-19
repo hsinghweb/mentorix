@@ -4,9 +4,9 @@ services:
     container_name: mentorix-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_DB: mentorix
-      POSTGRES_USER: mentorix
-      POSTGRES_PASSWORD: mentorix
+      POSTGRES_DB: ${POSTGRES_DB:-mentorix}
+      POSTGRES_USER: ${POSTGRES_USER:-mentorix}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mentorix}
     ports:
       - "5432:5432"
     volumes:
@@ -33,7 +33,6 @@ services:
       retries: 10
 
   api:
-    image: mentorix-api:latest
     build:
       context: ./API
       dockerfile: Dockerfile
@@ -61,4 +60,3 @@ services:
 volumes:
   postgres_data:
   redis_data:
-

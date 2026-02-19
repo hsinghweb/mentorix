@@ -8,12 +8,20 @@ import httpx
 from app.core.settings import settings
 
 
-EMBEDDING_DIM = 384
+EMBEDDING_DIM = settings.embedding_dimensions
 logger = logging.getLogger(__name__)
 
 
 def _tokenize(text: str) -> list[str]:
     return re.findall(r"[a-zA-Z0-9_]+", (text or "").lower())
+
+
+def _normalize_dim(values: list[float]) -> list[float]:
+    if len(values) == EMBEDDING_DIM:
+        return values
+    if len(values) > EMBEDDING_DIM:
+        return values[:EMBEDDING_DIM]
+    return values + [0.0] * (EMBEDDING_DIM - len(values))
 
 
 def embed_text(text: str) -> list[float]:
@@ -32,7 +40,7 @@ def embed_text(text: str) -> list[float]:
             payload = response.json()
             emb = payload.get("embedding")
             if isinstance(emb, list) and emb:
-                return [float(x) for x in emb]
+                return _normalize_dim([float(x) for x in emb])
         except Exception as exc:
             logger.warning("Ollama embedding failed, using deterministic fallback: %s", exc)
 
@@ -50,4 +58,4 @@ def embed_text(text: str) -> list[float]:
     norm = math.sqrt(sum(v * v for v in vec))
     if norm > 0:
         vec = [v / norm for v in vec]
-    return vec
+    return _normalize_dim(vec)
