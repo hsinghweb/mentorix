@@ -17,8 +17,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5:3b"
 
-    embedding_provider: str = "local"
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_provider: str = "ollama"
+    embedding_model: str = "nomic-embed-text"
+    web_search_provider: str = "duckduckgo"
 
     max_state_transitions: int = 10
     max_adaptation_shifts_per_concept: int = 2

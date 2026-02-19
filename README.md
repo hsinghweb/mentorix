@@ -53,4 +53,7 @@ docker compose up -d
 
 ## Notes
 - `CONFIG/local.env` is intentionally included with safe defaults for quick startup.
-- If Gemini free quota is unavailable, fallback logic can use local Ollama models (when configured in later phases).
+- LLM provider is Gemini free API (`GEMINI_API_KEY`).
+- Embeddings are configured to use local Ollama `nomic-embed-text` (no GPU required).
+- PostgreSQL + Redis run locally via Docker images.
+- Web search provider is constrained to DuckDuckGo.

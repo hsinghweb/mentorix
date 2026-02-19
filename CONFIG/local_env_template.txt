@@ -24,8 +24,11 @@ OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen2.5:3b
 
 # Embedding
-EMBEDDING_PROVIDER=local
-EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+EMBEDDING_PROVIDER=ollama
+EMBEDDING_MODEL=nomic-embed-text
+
+# Web Search
+WEB_SEARCH_PROVIDER=duckduckgo
 
 # Guardrails
 MAX_STATE_TRANSITIONS=10
