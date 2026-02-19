@@ -97,16 +97,16 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Frontend folder scaffold exists
 
 ### Left
-- [ ] Build minimal learner UI page:
-  - [ ] Start session button/input
-  - [ ] Current explanation + question panel
-  - [ ] Submit answer form
-  - [ ] Show score + adaptation summary
-- [ ] Build dashboard page:
-  - [ ] Mastery map (simple table/cards)
-  - [ ] Weak areas
-  - [ ] Last 5 sessions
-- [ ] Handle API loading/error states cleanly
+- [x] Build minimal learner UI page:
+  - [x] Start session button/input
+  - [x] Current explanation + question panel
+  - [x] Submit answer form
+  - [x] Show score + adaptation summary
+- [x] Build dashboard page:
+  - [x] Mastery map (simple table/cards)
+  - [x] Weak areas
+  - [x] Last 5 sessions
+- [x] Handle API loading/error states cleanly
 
 ---
 
@@ -159,7 +159,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 
 ### P0 - Immediate
 - [x] Gemini integration in content agent with grounded prompt + fallback
-- [ ] Minimal frontend flow (start -> answer -> dashboard)
+- [x] Minimal frontend flow (start -> answer -> dashboard)
 - [x] Automated smoke script
 
 ### P1 - Stabilization

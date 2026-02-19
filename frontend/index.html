@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mentorix MVP</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header>
+        <h1>Mentorix MVP</h1>
+        <p>Start Session -> Submit Answer -> Dashboard</p>
+      </header>
+
+      <section class="card">
+        <h2>Session</h2>
+        <div class="row">
+          <label for="apiBase">API Base URL</label>
+          <input id="apiBase" type="text" value="http://localhost:8000" />
+        </div>
+        <div class="row">
+          <label for="learnerId">Learner ID (UUID)</label>
+          <input id="learnerId" type="text" />
+        </div>
+        <div class="row actions">
+          <button id="newLearnerBtn">Generate Learner ID</button>
+          <button id="startBtn" class="primary">Start Session</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Current Lesson</h2>
+        <div class="row">
+          <label>Session ID</label>
+          <code id="sessionId">-</code>
+        </div>
+        <div class="row">
+          <label>Concept</label>
+          <code id="concept">-</code>
+        </div>
+        <div class="row">
+          <label>Question</label>
+          <p id="question">-</p>
+        </div>
+        <div class="row">
+          <label>Explanation</label>
+          <pre id="explanation">-</pre>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Submit Answer</h2>
+        <div class="row">
+          <label for="answer">Answer</label>
+          <textarea id="answer" rows="4"></textarea>
+        </div>
+        <div class="row">
+          <label for="responseTime">Response Time (sec)</label>
+          <input id="responseTime" type="number" min="0" step="0.1" value="8.5" />
+        </div>
+        <div class="row actions">
+          <button id="submitBtn" class="primary">Submit Answer</button>
+          <button id="dashboardBtn">Refresh Dashboard</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Evaluation</h2>
+        <div class="row">
+          <label>Score</label>
+          <code id="score">-</code>
+        </div>
+        <div class="row">
+          <label>Error Type</label>
+          <code id="errorType">-</code>
+        </div>
+        <div class="row">
+          <label>Adaptation</label>
+          <pre id="adaptation">-</pre>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Dashboard</h2>
+        <div class="row">
+          <label>Engagement</label>
+          <code id="engagement">-</code>
+        </div>
+        <div class="row">
+          <label>Weak Areas</label>
+          <code id="weakAreas">-</code>
+        </div>
+        <div class="row">
+          <label>Mastery Map</label>
+          <pre id="masteryMap">-</pre>
+        </div>
+        <div class="row">
+          <label>Last Sessions</label>
+          <pre id="lastSessions">-</pre>
+        </div>
+      </section>
+
+      <section class="card status">
+        <h2>Status</h2>
+        <pre id="status">Ready.</pre>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

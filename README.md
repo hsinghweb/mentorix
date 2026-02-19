@@ -67,3 +67,15 @@ Optional:
 ```powershell
 ./scripts/test_mvp.ps1 -BaseUrl "http://localhost:8000" -LearnerId "11111111-1111-1111-1111-111111111111"
 ```
+
+## Minimal Frontend (No Build Tool)
+Run a static server and open the page:
+```powershell
+cd frontend
+python -m http.server 5500
+```
+Then open:
+- `http://localhost:5500`
+
+Default API URL in UI is:
+- `http://localhost:8000`
