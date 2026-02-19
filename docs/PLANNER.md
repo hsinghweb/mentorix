@@ -121,7 +121,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 
 ### Left
 - [ ] Add frontend service to compose (if FE containerized for demo)
-- [ ] Add one-command smoke test script
+- [x] Add one-command smoke test script
 - [ ] Add startup readiness check script
 
 ---
@@ -132,7 +132,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Manual smoke tests passed for key APIs
 
 ### Left
-- [ ] Add automated API smoke script (`scripts/test_mvp.ps1`)
+- [x] Add automated API smoke script (`scripts/test_mvp.ps1`)
 - [ ] Add backend integration test for happy path
 - [ ] Add failure-mode tests:
   - [ ] missing/expired session
@@ -160,7 +160,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 ### P0 - Immediate
 - [x] Gemini integration in content agent with grounded prompt + fallback
 - [ ] Minimal frontend flow (start -> answer -> dashboard)
-- [ ] Automated smoke script
+- [x] Automated smoke script
 
 ### P1 - Stabilization
 - [ ] Structured logs + better error handling

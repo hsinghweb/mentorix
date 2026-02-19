@@ -57,3 +57,13 @@ docker compose up -d
 - Embeddings are configured to use local Ollama `nomic-embed-text` (no GPU required).
 - PostgreSQL + Redis run locally via Docker images.
 - Web search provider is constrained to DuckDuckGo.
+
+## Quick Smoke Test
+After services are running, execute:
+```powershell
+./scripts/test_mvp.ps1
+```
+Optional:
+```powershell
+./scripts/test_mvp.ps1 -BaseUrl "http://localhost:8000" -LearnerId "11111111-1111-1111-1111-111111111111"
+```
