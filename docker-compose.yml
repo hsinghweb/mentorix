@@ -2,6 +2,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16
     container_name: mentorix-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: mentorix
       POSTGRES_USER: mentorix
@@ -9,7 +10,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - ./postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mentorix -d mentorix"]
       interval: 10s
@@ -19,11 +20,12 @@ services:
   redis:
     image: redis:7-alpine
     container_name: mentorix-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     command: redis-server --appendonly yes
     volumes:
-      - ./redis_data:/data
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -31,19 +33,32 @@ services:
       retries: 10
 
   api:
+    image: mentorix-api:latest
     build:
       context: ./API
       dockerfile: Dockerfile
     container_name: mentorix-api
+    restart: unless-stopped
     env_file:
-      - .env
+      - ./CONFIG/local.env
     ports:
       - "8000:8000"
-    volumes:
-      - ./API:/app
-      - ./vector_data:/app/vector_data
+    environment:
+      APP_ENV: docker
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8000
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:
+
