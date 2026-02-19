@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     session_ttl_seconds: int = 3600
 
     llm_provider: str = "gemini"
-    llm_model: str = "gemini-1.5-flash"
+    llm_model: str = "gemini-2.5-flash"
     gemini_api_key: str = ""
     gemini_api_url: str = ""
     ollama_base_url: str = "http://localhost:11434"
