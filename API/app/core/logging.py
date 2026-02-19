@@ -8,3 +8,6 @@ def configure_logging(level: str = "INFO") -> None:
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
+    # Avoid verbose request URL logging from http clients.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

@@ -1,5 +1,5 @@
 import logging
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
@@ -10,6 +10,15 @@ logger = logging.getLogger(__name__)
 
 
 class ContentGenerationAgent(BaseAgent):
+    @staticmethod
+    def _sanitize_gemini_url(raw_url: str) -> str:
+        """Remove API keys from URL query params to avoid leakage in logs."""
+        parsed = urlparse(raw_url)
+        if not parsed.query:
+            return raw_url
+        filtered = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k.lower() != "key"]
+        return urlunparse(parsed._replace(query=urlencode(filtered)))
+
     @staticmethod
     def _template_response(concept: str, difficulty: int, context: str) -> dict:
         explanation = (
@@ -37,10 +46,7 @@ class ContentGenerationAgent(BaseAgent):
                 f"https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{settings.llm_model}:generateContent"
             )
-
-        if "key=" not in api_url:
-            sep = "&" if "?" in api_url else "?"
-            api_url = f"{api_url}{sep}{urlencode({'key': settings.gemini_api_key})}"
+        api_url = self._sanitize_gemini_url(api_url)
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -48,7 +54,11 @@ class ContentGenerationAgent(BaseAgent):
         }
 
         async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(api_url, json=payload)
+            response = await client.post(
+                api_url,
+                json=payload,
+                headers={"x-goog-api-key": settings.gemini_api_key},
+            )
             response.raise_for_status()
             data = response.json()
             candidates = data.get("candidates", [])
