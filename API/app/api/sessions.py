@@ -8,14 +8,19 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.adaptation import AdaptationAgent
+from app.agents.analytics_evaluation import AnalyticsEvaluationAgent
 from app.agents.assessment import AssessmentAgent
+from app.agents.compliance import ComplianceAgent
 from app.agents.content import ContentGenerationAgent
 from app.agents.learner_profile import LearnerProfilingAgent
+from app.agents.memory_manager import MemoryManagementAgent
+from app.agents.onboarding import OnboardingAgent
 from app.agents.planner import CurriculumPlannerAgent
 from app.agents.reflection import ReflectionAgent
+from app.core.notification_engine import notification_engine
 from app.memory.cache import redis_client
 from app.memory.database import get_db
-from app.memory.ingest import get_memory_context, ingest_session_signal
+from app.memory.ingest import get_memory_context
 from app.models.entities import AssessmentResult, GeneratedArtifact, Learner, LearnerProfile, SessionLog
 from app.orchestrator.engine import StateEngine
 from app.orchestrator.states import SessionState
@@ -34,11 +39,15 @@ logger = logging.getLogger(__name__)
 
 engine = StateEngine()
 profiling_agent = LearnerProfilingAgent()
+onboarding_agent = OnboardingAgent()
 planner_agent = CurriculumPlannerAgent()
 content_agent = ContentGenerationAgent()
 adaptation_agent = AdaptationAgent()
 assessment_agent = AssessmentAgent()
 reflection_agent = ReflectionAgent()
+analytics_agent = AnalyticsEvaluationAgent()
+compliance_agent = ComplianceAgent()
+memory_manager_agent = MemoryManagementAgent()
 
 
 DEFAULT_MASTERY = {
@@ -187,6 +196,9 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
     )
 
     p = await profiling_agent.run({"mastery_map": profile.concept_mastery, "learner_id": payload.learner_id})
+    onboarding_summary = await onboarding_agent.run(
+        {"learner_id": payload.learner_id, "mastery_map": p.get("mastery_map", {})}
+    )
     state, step_idx = _advance_state(
         session_id=session_id,
         learner_id=str(learner_id),
@@ -269,11 +281,20 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         )
     )
     await db.commit()
-    ingest_session_signal(
-        learner_id=str(learner_id),
-        concept=concept,
-        score=1.0,
-        adaptation_score=float(adaptation["adaptation_score"]),
+    await memory_manager_agent.run(
+        {
+            "learner_id": str(learner_id),
+            "concept": concept,
+            "score": 1.0,
+            "adaptation_score": float(adaptation["adaptation_score"]),
+        }
+    )
+    await notification_engine.notify(
+        source="session",
+        title="Session started",
+        body=f"Session {session_id} started for learner {learner_id} on concept {concept}",
+        severity="info",
+        metadata={"session_id": session_id, "learner_id": str(learner_id), "concept": concept},
     )
     _log_state_transition(
         session_id=session_id,
@@ -292,6 +313,7 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         explanation=content["explanation"],
         question=question_payload["generated_question"],
         state=SessionState.DELIVER.value,
+        onboarding_summary=onboarding_summary,
     )
 
 
@@ -380,6 +402,28 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
     profile.retention_decay = reflection["retention_decay"]
     profile.last_updated = datetime.utcnow()
 
+    recent_assessments = (
+        await db.execute(
+            select(AssessmentResult)
+            .where(AssessmentResult.learner_id == learner_id, AssessmentResult.concept == concept)
+            .order_by(desc(AssessmentResult.timestamp))
+            .limit(5)
+        )
+    ).scalars().all()
+    analytics_evaluation = await analytics_agent.run(
+        {
+            "recent_scores": [a.score for a in reversed(recent_assessments)],
+            "recent_response_times": [a.response_time for a in reversed(recent_assessments)],
+        }
+    )
+    compliance_status = await compliance_agent.run(
+        {
+            "consecutive_failures": failures,
+            "response_time": payload.response_time,
+            "engagement_score": profile.engagement_score,
+        }
+    )
+
     db.add(
         AssessmentResult(
             learner_id=learner_id,
@@ -398,12 +442,22 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         )
     )
     await db.commit()
-    ingest_session_signal(
-        learner_id=str(learner_id),
-        concept=concept,
-        score=score,
-        adaptation_score=float(adaptation["adaptation_score"]),
+    await memory_manager_agent.run(
+        {
+            "learner_id": str(learner_id),
+            "concept": concept,
+            "score": score,
+            "adaptation_score": float(adaptation["adaptation_score"]),
+        }
     )
+    if compliance_status.get("disengagement_flag"):
+        await notification_engine.notify(
+            source="compliance",
+            title="Intervention recommended",
+            body=compliance_status.get("recommendation", "Compliance intervention triggered"),
+            severity="warning",
+            metadata={"learner_id": str(learner_id), "session_id": payload.session_id, "concept": concept},
+        )
 
     chunks = await retrieve_concept_chunks(db, concept=concept, top_k=5, difficulty=adaptation["new_difficulty"])
     content = await content_agent.run(
@@ -443,6 +497,8 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         error_type=error_type,
         adaptation_applied=adaptation,
         next_explanation=content["explanation"],
+        analytics_evaluation=analytics_evaluation,
+        compliance_status=compliance_status,
     )
 
 
@@ -467,6 +523,28 @@ async def dashboard(learner_id: str, db: AsyncSession = Depends(get_db)):
         )
     ).scalars().all()
 
+    recent_assessments = (
+        await db.execute(
+            select(AssessmentResult)
+            .where(AssessmentResult.learner_id == learner_uuid)
+            .order_by(desc(AssessmentResult.timestamp))
+            .limit(10)
+        )
+    ).scalars().all()
+    analytics_summary = await analytics_agent.run(
+        {
+            "recent_scores": [a.score for a in reversed(recent_assessments)],
+            "recent_response_times": [a.response_time for a in reversed(recent_assessments)],
+        }
+    )
+    compliance_summary = await compliance_agent.run(
+        {
+            "consecutive_failures": 0,
+            "response_time": analytics_summary.get("avg_response_time", 0.0),
+            "engagement_score": profile.engagement_score,
+        }
+    )
+
     return DashboardResponse(
         learner_id=learner_id,
         mastery_map=profile.concept_mastery,
@@ -481,4 +559,6 @@ async def dashboard(learner_id: str, db: AsyncSession = Depends(get_db)):
             }
             for r in recent_rows
         ],
+        analytics_summary=analytics_summary,
+        compliance_summary=compliance_summary,
     )

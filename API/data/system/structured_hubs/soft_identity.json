@@ -22,5 +22,17 @@
   "cd7457a7-5752-47d4-bf31-62a2042de9a2": {
     "confidence_band": "improving",
     "engagement_hint": "encourage_with_examples"
+  },
+  "c68491d2-d36d-48cc-be6f-cbc5fb532d8f": {
+    "confidence_band": "low",
+    "engagement_hint": "encourage_with_examples"
+  },
+  "c04445ab-2f88-454b-9f00-68f6019577bd": {
+    "confidence_band": "improving",
+    "engagement_hint": "encourage_with_examples"
+  },
+  "abbe6a99-c70b-416c-b126-502bbf92b7f2": {
+    "confidence_band": "improving",
+    "engagement_hint": "encourage_with_examples"
   }
 }

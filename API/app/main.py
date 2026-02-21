@@ -6,10 +6,12 @@ from app.api.health import router as health_router
 from app.api.events import router as events_router
 from app.api.memory import router as memory_router
 from app.api.metrics import router as metrics_router
+from app.api.notifications import router as notifications_router
 from app.api.runs import router as runs_router
 from app.api.scheduler import router as scheduler_router
 from app.api.sessions import router as sessions_router
 from app.autonomy.scheduler import scheduler_service
+from app.core.auth import api_key_auth_middleware
 from app.core.bootstrap import initialize_database
 from app.core.errors import (
     http_exception_handler,
@@ -34,6 +36,8 @@ app.include_router(events_router)
 app.include_router(scheduler_router)
 app.include_router(memory_router)
 app.include_router(metrics_router)
+app.include_router(notifications_router)
+app.middleware("http")(api_key_auth_middleware)
 app.middleware("http")(request_id_middleware)
 app.add_middleware(
     CORSMiddleware,

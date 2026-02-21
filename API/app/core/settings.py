@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     include_generated_artifacts_in_retrieval: bool = True
     generated_artifacts_top_k: int = 2
     web_search_provider: str = "duckduckgo"
+    gateway_auth_enabled: bool = False
+    gateway_api_key: str = ""
 
     max_state_transitions: int = 10
     max_adaptation_shifts_per_concept: int = 2

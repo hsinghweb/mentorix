@@ -12,6 +12,7 @@ class StartSessionResponse(BaseModel):
     explanation: str
     question: str
     state: str
+    onboarding_summary: dict | None = None
 
 
 class SubmitAnswerRequest(BaseModel):
@@ -26,6 +27,8 @@ class SubmitAnswerResponse(BaseModel):
     error_type: str
     adaptation_applied: dict
     next_explanation: str
+    analytics_evaluation: dict | None = None
+    compliance_status: dict | None = None
 
 
 class DashboardResponse(BaseModel):
@@ -34,3 +37,5 @@ class DashboardResponse(BaseModel):
     engagement_score: float
     weak_areas: list[str]
     last_sessions: list[dict]
+    analytics_summary: dict | None = None
+    compliance_summary: dict | None = None

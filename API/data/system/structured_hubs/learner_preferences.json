@@ -28,5 +28,20 @@
     "preferred_explanation_density": "compact",
     "last_concept": "quadratic_equations",
     "last_score": 1.0
+  },
+  "c68491d2-d36d-48cc-be6f-cbc5fb532d8f": {
+    "preferred_explanation_density": "high",
+    "last_concept": "quadratic_equations",
+    "last_score": 0.35
+  },
+  "c04445ab-2f88-454b-9f00-68f6019577bd": {
+    "preferred_explanation_density": "compact",
+    "last_concept": "quadratic_equations",
+    "last_score": 1.0
+  },
+  "abbe6a99-c70b-416c-b126-502bbf92b7f2": {
+    "preferred_explanation_density": "compact",
+    "last_concept": "quadratic_equations",
+    "last_score": 1.0
   }
 }

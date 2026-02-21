@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from app.core.event_bus import event_bus
+from app.core.notification_engine import notification_engine
 from app.core.settings import settings
 from app.runtime.run_manager import run_manager
 from app.skills.manager import skill_manager
@@ -90,6 +91,12 @@ class SchedulerService:
         if skill:
             query = await skill.on_run_start(query)
         await event_bus.publish("scheduler_job_start", "scheduler", {"job_id": job.id, "name": job.name})
+        await notification_engine.notify(
+            source="scheduler",
+            title=f"Scheduled job started: {job.name}",
+            body=f"Job {job.id} has started execution.",
+            metadata={"job_id": job.id, "query": query},
+        )
         run_id = await run_manager.start_run(query)
         job.last_run_id = run_id
         job.last_run_at = datetime.utcnow().isoformat()
@@ -98,6 +105,12 @@ class SchedulerService:
         self.jobs[job.id] = job
         self.save_jobs()
         await event_bus.publish("scheduler_job_triggered", "scheduler", {"job_id": job.id, "run_id": run_id})
+        await notification_engine.notify(
+            source="scheduler",
+            title=f"Scheduled job triggered: {job.name}",
+            body=f"Job {job.id} triggered run {run_id}.",
+            metadata={"job_id": job.id, "run_id": run_id},
+        )
         return run_id
 
     async def _tick(self) -> None:
@@ -119,6 +132,13 @@ class SchedulerService:
                             "scheduler_job_failed",
                             "scheduler",
                             {"job_id": job.id, "error": str(exc)},
+                        )
+                        await notification_engine.notify(
+                            source="scheduler",
+                            title=f"Scheduled job failed: {job.name}",
+                            body=str(exc),
+                            severity="error",
+                            metadata={"job_id": job.id},
                         )
             await asyncio.sleep(max(1, settings.scheduler_tick_seconds))
 
