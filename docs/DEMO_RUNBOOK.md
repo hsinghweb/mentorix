@@ -47,7 +47,36 @@ Default API URL in UI:
    - weak areas
    - recent sessions
 
-## 6) API backup demo (if UI is unavailable)
+## 6) Session 19 demo extension (2-3 min, API-first)
+Use this after core MVP flow to show Reasoning/System-2 additions.
+
+### 6.1 Start an autonomous graph run
+```powershell
+Invoke-RestMethod -Method POST -Uri "http://localhost:8000/runs/start" -ContentType "application/json" -Body '{"query":"Create a stronger adaptive plan for weak algebra concepts"}'
+```
+Save returned `run_id`.
+
+### 6.2 Inspect live progress and graph runtime state
+```powershell
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/runs"
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/runs/<run_id>/graph"
+```
+
+### 6.3 Show observability + resilience + memory
+```powershell
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/metrics/fleet"
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/metrics/resilience"
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/memory/hubs"
+```
+
+### 6.4 Show scheduler + skill path
+```powershell
+Invoke-RestMethod -Method POST -Uri "http://localhost:8000/scheduler/jobs" -ContentType "application/json" -Body '{"name":"Iteration4Demo","query":"restart agent and improve plan","interval_seconds":120}'
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/scheduler/jobs"
+```
+This demonstrates autonomous scheduling and intent-to-skill matching (Python + Markdown skills).
+
+## 7) API backup demo (if UI is unavailable)
 Use Swagger:
 - `http://localhost:8000/docs`
 
@@ -55,8 +84,10 @@ Run:
 - `POST /start-session`
 - `POST /submit-answer`
 - `GET /dashboard/{learner_id}`
+- `POST /runs/start`
+- `GET /metrics/fleet`
 
-## 7) Stop
+## 8) Stop
 ```powershell
 docker compose down
 ```

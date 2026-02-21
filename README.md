@@ -23,6 +23,24 @@ Open:
 - **Grounding:** lesson output stays concept/curriculum focused.
 - **Traceability:** evaluator-visible fields (`score`, `error_type`, `weak_areas`).
 
+## Session 19 Additions (Visible in Demo)
+
+- **System 2 reasoning:** content generation runs a bounded Draft-Verify-Refine loop with trace artifacts.
+- **Strict model governance:** role-based model routing (`planner`, `optimizer`, `verifier`, `content_generator`) from registry config.
+- **Emergency remediation:** verifier fallback path if local verifier is unavailable.
+- **Episodic skeleton memory:** run graphs are compressed into recipe-like memory skeletons.
+- **Skills 2.0:** both Python skills and Markdown `SKILL.md` skills are supported.
+- **JitRL optimizer:** user query optimization with offline rule generation hook.
+
+Quick evaluator endpoints:
+- `GET /runs`
+- `POST /runs/start`
+- `GET /events/stream` (SSE)
+- `GET /metrics/fleet`
+- `GET /metrics/resilience`
+- `GET /memory/hubs`
+- `GET /scheduler/jobs`
+
 ## Architecture Diagram + Module Map
 
 ### Current High-Level Diagram
@@ -75,6 +93,16 @@ Response fields:
 ### `GET /dashboard/{learner_id}`
 Response fields:
 - `mastery_map`, `engagement_score`, `weak_areas`, `last_sessions`
+
+### Runtime / Session-19 endpoints
+- `POST /runs/start` -> start graph-first autonomous run
+- `POST /runs/{run_id}/stop` -> controlled stop
+- `GET /runs/{run_id}/graph` -> UI graph payload
+- `GET /events/stream` -> live runtime events (SSE)
+- `GET /metrics/fleet` -> fleet telemetry
+- `GET /metrics/resilience` -> circuit breaker state
+- `GET /memory/context/{learner_id}` -> structured memory injection context
+- `GET|POST|PATCH|DELETE /scheduler/jobs` -> scheduler CRUD + trigger
 
 ## Key References for Review
 
