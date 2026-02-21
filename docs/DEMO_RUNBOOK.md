@@ -25,6 +25,16 @@ This verifies:
 - Ollama embeddings endpoint
 - End-to-end API smoke flow
 
+## 3.1) Grounding pre-work (recommended before demo)
+```powershell
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/grounding/status"
+Invoke-RestMethod -Method POST -Uri "http://localhost:8000/grounding/ingest"
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/grounding/status"
+```
+Notes:
+- `syllabus.txt` is auto-preferred if present beside `syllabus.pdf`.
+- This ensures embeddings are precomputed before learner session flow.
+
 ## 4) Frontend demo
 ```powershell
 cd frontend
@@ -37,6 +47,10 @@ Default API URL in UI:
 - `http://localhost:8000`
 
 ## 5) Suggested demo narrative (3-5 min)
+0. (Optional) Run onboarding-first adaptive plan:
+   - `POST /onboarding/start`
+   - `POST /onboarding/submit`
+   - show score + initial profile + rough plan + active week.
 1. Generate learner ID in UI.
 2. Click **Start Session**.
 3. Show concept/question/explanation.

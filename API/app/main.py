@@ -1,8 +1,12 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.health import router as health_router
+from app.api.grounding import router as grounding_router
+from app.api.onboarding import router as onboarding_router
 from app.api.events import router as events_router
 from app.api.memory import router as memory_router
 from app.api.metrics import router as metrics_router
@@ -22,11 +26,13 @@ from app.core.errors import (
 from app.core.logging import configure_logging
 from app.core.settings import settings
 from app.memory.database import SessionLocal, engine
+from app.rag.grounding_ingest import ensure_grounding_ready, run_grounding_ingestion
 from app.runtime.persistence import snapshot_persistence
 from fastapi import HTTPException
 
 
 configure_logging(settings.log_level)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Mentorix API", version="0.1.0")
 app.include_router(health_router)
@@ -37,6 +43,8 @@ app.include_router(scheduler_router)
 app.include_router(memory_router)
 app.include_router(metrics_router)
 app.include_router(notifications_router)
+app.include_router(grounding_router)
+app.include_router(onboarding_router)
 app.middleware("http")(api_key_auth_middleware)
 app.middleware("http")(request_id_middleware)
 app.add_middleware(
@@ -55,6 +63,13 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 async def on_startup():
     async with SessionLocal() as session:
         await initialize_database(session, engine)
+        if settings.grounding_prepare_on_start:
+            summary = await run_grounding_ingestion(session)
+            logger.info("Grounding ingestion startup summary: %s", summary)
+        if settings.grounding_require_ready:
+            ready, detail = await ensure_grounding_ready(session)
+            if not ready:
+                raise RuntimeError(f"Grounding validation failed: {detail}")
     snapshot_persistence.load_snapshot()
     if settings.scheduler_enabled:
         await scheduler_service.start()

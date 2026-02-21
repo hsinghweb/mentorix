@@ -32,31 +32,31 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 ## 1) Execution Strategy (Phased)
 
 ## Phase 1: Data Grounding Pre-Work
-- [ ] Build offline ingestion job for syllabus + chapters PDFs
+- [x] Build offline ingestion job for syllabus + chapters PDFs
 - [ ] Parse and persist syllabus hierarchy (chapter > section > concept)
-- [ ] Generate embeddings for:
-  - [ ] `class-10-maths/syllabus/syllabus.pdf` (full scope guardrail)
-  - [ ] `class-10-maths/chapters/ch_1.pdf`
-  - [ ] `class-10-maths/chapters/ch_2.pdf`
-  - [ ] `class-10-maths/chapters/ch_3.pdf`
-- [ ] Store extracted chunks + metadata + embeddings in Postgres vector tables
-- [ ] Add ingestion manifest tracking (what was embedded, when, hash/version)
-- [ ] Add pre-start validation so app can fail-fast if mandatory embeddings missing
+- [x] Generate embeddings for:
+  - [x] `class-10-maths/syllabus/syllabus.pdf` (full scope guardrail)
+  - [x] `class-10-maths/chapters/ch_1.pdf`
+  - [x] `class-10-maths/chapters/ch_2.pdf`
+  - [x] `class-10-maths/chapters/ch_3.pdf`
+- [x] Store extracted chunks + metadata + embeddings in Postgres vector tables
+- [x] Add ingestion manifest tracking (what was embedded, when, hash/version)
+- [x] Add pre-start validation so app can fail-fast if mandatory embeddings missing
 
 ## Phase 2: Enterprise Backend Core
 - [ ] Introduce full student lifecycle APIs:
-  - [ ] onboarding
-  - [ ] diagnostics
-  - [ ] profile
-  - [ ] weekly plan
+  - [x] onboarding
+  - [x] diagnostics
+  - [x] profile
+  - [x] weekly plan
   - [ ] schedule execution
   - [ ] revision queue
 - [ ] Implement strict progression rules:
-  - [ ] chapter unlock threshold check (default 60%)
+  - [x] chapter unlock threshold check (default 60%)
   - [ ] no skip without policy override
   - [ ] task completion by proof, not toggle
-  - [ ] timeout policy for stuck chapters (max attempts / max weeks before controlled progression)
-  - [ ] retry policy for low-score chapters (repeat with stronger support before timeout progression)
+  - [x] timeout policy for stuck chapters (max attempts / max weeks before controlled progression)
+  - [x] retry policy for low-score chapters (repeat with stronger support before timeout progression)
 - [ ] Add adaptive pace engine:
   - [ ] behind pace -> extend week/load balance
   - [ ] ahead pace -> compress carefully
@@ -124,12 +124,12 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] `chapters`
 - [ ] `sections`
 - [ ] `concepts`
-- [ ] `curriculum_documents`
-- [ ] `embedding_chunks` (vector + source metadata)
-- [ ] `ingestion_runs` (status, version, hash, counts)
+- [x] `curriculum_documents`
+- [x] `embedding_chunks` (vector + source metadata)
+- [x] `ingestion_runs` (status, version, hash, counts)
 
 ## Learning Journey
-- [ ] `weekly_plans`
+- [x] `weekly_plans`
 - [ ] `weekly_plan_versions`
 - [ ] `tasks`
 - [ ] `task_attempts` (proof-based completion)
@@ -167,12 +167,12 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 ## 4) Backend Feature Breakdown (Agent + Service)
 
 ## Onboarding + Diagnostics
-- [ ] Collect student demographic + academic baseline
-- [ ] Generate diagnostic objective test set from RAG:
-  - [ ] MCQ
-  - [ ] Fill-in-the-blank
-  - [ ] True/False
-- [ ] Score and initialize profile state
+- [x] Collect student demographic + academic baseline
+- [x] Generate diagnostic objective test set from RAG:
+  - [x] MCQ
+  - [x] Fill-in-the-blank
+  - [x] True/False
+- [x] Score and initialize profile state
 
 ## Profiling Engine
 - [ ] Maintain dynamic attributes:
@@ -189,13 +189,13 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] Update profile after every task/test outcome
 
 ## Planner Engine (Weekly Adaptive)
-- [ ] Build rough long-range map (example 15 weeks)
-- [ ] Activate only current week details
-- [ ] Recalculate weekly plan after each evaluation window
-- [ ] Enforce threshold-based chapter unlocks
+- [x] Build rough long-range map (example 15 weeks)
+- [x] Activate only current week details
+- [x] Recalculate weekly plan after each evaluation window
+- [x] Enforce threshold-based chapter unlocks
 - [ ] Implement stuck-chapter rules:
-  - [ ] if below threshold -> reinforce and retry
-  - [ ] if repeatedly below threshold with timeout -> progress + push chapter to revision queue
+  - [x] if below threshold -> reinforce and retry
+  - [x] if repeatedly below threshold with timeout -> progress + push chapter to revision queue
 
 ## Content Agent
 - [ ] RAG-only grounded explanation generation
@@ -287,10 +287,11 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 
 ## Backend Tests
 - [ ] onboarding -> diagnostic -> profile integration test
-- [ ] weekly planning and threshold unlock tests
+- [x] weekly planning and threshold unlock tests
 - [ ] locked-task completion policy tests
 - [ ] revision queue trigger tests
 - [ ] RAG grounding compliance tests
+- [x] grounding readiness endpoint shape test
 
 ## Frontend Tests
 - [ ] critical student journey smoke tests
@@ -326,15 +327,15 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 ## 10) Deliverables Checklist
 
 - [ ] Enterprise architecture and modules implemented incrementally
-- [ ] Pre-work embedding pipeline complete for syllabus + first 3 chapters
+- [x] Pre-work embedding pipeline complete for syllabus + first 3 chapters
 - [ ] Full student lifecycle operational in UI
-- [ ] Dynamic onboarding-based initial plan generation operational
+- [x] Dynamic onboarding-based initial plan generation operational
 - [ ] Weekly re-planning with threshold + timeout rules operational
 - [ ] Adaptive tone/content delivery operational and demonstrable
 - [ ] Admin observability panel operational
 - [ ] Logs + metrics + alerts operational
 - [ ] Dockerized local reproducibility preserved
-- [ ] Documentation updated (runbook + architecture + API)
+- [x] Documentation updated (runbook + architecture + API)
 
 ---
 

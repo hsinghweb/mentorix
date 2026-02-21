@@ -23,6 +23,22 @@ Open:
 - **Grounding:** lesson output stays concept/curriculum focused.
 - **Traceability:** evaluator-visible fields (`score`, `error_type`, `weak_areas`).
 
+## Grounding Pre-Work (Iteration 6 Slice)
+
+Mentorix now includes a pre-work grounding ingestion flow for syllabus + first three chapters.
+
+- Uses `class-10-maths/syllabus/syllabus.pdf` as canonical path.
+- If `class-10-maths/syllabus/syllabus.txt` exists, ingestion prefers it (faster, no PDF extraction delay).
+- Ingests chapter PDFs: `class-10-maths/chapters/ch_1.pdf`, `ch_2.pdf`, `ch_3.pdf`.
+- Stores chunk embeddings + ingestion metadata in Postgres tables:
+  - `curriculum_documents`
+  - `embedding_chunks`
+  - `ingestion_runs`
+
+Grounding endpoints:
+- `GET /grounding/status` -> readiness check (missing files / missing embeddings)
+- `POST /grounding/ingest` -> run ingestion (`?force_rebuild=true` optional)
+
 ## Session 19 Additions (Visible in Demo)
 
 - **System 2 reasoning:** content generation runs a bounded Draft-Verify-Refine loop with trace artifacts.
@@ -82,6 +98,9 @@ Reference docs:
 
 Evaluator-first API entry points:
 - **Core learning flow:** `POST /start-session`, `POST /submit-answer`, `GET /dashboard/{learner_id}`
+- **Onboarding + dynamic initial plan:** `POST /onboarding/start`, `POST /onboarding/submit`
+- **Weekly adaptive progression policy:** `POST /onboarding/weekly-replan`
+- **Persisted weekly plan lookup:** `GET /onboarding/plan/{learner_id}`
 - **Runtime orchestration:** `POST /runs/start`, `GET /runs/{run_id}/graph`, `POST /runs/{run_id}/stop`
 - **Notifications:** `GET /notifications`, `POST /notifications/send`
 - **Scheduler:** `GET /scheduler/jobs`, `POST /scheduler/jobs`, `POST /scheduler/jobs/{job_id}/trigger`
@@ -122,6 +141,12 @@ Response fields:
 - `GET /metrics/resilience` -> circuit breaker state
 - `GET /memory/context/{learner_id}` -> structured memory injection context
 - `GET|POST|PATCH|DELETE /scheduler/jobs` -> scheduler CRUD + trigger
+- `GET /grounding/status` -> ingestion readiness state
+- `POST /grounding/ingest` -> build grounding embeddings and manifest
+- `POST /onboarding/start` -> generate objective diagnostic set from grounded chunks
+- `POST /onboarding/submit` -> score diagnostic, update profile, return rough 14+ week plan + active week
+- `POST /onboarding/weekly-replan` -> apply threshold + retry + timeout progression decision
+- `GET /onboarding/plan/{learner_id}` -> fetch latest persisted rough weekly plan
 
 ## Key References for Review
 

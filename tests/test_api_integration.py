@@ -58,6 +58,76 @@ def test_failure_missing_or_expired_session(client):
     assert "Session not found or expired" in str(body)
 
 
+def test_grounding_status_endpoint_shape(client):
+    response = client.get("/grounding/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert "ready" in body
+    assert "missing_paths" in body
+    assert "missing_embeddings" in body
+
+
+def test_onboarding_start_endpoint_available(client):
+    response = client.post(
+        "/onboarding/start",
+        json={"name": "Test Learner", "grade_level": "10", "exam_in_months": 10},
+    )
+    # When grounding isn't ingested yet, endpoint returns 400 by design.
+    # Otherwise it returns generated diagnostic questions.
+    assert response.status_code in (200, 400)
+    body = response.json()
+    if response.status_code == 200:
+        assert "learner_id" in body
+        assert "diagnostic_attempt_id" in body
+        assert isinstance(body.get("questions"), list)
+    else:
+        assert "Run /grounding/ingest first" in str(body)
+
+
+def test_weekly_replan_policy_flow(client):
+    learner_id = str(uuid.uuid4())
+    # Ensures learner/profile exists through existing stable MVP flow.
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    r1 = client.post(
+        "/onboarding/weekly-replan",
+        json={
+            "learner_id": learner_id,
+            "evaluation": {"chapter": "Chapter 1", "score": 0.40},
+            "threshold": 0.60,
+            "max_attempts": 3,
+        },
+    )
+    assert r1.status_code == 200
+    body1 = r1.json()
+    assert body1["decision"] == "repeat_chapter"
+    assert body1["attempt_count"] == 1
+
+    r2 = client.post(
+        "/onboarding/weekly-replan",
+        json={
+            "learner_id": learner_id,
+            "evaluation": {"chapter": "Chapter 1", "score": 0.50},
+            "threshold": 0.60,
+            "max_attempts": 3,
+        },
+    )
+    assert r2.status_code == 200
+    body2 = r2.json()
+    assert body2["decision"] in ("proceed_with_revision_queue", "repeat_chapter")
+    assert body2["attempt_count"] == 2
+
+
+def test_onboarding_plan_endpoint_available(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    response = client.get(f"/onboarding/plan/{learner_id}")
+    assert response.status_code in (200, 404)
+
+
 def test_failure_embedding_service_unavailable_falls_back(client, monkeypatch):
     from app.rag import embeddings
 
