@@ -1,0 +1,25 @@
+{
+  "models": {
+    "gemini-extreme": {
+      "provider": "gemini",
+      "model": "gemini-2.5-flash"
+    },
+    "gemini-flash": {
+      "provider": "gemini",
+      "model": "gemini-2.5-flash"
+    },
+    "local-verifier": {
+      "provider": "ollama",
+      "model": "phi4-mini"
+    }
+  },
+  "roles": {
+    "planner": "gemini-extreme",
+    "content_generator": "gemini-flash",
+    "optimizer": "gemini-flash",
+    "verifier": "local-verifier"
+  },
+  "settings": {
+    "enforce_local_verifier": false
+  }
+}

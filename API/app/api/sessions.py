@@ -15,6 +15,7 @@ from app.agents.planner import CurriculumPlannerAgent
 from app.agents.reflection import ReflectionAgent
 from app.memory.cache import redis_client
 from app.memory.database import get_db
+from app.memory.ingest import get_memory_context, ingest_session_signal
 from app.models.entities import AssessmentResult, GeneratedArtifact, Learner, LearnerProfile, SessionLog
 from app.orchestrator.engine import StateEngine
 from app.orchestrator.states import SessionState
@@ -208,7 +209,11 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
     )
 
     chunks = await retrieve_concept_chunks(db, concept=concept, top_k=5, difficulty=difficulty)
-    content = await content_agent.run({"concept": concept, "difficulty": difficulty, "retrieved_chunks": chunks})
+    memory_context = get_memory_context(str(learner_id))
+    memory_hint = f"Learner memory context: {json.dumps(memory_context)}"
+    content = await content_agent.run(
+        {"concept": concept, "difficulty": difficulty, "retrieved_chunks": chunks + [memory_hint]}
+    )
     state, step_idx = _advance_state(
         session_id=session_id,
         learner_id=str(learner_id),
@@ -264,6 +269,12 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         )
     )
     await db.commit()
+    ingest_session_signal(
+        learner_id=str(learner_id),
+        concept=concept,
+        score=1.0,
+        adaptation_score=float(adaptation["adaptation_score"]),
+    )
     _log_state_transition(
         session_id=session_id,
         learner_id=str(learner_id),
@@ -387,6 +398,12 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         )
     )
     await db.commit()
+    ingest_session_signal(
+        learner_id=str(learner_id),
+        concept=concept,
+        score=score,
+        adaptation_score=float(adaptation["adaptation_score"]),
+    )
 
     chunks = await retrieve_concept_chunks(db, concept=concept, top_k=5, difficulty=adaptation["new_difficulty"])
     content = await content_agent.run(

@@ -1,0 +1,14 @@
+{
+  "31c31732-5a98-4f23-a675-c2d943ca0641": {
+    "confidence_band": "low",
+    "engagement_hint": "encourage_with_examples"
+  },
+  "d8236c39-b19d-4d01-8b28-63604a24bded": {
+    "confidence_band": "improving",
+    "engagement_hint": "encourage_with_examples"
+  },
+  "b37ae220-80dc-4a40-8738-bd3f18c13388": {
+    "confidence_band": "improving",
+    "engagement_hint": "encourage_with_examples"
+  }
+}

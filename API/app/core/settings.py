@@ -30,6 +30,14 @@ class Settings(BaseSettings):
 
     max_state_transitions: int = 10
     max_adaptation_shifts_per_concept: int = 2
+    runtime_data_dir: str = "data/system"
+    scheduler_enabled: bool = False
+    scheduler_tick_seconds: int = 2
+    role_model_governance_enabled: bool = True
+    enforce_local_verifier: bool = False
+    model_registry_file: str = "CONFIG/models_registry.json"
+    reasoning_score_threshold: int = 85
+    reasoning_max_refinements: int = 1
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
