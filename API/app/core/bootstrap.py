@@ -77,7 +77,7 @@ async def initialize_database(session: AsyncSession, engine) -> None:
                 text(
                     "DELETE FROM session_logs "
                     "WHERE timestamp IS NOT NULL "
-                    "AND timestamp < (NOW() - (:days || ' days')::interval)"
+                    "AND timestamp < (NOW() - make_interval(days => :days))"
                 ),
                 params,
             )
@@ -85,7 +85,7 @@ async def initialize_database(session: AsyncSession, engine) -> None:
                 text(
                     "DELETE FROM assessment_results "
                     "WHERE timestamp IS NOT NULL "
-                    "AND timestamp < (NOW() - (:days || ' days')::interval)"
+                    "AND timestamp < (NOW() - make_interval(days => :days))"
                 ),
                 params,
             )

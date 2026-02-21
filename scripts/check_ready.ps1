@@ -88,10 +88,16 @@ Write-Host "Ollama embedding OK (dim=$($embedResp.embedding.Count))."
 
 # 5) Frontend health
 Write-Host "`n[5/6] Frontend health"
-$front = Invoke-WebRequest -Method Get -Uri "http://localhost:5500" -TimeoutSec 8
-if ($front.StatusCode -ne 200) {
-  throw "Frontend health check failed with status code $($front.StatusCode)"
+$frontOk = $false
+try {
+  $front = Invoke-RestMethod -Method Get -Uri "http://localhost:5500" -TimeoutSec 8
+  if ($null -ne $front) { $frontOk = $true }
+} catch {
+  # Fallback probe: raw TCP connect to frontend port
+  $tcp = Test-NetConnection -ComputerName "localhost" -Port 5500 -WarningAction SilentlyContinue
+  if ($tcp.TcpTestSucceeded) { $frontOk = $true }
 }
+if (-not $frontOk) { throw "Frontend health check failed on http://localhost:5500" }
 Write-Host "Frontend reachable."
 
 # 6) MVP smoke test

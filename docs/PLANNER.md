@@ -175,8 +175,8 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 
 ## 10) Exit Criteria for MVP
 
-- [ ] End-to-end flow works from frontend on fresh `docker compose up --build`
-- [ ] `/start-session`, `/submit-answer`, `/dashboard` stable across reruns
-- [ ] Gemini content path active with fallback
-- [ ] RAG context visibly influences explanation output
-- [ ] Evaluator can run locally with only Docker + Ollama + API key
+- [x] End-to-end flow works from frontend on fresh `docker compose up --build`
+- [x] `/start-session`, `/submit-answer`, `/dashboard` stable across reruns
+- [x] Gemini content path active with fallback
+- [x] RAG context visibly influences explanation output
+- [x] Evaluator can run locally with only Docker + Ollama + API key
