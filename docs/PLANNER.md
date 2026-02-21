@@ -67,8 +67,8 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 
 ### Left
 - [x] Switch content generation path to Gemini (with deterministic fallback)
-- [ ] Add structured state-transition logging per request/session
-- [ ] Add robust error envelope and API-level exception mapping
+- [x] Add structured state-transition logging per request/session
+- [x] Add robust error envelope and API-level exception mapping
 - [ ] Add explicit validation for adaptation shift caps per concept/session
 
 ---
@@ -122,7 +122,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 ### Left
 - [ ] Add frontend service to compose (if FE containerized for demo)
 - [x] Add one-command smoke test script
-- [ ] Add startup readiness check script
+- [x] Add startup readiness check script
 
 ---
 
@@ -151,7 +151,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [ ] Update README with current architecture diagram + module map
 - [ ] Add API request/response examples for all endpoints
 - [ ] Add "known limitations" and "v2 plan" section
-- [ ] Add capstone demo script narrative (step-by-step for evaluator)
+- [x] Add capstone demo script narrative (step-by-step for evaluator)
 
 ---
 
@@ -163,13 +163,13 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Automated smoke script
 
 ### P1 - Stabilization
-- [ ] Structured logs + better error handling
+- [x] Structured logs + better error handling
 - [ ] DB indexes + migration baseline
 - [ ] Hybrid retrieval quality improvement
 
 ### P2 - Demo Polish
 - [ ] UI polish and clearer adaptation visualization
-- [ ] Final README + architecture docs + demo walkthrough
+- [x] Final README + architecture docs + demo walkthrough
 
 ---
 

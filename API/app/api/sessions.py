@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 from datetime import datetime
 
@@ -27,6 +28,7 @@ from app.schemas.session import (
 )
 
 router = APIRouter(tags=["sessions"])
+logger = logging.getLogger(__name__)
 
 engine = StateEngine()
 profiling_agent = LearnerProfilingAgent()
@@ -43,6 +45,52 @@ DEFAULT_MASTERY = {
     "quadratic_equations": 0.3,
     "probability": 0.5,
 }
+
+
+def _log_state_transition(
+    *,
+    session_id: str,
+    learner_id: str,
+    step_index: int,
+    from_state: SessionState,
+    to_state: SessionState,
+    event: str,
+    payload: dict | None = None,
+) -> None:
+    log_obj = {
+        "type": "state_transition",
+        "session_id": session_id,
+        "learner_id": learner_id,
+        "step_index": step_index,
+        "from_state": from_state.value,
+        "to_state": to_state.value,
+        "event": event,
+        "payload": payload or {},
+        "ts": datetime.utcnow().isoformat(),
+    }
+    logger.info(json.dumps(log_obj))
+
+
+def _advance_state(
+    *,
+    session_id: str,
+    learner_id: str,
+    state: SessionState,
+    step_index: int,
+    event: str,
+    payload: dict | None = None,
+) -> tuple[SessionState, int]:
+    transition = engine.next_transition(state, step_index)
+    _log_state_transition(
+        session_id=session_id,
+        learner_id=learner_id,
+        step_index=transition.step_index,
+        from_state=transition.current_state,
+        to_state=transition.next_state,
+        event=event,
+        payload=payload,
+    )
+    return transition.next_state, transition.step_index
 
 
 async def _get_or_create_learner_profile(db: AsyncSession, learner_id: uuid.UUID) -> LearnerProfile:
@@ -74,6 +122,7 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid learner_id UUID") from exc
 
+    session_id = str(uuid.uuid4())
     profile = await _get_or_create_learner_profile(db, learner_id)
     recent = (
         await db.execute(
@@ -86,23 +135,46 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
 
     step_idx = 0
     state = SessionState.INITIALIZE_SESSION
-    state = engine.next_transition(state, step_idx).next_state
-    step_idx += 1
+    state, step_idx = _advance_state(
+        session_id=session_id,
+        learner_id=str(learner_id),
+        state=state,
+        step_index=step_idx,
+        event="session_initialized",
+    )
 
     p = await profiling_agent.run({"mastery_map": profile.concept_mastery, "learner_id": payload.learner_id})
-    state = engine.next_transition(state, step_idx).next_state
-    step_idx += 1
+    state, step_idx = _advance_state(
+        session_id=session_id,
+        learner_id=str(learner_id),
+        state=state,
+        step_index=step_idx,
+        event="profile_loaded",
+        payload={"weak_concepts": p.get("weak_concepts", [])},
+    )
 
     plan = await planner_agent.run({"mastery_map": p["mastery_map"], "recent_concepts": recent})
     concept = plan["next_concept"]
     difficulty = int(plan["target_difficulty"])
-    state = engine.next_transition(state, step_idx).next_state
-    step_idx += 1
+    state, step_idx = _advance_state(
+        session_id=session_id,
+        learner_id=str(learner_id),
+        state=state,
+        step_index=step_idx,
+        event="concept_selected",
+        payload={"concept": concept, "difficulty": difficulty},
+    )
 
     chunks = await retrieve_concept_chunks(db, concept=concept, top_k=5, difficulty=difficulty)
     content = await content_agent.run({"concept": concept, "difficulty": difficulty, "retrieved_chunks": chunks})
-    state = engine.next_transition(state, step_idx).next_state
-    step_idx += 1
+    state, step_idx = _advance_state(
+        session_id=session_id,
+        learner_id=str(learner_id),
+        state=state,
+        step_index=step_idx,
+        event="content_generated",
+        payload={"source": content.get("source", "template"), "chunk_count": len(chunks)},
+    )
 
     adaptation = await adaptation_agent.run(
         {"rolling_error_rate": 0.0, "response_time_deviation": 0.0, "consecutive_failures": 0, "difficulty": difficulty}
@@ -111,7 +183,6 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         {"concept": concept, "difficulty": adaptation["new_difficulty"]}
     )
 
-    session_id = str(uuid.uuid4())
     session_key = f"session:{session_id}"
     session_payload = {
         "learner_id": str(learner_id),
@@ -137,6 +208,15 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         )
     )
     await db.commit()
+    _log_state_transition(
+        session_id=session_id,
+        learner_id=str(learner_id),
+        step_index=step_idx,
+        from_state=state,
+        to_state=SessionState.DELIVER,
+        event="session_ready_for_delivery",
+        payload={"concept": concept, "difficulty": adaptation["new_difficulty"]},
+    )
 
     return StartSessionResponse(
         session_id=session_id,
@@ -156,6 +236,7 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
     learner_id = uuid.UUID(raw["learner_id"])
+    step_idx = int(raw.get("step_index", 0))
     concept = raw["current_concept"]
     difficulty = int(raw["difficulty"])
     expected = raw.get("expected_answer", concept).lower()
@@ -169,6 +250,15 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
     new_error = 1.0 - score
     rolling_error_rate = (rolling_error_rate * 0.7) + (new_error * 0.3)
     failures = failures + 1 if score < 0.6 else 0
+    _log_state_transition(
+        session_id=payload.session_id,
+        learner_id=str(learner_id),
+        step_index=step_idx + 1,
+        from_state=SessionState.ASSESS,
+        to_state=SessionState.UPDATE_MEMORY,
+        event="answer_assessed",
+        payload={"score": score, "error_type": error_type},
+    )
 
     response_time_dev = min(1.0, max(0.0, payload.response_time / 30.0))
     adaptation = await adaptation_agent.run(
@@ -180,6 +270,18 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
             "cooldown_remaining": int(adaptation_state.get("cooldown_remaining", 0)),
         }
     )
+    _log_state_transition(
+        session_id=payload.session_id,
+        learner_id=str(learner_id),
+        step_index=step_idx + 2,
+        from_state=SessionState.UPDATE_MEMORY,
+        to_state=SessionState.REFLECT,
+        event="adaptation_computed",
+        payload={
+            "adaptation_score": adaptation["adaptation_score"],
+            "new_difficulty": adaptation["new_difficulty"],
+        },
+    )
 
     profile = await _get_or_create_learner_profile(db, learner_id)
     reflection = await reflection_agent.run(
@@ -190,6 +292,15 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
             "engagement_score": profile.engagement_score,
             "retention_decay": profile.retention_decay,
         }
+    )
+    _log_state_transition(
+        session_id=payload.session_id,
+        learner_id=str(learner_id),
+        step_index=step_idx + 3,
+        from_state=SessionState.REFLECT,
+        to_state=SessionState.DELIVER,
+        event="profile_reflected",
+        payload={"new_mastery": reflection["new_mastery"], "concept": concept},
     )
 
     profile.concept_mastery = {**profile.concept_mastery, concept: reflection["new_mastery"]}
@@ -233,6 +344,7 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
             "consecutive_failures": str(failures),
             "adaptation_state": json.dumps(adaptation),
             "updated_at": datetime.utcnow().isoformat(),
+            "step_index": str(step_idx + 3),
         },
     )
     await redis_client.expire(session_key, 3600)
