@@ -41,7 +41,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 ### Left
 - [x] Add DB indexes for query hotspots (`learner_id`, `timestamp`, `concept`)
 - [x] Add migration workflow (Alembic baseline + first migration)
-- [ ] Add retention/cleanup strategy for old session records
+- [x] Add retention/cleanup strategy for old session records
 
 ---
 
@@ -69,7 +69,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Switch content generation path to Gemini (with deterministic fallback)
 - [x] Add structured state-transition logging per request/session
 - [x] Add robust error envelope and API-level exception mapping
-- [ ] Add explicit validation for adaptation shift caps per concept/session
+- [x] Add explicit validation for adaptation shift caps per concept/session
 
 ---
 
@@ -120,7 +120,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Image export/import scripts added
 
 ### Left
-- [ ] Add frontend service to compose (if FE containerized for demo)
+- [x] Add frontend service to compose (if FE containerized for demo)
 - [x] Add one-command smoke test script
 - [x] Add startup readiness check script
 
@@ -133,11 +133,11 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 
 ### Left
 - [x] Add automated API smoke script (`scripts/test_mvp.ps1`)
-- [ ] Add backend integration test for happy path
-- [ ] Add failure-mode tests:
-  - [ ] missing/expired session
-  - [ ] embedding service unavailable
-  - [ ] Gemini unavailable fallback
+- [x] Add backend integration test for happy path
+- [x] Add failure-mode tests:
+  - [x] missing/expired session
+  - [x] embedding service unavailable
+  - [x] Gemini unavailable fallback
 
 ---
 
@@ -148,7 +148,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Image sharing instructions in `README.md`
 
 ### Left
-- [ ] Update README with current architecture diagram + module map
+- [x] Update README with current architecture diagram + module map
 - [x] Add API request/response examples for all endpoints
 - [x] Add "known limitations" and "v2 plan" section
 - [x] Add capstone demo script narrative (step-by-step for evaluator)
@@ -165,7 +165,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 ### P1 - Stabilization
 - [x] Structured logs + better error handling
 - [x] DB indexes + migration baseline
-- [ ] Hybrid retrieval quality improvement
+- [x] Hybrid retrieval quality improvement
 
 ### P2 - Demo Polish
 - [x] UI polish and clearer adaptation visualization

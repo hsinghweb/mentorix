@@ -12,12 +12,9 @@ docker compose up --build -d
 ./scripts/test_mvp.ps1
 ```
 
-Optional UI check:
-```powershell
-cd frontend
-python -m http.server 5500
-```
-Open `http://localhost:5500` (API default: `http://localhost:8000`).
+Open:
+- Frontend: `http://localhost:5500`
+- API: `http://localhost:8000`
 
 ## What This Demo Proves
 
@@ -25,6 +22,33 @@ Open `http://localhost:5500` (API default: `http://localhost:8000`).
 - **Adaptation:** `submit-answer` returns `adaptation_applied` using performance + response time.
 - **Grounding:** lesson output stays concept/curriculum focused.
 - **Traceability:** evaluator-visible fields (`score`, `error_type`, `weak_areas`).
+
+## Architecture Diagram + Module Map
+
+### Current High-Level Diagram
+
+![Mentorix High Level Design](mentorix_hld.png)
+
+Reference docs:
+- `Mentorix_High_Level_Design.pdf`
+- `EAG_V2_Capstone_Idea_Mentorix.pdf`
+
+### Repository Module Map (Current)
+
+- **Runtime App:** `API/app/`
+  - `api/` (HTTP endpoints)
+  - `agents/` (profiling, planner, content, adaptation, assessment, reflection)
+  - `orchestrator/` (state machine and transitions)
+  - `rag/` (embedding + retriever pipeline)
+  - `memory/` (PostgreSQL/Redis integrations)
+  - `models/` (SQLAlchemy entities)
+  - `core/` (settings, bootstrap, logging, error envelope)
+- **Frontend Demo UI:** `frontend/` (static HTML/CSS/JS)
+- **Operational Scripts:** `scripts/` (readiness, smoke, image export/import)
+- **Configuration:** `CONFIG/` (`local.env`, templates)
+- **Tests:** `tests/` (integration + failure-mode API tests)
+- **Research/Design Partitions:** `PERCEPTION/`, `MEMORY/`, `DECISION/`, `ACTION/`, `ORCHESTRATOR/`, `AGENT/`, `MODELS/`, `RAG/`
+- **Documentation:** `docs/` (`PLANNER.md`, `DEMO_RUNBOOK.md`)
 
 ## API Contract (Core Endpoints)
 

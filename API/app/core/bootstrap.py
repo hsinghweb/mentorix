@@ -71,6 +71,31 @@ async def initialize_database(session: AsyncSession, engine) -> None:
             )
         )
 
+        if settings.retention_cleanup_enabled and settings.session_retention_days > 0:
+            params = {"days": settings.session_retention_days}
+            session_cleanup = await conn.execute(
+                text(
+                    "DELETE FROM session_logs "
+                    "WHERE timestamp IS NOT NULL "
+                    "AND timestamp < (NOW() - (:days || ' days')::interval)"
+                ),
+                params,
+            )
+            assessment_cleanup = await conn.execute(
+                text(
+                    "DELETE FROM assessment_results "
+                    "WHERE timestamp IS NOT NULL "
+                    "AND timestamp < (NOW() - (:days || ' days')::interval)"
+                ),
+                params,
+            )
+            logger.info(
+                "Retention cleanup completed: session_logs=%s, assessment_results=%s, retention_days=%s",
+                max(0, session_cleanup.rowcount or 0),
+                max(0, assessment_cleanup.rowcount or 0),
+                settings.session_retention_days,
+            )
+
     async def seed_chunks():
         existing = await session.execute(text("SELECT COUNT(*) FROM concept_chunks"))
         count = int(existing.scalar_one())

@@ -46,6 +46,47 @@ DEFAULT_MASTERY = {
     "probability": 0.5,
 }
 
+MAX_DIFFICULTY_SHIFT_PER_TURN = 1
+CONCEPT_DIFFICULTY_BOUNDS: dict[str, tuple[int, int]] = {
+    "fractions": (1, 2),
+    "linear_equations": (1, 3),
+    "quadratic_equations": (1, 3),
+    "probability": (1, 2),
+}
+
+
+def _apply_adaptation_shift_caps(*, concept: str, current_difficulty: int, adaptation: dict) -> dict:
+    """
+    Enforce explicit adaptation shift caps per session turn and per concept.
+    """
+    candidate = int(adaptation.get("new_difficulty", current_difficulty))
+    bounded_delta = max(
+        -MAX_DIFFICULTY_SHIFT_PER_TURN,
+        min(MAX_DIFFICULTY_SHIFT_PER_TURN, candidate - current_difficulty),
+    )
+    capped = current_difficulty + bounded_delta
+
+    concept_min, concept_max = CONCEPT_DIFFICULTY_BOUNDS.get(concept, (1, 3))
+    capped = max(concept_min, min(concept_max, capped))
+
+    if capped != candidate:
+        logger.info(
+            json.dumps(
+                {
+                    "type": "adaptation_cap_applied",
+                    "concept": concept,
+                    "from_difficulty": current_difficulty,
+                    "candidate_difficulty": candidate,
+                    "capped_difficulty": capped,
+                    "max_shift": MAX_DIFFICULTY_SHIFT_PER_TURN,
+                }
+            )
+        )
+
+    adaptation["new_difficulty"] = capped
+    adaptation["adaptation_score"] = max(0.0, min(1.0, float(adaptation.get("adaptation_score", 0.0))))
+    return adaptation
+
 
 def _log_state_transition(
     *,
@@ -179,6 +220,11 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
     adaptation = await adaptation_agent.run(
         {"rolling_error_rate": 0.0, "response_time_deviation": 0.0, "consecutive_failures": 0, "difficulty": difficulty}
     )
+    adaptation = _apply_adaptation_shift_caps(
+        concept=concept,
+        current_difficulty=difficulty,
+        adaptation=adaptation,
+    )
     question_payload = await assessment_agent.run(
         {"concept": concept, "difficulty": adaptation["new_difficulty"]}
     )
@@ -269,6 +315,11 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
             "difficulty": difficulty,
             "cooldown_remaining": int(adaptation_state.get("cooldown_remaining", 0)),
         }
+    )
+    adaptation = _apply_adaptation_shift_caps(
+        concept=concept,
+        current_difficulty=difficulty,
+        adaptation=adaptation,
     )
     _log_state_transition(
         session_id=payload.session_id,

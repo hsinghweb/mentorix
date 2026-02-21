@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://mentorix:mentorix@localhost:5432/mentorix"
     redis_url: str = "redis://localhost:6379/0"
     session_ttl_seconds: int = 3600
+    retention_cleanup_enabled: bool = True
+    session_retention_days: int = 30
 
     llm_provider: str = "gemini"
     llm_model: str = "gemini-2.5-flash"
