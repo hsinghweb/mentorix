@@ -8,6 +8,7 @@ from app.core.settings import settings
 class Verifier:
     def __init__(self):
         self.provider = get_llm_provider(role="verifier")
+        self.fallback_provider = get_llm_provider(role="optimizer")
 
     async def verify(self, query: str, draft: str, context: str = "") -> tuple[int, str]:
         prompt = (
@@ -26,7 +27,18 @@ class Verifier:
             critique = critique_match.group(1).strip() if critique_match else response.strip()
             return max(0, min(100, score)), critique
         except Exception as exc:
-            return 50, f"verification_failed: {exc}"
+            # Emergency remediation path: verifier local brain down -> cloud-ish fallback
+            try:
+                response, _usage = await self.fallback_provider.generate(prompt)
+                if not response:
+                    return 50, f"verification_failed: {exc}"
+                score_match = re.search(r"SCORE:\s*(\d+)", response, re.IGNORECASE)
+                critique_match = re.search(r"CRITIQUE:\s*(.*)", response, re.IGNORECASE | re.DOTALL)
+                score = int(score_match.group(1)) if score_match else 50
+                critique = critique_match.group(1).strip() if critique_match else response.strip()
+                return max(0, min(100, score)), critique
+            except Exception as fallback_exc:
+                return 50, f"verification_failed: {exc}; fallback_failed: {fallback_exc}"
 
 
 class ReasoningEngine:

@@ -1,4 +1,6 @@
 from app.core.llm_provider import get_llm_provider
+from app.core.json_parser import parse_llm_json
+from app.telemetry.aggregator import fleet_telemetry_aggregator
 
 
 class QueryOptimizer:
@@ -15,13 +17,31 @@ class QueryOptimizer:
             text, _usage = await self.provider.generate(prompt)
             if not text:
                 return {"original": query, "optimized": query, "reasoning": "No optimization output"}
-            # Minimal robust parser without adding more dependencies.
-            optimized = text
-            if "optimized_query" in text:
-                optimized = text.split("optimized_query", 1)[-1].split("\n", 1)[0].replace(":", "").strip(" \"{}")
-            return {"original": query, "optimized": optimized or query, "reasoning": "optimized"}
+            data = parse_llm_json(text)
+            if isinstance(data, list) and data:
+                data = data[0]
+            if isinstance(data, dict):
+                return {
+                    "original": query,
+                    "optimized": data.get("optimized_query", query),
+                    "reasoning": data.get("changes_made", "optimized"),
+                }
+            return {"original": query, "optimized": query, "reasoning": "invalid_optimizer_json"}
         except Exception:
             return {"original": query, "optimized": query, "reasoning": "optimizer_failed"}
+
+    async def get_jit_rules(self) -> str:
+        metrics = fleet_telemetry_aggregator.aggregate()
+        rules: list[str] = []
+        top_agents = metrics.get("top_agents", [])
+        if metrics.get("step_success_rate", 100.0) < 90.0:
+            rules.append("Prefer decomposition into smaller steps for complex tasks.")
+        if metrics.get("total_retries", 0) > 5:
+            rules.append("When retries spike, simplify prompts and reduce tool fan-out.")
+        for agent_name, count in top_agents[:2]:
+            if count > 10:
+                rules.append(f"Monitor {agent_name} closely; high execution frequency detected.")
+        return "\n".join(rules)
 
 
 query_optimizer = QueryOptimizer()

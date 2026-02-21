@@ -1,0 +1,33 @@
+models:
+  gemini-extreme:
+    id: "gemini-2.5-pro"
+    provider: "gemini"
+    cost_per_1k: 0.002
+    context_window: 2000000
+
+  gemini-flash:
+    id: "gemini-2.5-flash"
+    provider: "gemini"
+    cost_per_1k: 0.0001
+    context_window: 1000000
+
+  local-reasoner:
+    id: "deepseek-r1:7b"
+    provider: "ollama"
+    cost_per_1k: 0.0
+    context_window: 128000
+
+  local-verifier:
+    id: "phi4-mini"
+    provider: "ollama"
+    cost_per_1k: 0.0
+    context_window: 128000
+
+roles:
+  planner: "gemini-extreme"
+  content_generator: "gemini-flash"
+  optimizer: "gemini-flash"
+  verifier: "local-verifier"
+
+settings:
+  enforce_local_verifier: false

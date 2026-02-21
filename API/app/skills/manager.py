@@ -5,7 +5,34 @@ import inspect
 import json
 from pathlib import Path
 
-from app.skills.base import BaseSkill
+from app.skills.base import BaseSkill, SkillMetadata
+
+
+class GenericSkill(BaseSkill):
+    """A skill defined by markdown instructions (SKILL.md) with frontmatter metadata."""
+
+    def __init__(self, md_path: Path, info: dict):
+        self.md_path = md_path
+        self.info = info
+
+    def get_metadata(self) -> SkillMetadata:
+        return SkillMetadata(
+            name=self.info["name"],
+            version=self.info.get("version", "1.0.0"),
+            description=self.info.get("description", "Markdown skill"),
+            intent_triggers=self.info.get("intent_triggers", []),
+        )
+
+    async def on_run_start(self, initial_prompt: str) -> str:
+        try:
+            content = self.md_path.read_text(encoding="utf-8")
+            if content.startswith("---"):
+                parts = content.split("---", 2)
+                if len(parts) >= 3:
+                    content = parts[2].strip()
+            return f"{initial_prompt}\n\n### Active Skill: {self.info['name']}\n{content}\n"
+        except Exception:
+            return initial_prompt
 
 
 class SkillManager:
@@ -26,22 +53,56 @@ class SkillManager:
             if not item.is_dir():
                 continue
             skill_file = item / "skill.py"
-            if not skill_file.exists():
-                continue
-            klass = self._load_skill_class(skill_file)
-            if not klass:
-                continue
-            instance = klass()
-            meta = instance.get_metadata()
-            self.skill_classes[meta.name] = klass
-            registry[meta.name] = {
-                "path": str(skill_file),
-                "version": meta.version,
-                "description": meta.description,
-                "intent_triggers": meta.intent_triggers,
-            }
+            md_file = item / "SKILL.md"
+            if skill_file.exists():
+                klass = self._load_skill_class(skill_file)
+                if not klass:
+                    continue
+                instance = klass()
+                meta = instance.get_metadata()
+                self.skill_classes[meta.name] = klass
+                registry[meta.name] = {
+                    "path": str(skill_file),
+                    "kind": "python",
+                    "version": meta.version,
+                    "description": meta.description,
+                    "intent_triggers": meta.intent_triggers,
+                }
+            elif md_file.exists():
+                info = self._parse_frontmatter(md_file)
+                if not info.get("name"):
+                    continue
+                registry[info["name"]] = {
+                    "path": str(md_file),
+                    "kind": "markdown",
+                    "version": info.get("version", "1.0.0"),
+                    "description": info.get("description", "Markdown skill"),
+                    "intent_triggers": info.get("intent_triggers", []),
+                }
         self.registry_file.write_text(json.dumps(registry, indent=2), encoding="utf-8")
         return registry
+
+    def _parse_frontmatter(self, md_path: Path) -> dict:
+        content = md_path.read_text(encoding="utf-8")
+        if not content.startswith("---"):
+            return {}
+        parts = content.split("---", 2)
+        if len(parts) < 3:
+            return {}
+        raw = parts[1].strip().splitlines()
+        parsed: dict = {}
+        for line in raw:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if value.startswith("[") and value.endswith("]"):
+                items = [v.strip().strip('"').strip("'") for v in value[1:-1].split(",") if v.strip()]
+                parsed[key] = items
+            else:
+                parsed[key] = value.strip('"').strip("'")
+        return parsed
 
     def _load_skill_class(self, file_path: Path) -> type[BaseSkill] | None:
         spec = importlib.util.spec_from_file_location("mentorix_dynamic_skill", file_path)
@@ -60,7 +121,10 @@ class SkillManager:
         registry = json.loads(self.registry_file.read_text(encoding="utf-8"))
         if skill_name not in registry:
             return None
-        klass = self._load_skill_class(Path(registry[skill_name]["path"]))
+        info = registry[skill_name]
+        if info.get("kind") == "markdown":
+            return GenericSkill(Path(info["path"]), info)
+        klass = self._load_skill_class(Path(info["path"]))
         return klass() if klass else None
 
     def match_intent(self, query: str) -> str | None:

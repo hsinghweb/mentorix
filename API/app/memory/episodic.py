@@ -22,6 +22,8 @@ class MemorySkeletonizer:
                 "reads": node.get("reads", []),
                 "writes": node.get("writes", []),
             }
+            if node.get("agent_prompt"):
+                compressed["logic_prompt"] = node.get("agent_prompt")
             output = node.get("output") or {}
             if isinstance(output, dict):
                 logic = {}
@@ -30,6 +32,33 @@ class MemorySkeletonizer:
                         logic[key] = output[key]
                 if logic:
                     compressed["logic"] = logic
+            iterations = node.get("iterations") or []
+            actions = []
+            if isinstance(iterations, list):
+                for iteration in iterations:
+                    i_output = (iteration or {}).get("output", {})
+                    if not isinstance(i_output, dict):
+                        continue
+                    tool_call = i_output.get("call_tool")
+                    if isinstance(tool_call, dict):
+                        actions.append(
+                            {
+                                "type": "tool",
+                                "name": tool_call.get("name"),
+                                "args": str(tool_call.get("arguments", ""))[:200],
+                            }
+                        )
+                    self_call = i_output.get("call_self")
+                    if isinstance(self_call, dict):
+                        actions.append(
+                            {
+                                "type": "code",
+                                "lang": "python",
+                                "snippet": str(self_call.get("code", ""))[:500],
+                            }
+                        )
+            if actions:
+                compressed["actions"] = actions
             compressed_nodes.append(compressed)
 
         return {

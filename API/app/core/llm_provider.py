@@ -24,9 +24,10 @@ class BaseLLMProvider(ABC):
 class GeminiLLMProvider(BaseLLMProvider):
     provider_name = "gemini"
 
-    def __init__(self, model_name: str | None = None, role: str | None = None):
+    def __init__(self, model_name: str | None = None, role: str | None = None, cost_per_1k: float | None = None):
         self.model_name = model_name or settings.llm_model
         self.role = role or "content_generator"
+        self.cost_per_1k = float(cost_per_1k or 0.0)
 
     @staticmethod
     def _sanitize_url(raw_url: str) -> str:
@@ -82,6 +83,7 @@ class GeminiLLMProvider(BaseLLMProvider):
                     "prompt_tokens_estimate": _estimate_tokens(prompt),
                     "completion_tokens_estimate": _estimate_tokens(text),
                     "total_tokens_estimate": _estimate_tokens(prompt) + _estimate_tokens(text),
+                    "cost_estimate_usd": round(((_estimate_tokens(prompt) + _estimate_tokens(text)) / 1000) * self.cost_per_1k, 6),
                 }
                 return (text or None), usage
 
@@ -97,9 +99,10 @@ class GeminiLLMProvider(BaseLLMProvider):
 class OllamaLLMProvider(BaseLLMProvider):
     provider_name = "ollama"
 
-    def __init__(self, model_name: str, role: str | None = None):
+    def __init__(self, model_name: str, role: str | None = None, cost_per_1k: float | None = None):
         self.model_name = model_name
         self.role = role or "verifier"
+        self.cost_per_1k = float(cost_per_1k or 0.0)
 
     async def generate(self, prompt: str) -> tuple[str | None, dict]:
         breaker = get_breaker(f"llm:{self.provider_name}:{self.model_name}:{self.role}")
@@ -122,6 +125,7 @@ class OllamaLLMProvider(BaseLLMProvider):
                     "prompt_tokens_estimate": _estimate_tokens(prompt),
                     "completion_tokens_estimate": _estimate_tokens(text),
                     "total_tokens_estimate": _estimate_tokens(prompt) + _estimate_tokens(text),
+                    "cost_estimate_usd": round(((_estimate_tokens(prompt) + _estimate_tokens(text)) / 1000) * self.cost_per_1k, 6),
                 }
                 return (text or None), usage
 
@@ -153,15 +157,20 @@ def get_llm_provider(role: str | None = None) -> BaseLLMProvider:
         resolved = resolve_role(role)
         provider = (resolved.get("provider") or "").lower()
         model_name = resolved.get("model")
+        cost_per_1k = float(resolved.get("cost_per_1k", 0.0) or 0.0)
         if provider == "gemini":
-            return GeminiLLMProvider(model_name=model_name, role=role)
+            return GeminiLLMProvider(model_name=model_name, role=role, cost_per_1k=cost_per_1k)
         if provider == "ollama":
-            return OllamaLLMProvider(model_name=model_name or settings.ollama_model, role=role)
+            return OllamaLLMProvider(
+                model_name=model_name or settings.ollama_model,
+                role=role,
+                cost_per_1k=cost_per_1k,
+            )
         return NullLLMProvider()
 
     provider = (settings.llm_provider or "").lower()
     if provider == "gemini":
-        return GeminiLLMProvider(model_name=settings.llm_model, role=role)
+        return GeminiLLMProvider(model_name=settings.llm_model, role=role, cost_per_1k=0.0)
     if provider == "ollama":
-        return OllamaLLMProvider(model_name=settings.ollama_model, role=role)
+        return OllamaLLMProvider(model_name=settings.ollama_model, role=role, cost_per_1k=0.0)
     return NullLLMProvider()
