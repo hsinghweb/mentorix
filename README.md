@@ -89,3 +89,14 @@ Default API URL in UI is:
 ## Demo Runbook
 For evaluator-ready walkthrough steps, see:
 - `docs/DEMO_RUNBOOK.md`
+
+## Database Migrations (Alembic baseline)
+From `API` directory:
+```powershell
+cd API
+uv run alembic -c alembic.ini upgrade head
+```
+Check migration status:
+```powershell
+uv run alembic -c alembic.ini current
+```

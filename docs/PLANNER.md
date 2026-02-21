@@ -39,8 +39,8 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Session cache model active in Redis (`session:{session_id}`)
 
 ### Left
-- [ ] Add DB indexes for query hotspots (`learner_id`, `timestamp`, `concept`)
-- [ ] Add migration workflow (Alembic baseline + first migration)
+- [x] Add DB indexes for query hotspots (`learner_id`, `timestamp`, `concept`)
+- [x] Add migration workflow (Alembic baseline + first migration)
 - [ ] Add retention/cleanup strategy for old session records
 
 ---
@@ -164,7 +164,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 
 ### P1 - Stabilization
 - [x] Structured logs + better error handling
-- [ ] DB indexes + migration baseline
+- [x] DB indexes + migration baseline
 - [ ] Hybrid retrieval quality improvement
 
 ### P2 - Demo Polish

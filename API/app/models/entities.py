@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -36,6 +36,12 @@ class LearnerProfile(Base):
 
 class SessionLog(Base):
     __tablename__ = "session_logs"
+    __table_args__ = (
+        Index("idx_session_logs_learner_id", "learner_id"),
+        Index("idx_session_logs_concept", "concept"),
+        Index("idx_session_logs_timestamp", "timestamp"),
+        Index("idx_session_logs_learner_timestamp", "learner_id", "timestamp"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     learner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -47,6 +53,12 @@ class SessionLog(Base):
 
 class AssessmentResult(Base):
     __tablename__ = "assessment_results"
+    __table_args__ = (
+        Index("idx_assessment_results_learner_id", "learner_id"),
+        Index("idx_assessment_results_concept", "concept"),
+        Index("idx_assessment_results_timestamp", "timestamp"),
+        Index("idx_assessment_results_learner_timestamp", "learner_id", "timestamp"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     learner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
@@ -59,6 +71,9 @@ class AssessmentResult(Base):
 
 class ConceptChunk(Base):
     __tablename__ = "concept_chunks"
+    __table_args__ = (
+        Index("idx_concept_chunks_concept_difficulty", "concept", "difficulty"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     concept: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

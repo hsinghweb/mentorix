@@ -39,6 +39,37 @@ async def initialize_database(session: AsyncSession, engine) -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # Ensure indexes also exist for DBs created before index metadata changes.
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_session_logs_learner_id ON session_logs (learner_id)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_session_logs_concept ON session_logs (concept)"))
+        await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_session_logs_timestamp ON session_logs (timestamp)"))
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_session_logs_learner_timestamp "
+                "ON session_logs (learner_id, timestamp)"
+            )
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_assessment_results_learner_id ON assessment_results (learner_id)")
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_assessment_results_concept ON assessment_results (concept)")
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_assessment_results_timestamp ON assessment_results (timestamp)")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_assessment_results_learner_timestamp "
+                "ON assessment_results (learner_id, timestamp)"
+            )
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_concept_chunks_concept_difficulty "
+                "ON concept_chunks (concept, difficulty)"
+            )
+        )
 
     async def seed_chunks():
         existing = await session.execute(text("SELECT COUNT(*) FROM concept_chunks"))
