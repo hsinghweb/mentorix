@@ -68,6 +68,25 @@ Reference docs:
 - **Research/Design Partitions:** `PERCEPTION/`, `MEMORY/`, `DECISION/`, `ACTION/`, `ORCHESTRATOR/`, `AGENT/`, `MODELS/`, `RAG/`
 - **Documentation:** `docs/` (`PLANNER.md`, `DEMO_RUNBOOK.md`)
 
+## HLD Block-to-Code Mapping
+
+- **Student Interface (Web/Mobile):** `frontend/index.html`, `frontend/app.js`, `frontend/styles.css`
+- **API Gateway (FastAPI auth/routing):** `API/app/main.py`, `API/app/core/auth.py`, `API/app/core/errors.py`
+- **Orchestration & Scheduling Engine:** `API/app/runtime/run_manager.py`, `API/app/runtime/graph_context.py`, `API/app/autonomy/scheduler.py`
+- **Agent Manager:** `API/app/runtime/run_manager.py` (agent dispatch + lifecycle control)
+- **Notification Engine:** `API/app/core/notification_engine.py`, `API/app/api/notifications.py`
+- **Multi-Agent System:** `API/app/agents/` (`onboarding.py`, `planner.py`, `content.py`, `assessment.py`, `analytics_evaluation.py`, `compliance.py`, `memory_manager.py`, `reflection.py`)
+- **Knowledge & Memory Layer:** `API/app/models/entities.py`, `API/app/memory/database.py`, `API/app/memory/hubs.py`, `API/app/memory/ingest.py`
+- **RAG & Grounding Layer:** `API/app/rag/retriever.py`, `API/app/rag/embeddings.py`, `API/app/rag/vector_backends.py`
+- **AI Model Layer:** `API/app/core/llm_provider.py`, `API/app/core/model_registry.py`, `CONFIG/models_registry.json`, `CONFIG/models_registry.yaml`
+
+Evaluator-first API entry points:
+- **Core learning flow:** `POST /start-session`, `POST /submit-answer`, `GET /dashboard/{learner_id}`
+- **Runtime orchestration:** `POST /runs/start`, `GET /runs/{run_id}/graph`, `POST /runs/{run_id}/stop`
+- **Notifications:** `GET /notifications`, `POST /notifications/send`
+- **Scheduler:** `GET /scheduler/jobs`, `POST /scheduler/jobs`, `POST /scheduler/jobs/{job_id}/trigger`
+- **Observability:** `GET /metrics/fleet`, `GET /metrics/resilience`, `GET /events/stream`
+
 ## API Contract (Core Endpoints)
 
 ### `POST /start-session`
