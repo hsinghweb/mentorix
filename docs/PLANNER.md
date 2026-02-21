@@ -81,8 +81,8 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [x] Concept chunk retrieval wired into content generation
 
 ### Left
-- [ ] Add true vector similarity retrieval ordering (not concept-only filtering)
-- [ ] Add hybrid retrieval (vector + keyword signal)
+- [x] Add true vector similarity retrieval ordering (not concept-only filtering)
+- [x] Add hybrid retrieval (vector + keyword signal)
 - [x] Implement Gemini content prompt with strict grounding policy:
   - [x] "Only use provided curriculum context"
   - [x] "If missing, explicitly say limitation"
@@ -149,8 +149,8 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 
 ### Left
 - [ ] Update README with current architecture diagram + module map
-- [ ] Add API request/response examples for all endpoints
-- [ ] Add "known limitations" and "v2 plan" section
+- [x] Add API request/response examples for all endpoints
+- [x] Add "known limitations" and "v2 plan" section
 - [x] Add capstone demo script narrative (step-by-step for evaluator)
 
 ---
@@ -168,7 +168,7 @@ Goal: ship a stable end-to-end MVP fast, then polish for capstone demo.
 - [ ] Hybrid retrieval quality improvement
 
 ### P2 - Demo Polish
-- [ ] UI polish and clearer adaptation visualization
+- [x] UI polish and clearer adaptation visualization
 - [x] Final README + architecture docs + demo walkthrough
 
 ---

@@ -35,7 +35,13 @@ function renderStart(data) {
 }
 
 function renderSubmit(data) {
-  el("score").textContent = String(data.score ?? "-");
+  const scoreEl = el("score");
+  const scoreVal = Number(data.score ?? 0);
+  scoreEl.textContent = String(data.score ?? "-");
+  scoreEl.classList.remove("score-good", "score-bad");
+  if (!Number.isNaN(scoreVal)) {
+    scoreEl.classList.add(scoreVal >= 0.6 ? "score-good" : "score-bad");
+  }
   el("errorType").textContent = data.error_type ?? "-";
   el("adaptation").textContent = JSON.stringify(data.adaptation_applied ?? {}, null, 2);
   el("explanation").textContent = data.next_explanation ?? "-";

@@ -100,3 +100,88 @@ Check migration status:
 ```powershell
 uv run alembic -c alembic.ini current
 ```
+
+## API Request/Response Examples
+
+### `POST /start-session`
+Request:
+```json
+{
+  "learner_id": "11111111-1111-1111-1111-111111111111"
+}
+```
+Response (example):
+```json
+{
+  "session_id": "26e36f4a-964b-4925-a31a-a1c6fd60df95",
+  "concept": "quadratic_equations",
+  "difficulty": 2,
+  "explanation": "Generated grounded explanation...",
+  "question": "Solve one practice question for 'quadratic_equations' at difficulty level 2.",
+  "state": "DELIVER"
+}
+```
+
+### `POST /submit-answer`
+Request:
+```json
+{
+  "session_id": "26e36f4a-964b-4925-a31a-a1c6fd60df95",
+  "answer": "Quadratic equations can be solved by factorization...",
+  "response_time": 9.5
+}
+```
+Response (example):
+```json
+{
+  "session_id": "26e36f4a-964b-4925-a31a-a1c6fd60df95",
+  "score": 0.35,
+  "error_type": "concept_mismatch",
+  "adaptation_applied": {
+    "adaptation_score": 0.463,
+    "new_difficulty": 2,
+    "explanation_granularity_level": "normal",
+    "analogy_injection_flag": false,
+    "cooldown_remaining": 1
+  },
+  "next_explanation": "Generated grounded next explanation..."
+}
+```
+
+### `GET /dashboard/{learner_id}`
+Response (example):
+```json
+{
+  "learner_id": "11111111-1111-1111-1111-111111111111",
+  "mastery_map": {
+    "fractions": 0.45,
+    "linear_equations": 0.35,
+    "quadratic_equations": 0.315,
+    "probability": 0.5
+  },
+  "engagement_score": 0.47,
+  "weak_areas": ["quadratic_equations", "linear_equations", "fractions"],
+  "last_sessions": [
+    {
+      "concept": "quadratic_equations",
+      "difficulty_level": 2,
+      "adaptation_score": 0.463,
+      "timestamp": "2026-02-19T14:56:00.05+00:00"
+    }
+  ]
+}
+```
+
+## Known Limitations (MVP)
+- RAG currently uses a small seeded curriculum set; ingestion pipeline is minimal.
+- Retrieval is concept-focused hybrid ranking, not full multi-document search.
+- Assessment scoring is heuristic for MVP (not exam-grade evaluator).
+- No auth/multi-tenant isolation in current MVP.
+- Frontend is no-build static UI (fast for demo, not production UX).
+
+## V2 Roadmap
+- Full curriculum ingestion pipeline with richer chunk metadata.
+- Stronger evaluation engine and misconception taxonomy.
+- Better adaptation controls per learner segment and learning velocity.
+- Auth + role-based access + audit trail hardening.
+- Deeper analytics dashboard and richer learner timeline views.
