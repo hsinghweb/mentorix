@@ -1,23 +1,16 @@
 import logging
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
-
-import httpx
+import json
 
 from app.agents.base import BaseAgent
+from app.core.llm_provider import get_llm_provider
 from app.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
 
 class ContentGenerationAgent(BaseAgent):
-    @staticmethod
-    def _sanitize_gemini_url(raw_url: str) -> str:
-        """Remove API keys from URL query params to avoid leakage in logs."""
-        parsed = urlparse(raw_url)
-        if not parsed.query:
-            return raw_url
-        filtered = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True) if k.lower() != "key"]
-        return urlunparse(parsed._replace(query=urlencode(filtered)))
+    def __init__(self):
+        self.provider = get_llm_provider()
 
     @staticmethod
     def _template_response(concept: str, difficulty: int, context: str) -> dict:
@@ -33,40 +26,6 @@ class ContentGenerationAgent(BaseAgent):
             "breakdown": ["Understand definition", "Apply rule", "Check result"],
             "source": "template",
         }
-
-    async def _gemini_generate(self, prompt: str) -> str | None:
-        if settings.llm_provider.lower() != "gemini":
-            return None
-        if not settings.gemini_api_key:
-            return None
-
-        api_url = settings.gemini_api_url.strip()
-        if not api_url:
-            api_url = (
-                f"https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{settings.llm_model}:generateContent"
-            )
-        api_url = self._sanitize_gemini_url(api_url)
-
-        payload = {
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 700},
-        }
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(
-                api_url,
-                json=payload,
-                headers={"x-goog-api-key": settings.gemini_api_key},
-            )
-            response.raise_for_status()
-            data = response.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                return None
-            parts = candidates[0].get("content", {}).get("parts", [])
-            text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
-            return text or None
 
     async def run(self, input_data: dict) -> dict:
         concept = input_data["concept"]
@@ -88,16 +47,28 @@ class ContentGenerationAgent(BaseAgent):
             "3) 3-step breakdown\n"
         )
 
-        try:
-            llm_text = await self._gemini_generate(prompt)
-            if llm_text:
-                return {
-                    "explanation": llm_text,
-                    "examples": [f"Example 1 for {concept}", f"Example 2 for {concept}"],
-                    "breakdown": ["Understand definition", "Apply rule", "Check result"],
-                    "source": "gemini",
-                }
-        except Exception as exc:
-            logger.warning("Gemini generation failed. Falling back to template: %s", exc)
+        # Guardrail: one retry before deterministic fallback.
+        for attempt in range(2):
+            try:
+                llm_text, usage = await self.provider.generate(prompt)
+                logger.info(
+                    json.dumps(
+                        {
+                            "type": "llm_usage",
+                            "agent": "content",
+                            "attempt": attempt + 1,
+                            "usage": usage,
+                        }
+                    )
+                )
+                if llm_text:
+                    return {
+                        "explanation": llm_text,
+                        "examples": [f"Example 1 for {concept}", f"Example 2 for {concept}"],
+                        "breakdown": ["Understand definition", "Apply rule", "Check result"],
+                        "source": settings.llm_provider.lower(),
+                    }
+            except Exception as exc:
+                logger.warning("LLM generation failed (attempt %s). Falling back path continues: %s", attempt + 1, exc)
 
         return self._template_response(concept, difficulty, context)

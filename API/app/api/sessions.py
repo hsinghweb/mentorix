@@ -15,9 +15,10 @@ from app.agents.planner import CurriculumPlannerAgent
 from app.agents.reflection import ReflectionAgent
 from app.memory.cache import redis_client
 from app.memory.database import get_db
-from app.models.entities import AssessmentResult, Learner, LearnerProfile, SessionLog
+from app.models.entities import AssessmentResult, GeneratedArtifact, Learner, LearnerProfile, SessionLog
 from app.orchestrator.engine import StateEngine
 from app.orchestrator.states import SessionState
+from app.rag.embeddings import embed_text
 from app.rag.retriever import retrieve_concept_chunks
 from app.schemas.session import (
     DashboardResponse,
@@ -253,6 +254,15 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
             adaptation_score=adaptation["adaptation_score"],
         )
     )
+    db.add(
+        GeneratedArtifact(
+            learner_id=learner_id,
+            concept=concept,
+            artifact_type="explanation",
+            content=content["explanation"],
+            embedding=embed_text(f"{concept}. {content['explanation']}"),
+        )
+    )
     await db.commit()
     _log_state_transition(
         session_id=session_id,
@@ -386,6 +396,16 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
             "retrieved_chunks": chunks,
         }
     )
+    db.add(
+        GeneratedArtifact(
+            learner_id=learner_id,
+            concept=concept,
+            artifact_type="next_explanation",
+            content=content["explanation"],
+            embedding=embed_text(f"{concept}. {content['explanation']}"),
+        )
+    )
+    await db.commit()
 
     await redis_client.hset(
         session_key,

@@ -81,3 +81,20 @@ class ConceptChunk(Base):
     difficulty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(settings.embedding_dimensions), nullable=False)
+
+
+class GeneratedArtifact(Base):
+    __tablename__ = "generated_artifacts"
+    __table_args__ = (
+        Index("idx_generated_artifacts_concept", "concept"),
+        Index("idx_generated_artifacts_type", "artifact_type"),
+        Index("idx_generated_artifacts_created_at", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    learner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    concept: Mapped[str] = mapped_column(String(128), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(64), nullable=False, default="explanation")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(settings.embedding_dimensions), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

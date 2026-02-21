@@ -80,7 +80,10 @@ def test_failure_gemini_unavailable_uses_template_fallback(client, monkeypatch):
     async def _raise_gemini_error(_prompt: str):
         raise RuntimeError("gemini unavailable")
 
-    monkeypatch.setattr(sessions_module.content_agent, "_gemini_generate", _raise_gemini_error)
+    async def _broken_generate(prompt: str):
+        await _raise_gemini_error(prompt)
+
+    monkeypatch.setattr(sessions_module.content_agent.provider, "generate", _broken_generate)
 
     learner_id = str(uuid.uuid4())
     start = client.post("/start-session", json={"learner_id": learner_id})

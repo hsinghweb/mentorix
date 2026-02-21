@@ -3,8 +3,10 @@ import re
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.entities import ConceptChunk
+from app.core.settings import settings
+from app.models.entities import ConceptChunk, GeneratedArtifact
 from app.rag.embeddings import embed_text
+from app.rag.vector_backends import get_vector_backend
 
 
 def _tokenize(text: str) -> set[str]:
@@ -13,6 +15,14 @@ def _tokenize(text: str) -> set[str]:
 
 def _keyword_score(query_tokens: set[str], chunk: ConceptChunk) -> float:
     hay_tokens = _tokenize(f"{chunk.concept} {chunk.content}")
+    if not query_tokens or not hay_tokens:
+        return 0.0
+    overlap = len(query_tokens.intersection(hay_tokens))
+    return overlap / max(1, len(query_tokens))
+
+
+def _keyword_score_text(query_tokens: set[str], text: str) -> float:
+    hay_tokens = _tokenize(text)
     if not query_tokens or not hay_tokens:
         return 0.0
     overlap = len(query_tokens.intersection(hay_tokens))
@@ -39,9 +49,9 @@ async def retrieve_concept_chunks(
     stmt = stmt.limit(max(top_k * 6, 12))
 
     rows: list[ConceptChunk] = []
+    backend = get_vector_backend()
     try:
-        # Prefer semantic ordering in DB if pgvector comparator is available.
-        semantic_stmt = stmt.order_by(ConceptChunk.embedding.cosine_distance(query_vec))
+        semantic_stmt = backend.order_concept_chunks(stmt, query_vec)
         rows = (await db.execute(semantic_stmt)).scalars().all()
     except Exception:
         rows = (await db.execute(stmt)).scalars().all()
@@ -54,5 +64,17 @@ async def retrieve_concept_chunks(
         hybrid_score = (0.75 * semantic_score) + (0.25 * keyword_score)
         scored.append((hybrid_score, row))
 
+    if settings.include_generated_artifacts_in_retrieval:
+        artifact_stmt: Select = (
+            select(GeneratedArtifact)
+            .where(GeneratedArtifact.concept == concept)
+            .order_by(GeneratedArtifact.created_at.desc())
+            .limit(max(1, settings.generated_artifacts_top_k))
+        )
+        artifact_rows = (await db.execute(artifact_stmt)).scalars().all()
+        for a in artifact_rows:
+            keyword_score = _keyword_score_text(query_tokens, f"{a.concept} {a.content}")
+            scored.append((0.45 + (0.25 * keyword_score), a))
+
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [chunk.content for _score, chunk in scored[:top_k]]
+    return [item.content for _score, item in scored[:top_k]]

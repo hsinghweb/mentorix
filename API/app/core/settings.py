@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     embedding_provider: str = "ollama"
     embedding_model: str = "nomic-embed-text"
     embedding_dimensions: int = 768
+    vector_backend: str = "pgvector"
+    include_generated_artifacts_in_retrieval: bool = True
+    generated_artifacts_top_k: int = 2
     web_search_provider: str = "duckduckgo"
 
     max_state_transitions: int = 10

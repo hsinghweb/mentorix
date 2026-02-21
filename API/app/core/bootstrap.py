@@ -70,6 +70,15 @@ async def initialize_database(session: AsyncSession, engine) -> None:
                 "ON concept_chunks (concept, difficulty)"
             )
         )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_generated_artifacts_concept ON generated_artifacts (concept)")
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_generated_artifacts_type ON generated_artifacts (artifact_type)")
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_generated_artifacts_created_at ON generated_artifacts (created_at)")
+        )
 
         if settings.retention_cleanup_enabled and settings.session_retention_days > 0:
             params = {"days": settings.session_retention_days}
