@@ -2,7 +2,32 @@
 
 Mentorix: An Autonomous Agentic AI System for Personalized Learning.
 
-## Run with Docker (recommended)
+## Evaluator Quick Path (3-5 minutes)
+
+Use this path if you are reviewing the capstone quickly.
+
+1) Start stack:
+```powershell
+docker compose up --build -d
+```
+2) Run readiness + smoke:
+```powershell
+./scripts/check_ready.ps1
+./scripts/test_mvp.ps1
+```
+3) (Optional) Open UI:
+```powershell
+cd frontend
+python -m http.server 5500
+```
+Open `http://localhost:5500` (API default: `http://localhost:8000`).
+
+Expected outcome:
+- API health is green
+- Session lifecycle works (`start-session -> submit-answer -> dashboard`)
+- Adaptive response is visible in `adaptation_applied`
+
+## Run with Docker (full)
 
 ### 1) Prerequisites
 - Docker Desktop (Windows/Mac) or Docker Engine + Compose plugin (Linux)
@@ -50,6 +75,12 @@ This creates:
 ./scripts/load_images.ps1
 docker compose up -d
 ```
+
+## Architecture Intent (MVP)
+- Deterministic orchestration + specialized agents for learning flow.
+- Curriculum-grounded generation (RAG-backed, with safe fallbacks).
+- Closed-loop adaptation from learner response + timing signals.
+- Explainability-oriented outputs via structured adaptation/evaluation fields.
 
 ## Notes
 - `CONFIG/local.env` is intentionally included with safe defaults for quick startup.
@@ -101,7 +132,7 @@ Check migration status:
 uv run alembic -c alembic.ini current
 ```
 
-## API Request/Response Examples
+## API Contract Examples
 
 ### `POST /start-session`
 Request:
@@ -171,6 +202,12 @@ Response (example):
   ]
 }
 ```
+
+## What Evaluators Should Verify
+- **Autonomy:** system continues through planned states without manual prompt engineering.
+- **Adaptation:** `submit-answer` output changes instructional direction using score + response-time signals.
+- **Grounding:** generated lesson text remains curriculum-aligned and concept-focused.
+- **Traceability:** outputs include interpretable fields (`error_type`, `adaptation_applied`, `weak_areas`).
 
 ## Known Limitations (MVP)
 - RAG currently uses a small seeded curriculum set; ingestion pipeline is minimal.
