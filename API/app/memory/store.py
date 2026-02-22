@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,29 @@ from app.core.settings import settings
 
 HUB_KEYS = ("learner_preferences", "operating_context", "soft_identity")
 logger = logging.getLogger(__name__)
+SENSITIVE_KEYS = {"password", "pass", "passwd", "secret", "token", "api_key", "authorization"}
+
+
+def _redact_payload(value):
+    if isinstance(value, dict):
+        output = {}
+        for key, inner in value.items():
+            key_lower = str(key).lower()
+            if key_lower in SENSITIVE_KEYS:
+                output[key] = "***REDACTED***"
+            else:
+                output[key] = _redact_payload(inner)
+        return output
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    return value
+
+
+def _sanitize_mongo_error(raw: str) -> str:
+    if not raw:
+        return raw
+    # Hide credentials embedded in connection URLs.
+    return re.sub(r"(mongodb(?:\+srv)?://)([^/@\s]+)@", r"\1***:***@", raw)
 
 
 class MemoryStore(ABC):
@@ -62,14 +86,14 @@ class FileMemoryStore(MemoryStore):
         if hub_type not in self.hub_files:
             raise ValueError(f"Unsupported hub_type: {hub_type}")
         existing = self._read_json(self.hub_files[hub_type], {})
-        existing[item_key] = payload
+        existing[item_key] = _redact_payload(payload)
         self._write_json(self.hub_files[hub_type], existing)
 
     def get_all_hubs(self) -> dict[str, dict]:
         return {hub: self._read_json(self.hub_files[hub], {}) for hub in HUB_KEYS}
 
     def save_snapshot(self, payload: dict) -> None:
-        self._write_json(self.snapshot_file, payload)
+        self._write_json(self.snapshot_file, _redact_payload(payload))
 
     def load_latest_snapshot(self) -> dict:
         return self._read_json(self.snapshot_file, {"active_runs": []})
@@ -77,7 +101,7 @@ class FileMemoryStore(MemoryStore):
     def save_episode(self, skeleton: dict) -> None:
         run_id = str(skeleton.get("run_id") or "unknown")
         target = self.episodes_base / f"skeleton_{run_id}.json"
-        self._write_json(target, skeleton)
+        self._write_json(target, _redact_payload(skeleton))
 
 
 class MongoMemoryStore(MemoryStore):
@@ -103,6 +127,18 @@ class MongoMemoryStore(MemoryStore):
         self._snapshots.create_index([("timestamp", self._DESC)], name="ix_snapshots_timestamp_desc")
         self._episodes.create_index([("run_id", self._ASC)], unique=True, name="ux_episodes_run_id")
         self._episodes.create_index([("updated_at", self._DESC)], name="ix_episodes_updated_at_desc")
+        if settings.mongodb_snapshots_ttl_days > 0:
+            self._snapshots.create_index(
+                [("timestamp_dt", self._DESC)],
+                name="ix_snapshots_timestamp_dt_ttl",
+                expireAfterSeconds=int(settings.mongodb_snapshots_ttl_days) * 86400,
+            )
+        if settings.mongodb_episodes_ttl_days > 0:
+            self._episodes.create_index(
+                [("updated_at_dt", self._DESC)],
+                name="ix_episodes_updated_at_dt_ttl",
+                expireAfterSeconds=int(settings.mongodb_episodes_ttl_days) * 86400,
+            )
 
     def upsert_hub_entry(self, hub_type: str, item_key: str, payload: dict, learner_id: str | None = None) -> None:
         if hub_type not in HUB_KEYS:
@@ -112,7 +148,7 @@ class MongoMemoryStore(MemoryStore):
             {"hub_type": hub_type, "item_key": item_key},
             {
                 "$set": {
-                    "payload": payload,
+                    "payload": _redact_payload(payload),
                     "learner_id": learner_id,
                     "updated_at": now,
                 }
@@ -133,6 +169,7 @@ class MongoMemoryStore(MemoryStore):
     def save_snapshot(self, payload: dict) -> None:
         doc = dict(payload)
         doc.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+        doc.setdefault("timestamp_dt", datetime.now(timezone.utc))
         self._snapshots.insert_one(doc)
 
     def load_latest_snapshot(self) -> dict:
@@ -144,8 +181,9 @@ class MongoMemoryStore(MemoryStore):
 
     def save_episode(self, skeleton: dict) -> None:
         run_id = str(skeleton.get("run_id") or "unknown")
-        doc = dict(skeleton)
+        doc = _redact_payload(dict(skeleton))
         doc["run_id"] = run_id
+        doc["updated_at_dt"] = datetime.now(timezone.utc)
         self._episodes.replace_one({"run_id": run_id}, doc, upsert=True)
 
 
@@ -245,7 +283,7 @@ def _mongo_ping() -> tuple[bool, str | None]:
         client.admin.command("ping")
         return True, None
     except Exception as exc:  # noqa: BLE001
-        return False, str(exc)
+        return False, _sanitize_mongo_error(str(exc))
 
 
 def get_memory_runtime_status() -> dict:

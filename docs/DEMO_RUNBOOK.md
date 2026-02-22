@@ -48,6 +48,11 @@ Outputs:
 - Backfill parity report: `API/data/system/reports/memory_backfill_report.json`
 - Optional backup export: `API/data/system/export_from_mongo/`
 
+Quick runtime check:
+```powershell
+Invoke-RestMethod -Method GET -Uri "http://localhost:8000/memory/status"
+```
+
 ## 4) Frontend demo
 ```powershell
 cd frontend

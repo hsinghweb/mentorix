@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     mongodb_db_name: str = "mentorix"
     memory_store_backend: str = "mongo"
     memory_dual_write: bool = False
+    mongodb_snapshots_ttl_days: int = 0
+    mongodb_episodes_ttl_days: int = 0
     session_ttl_seconds: int = 3600
     retention_cleanup_enabled: bool = True
     session_retention_days: int = 30
