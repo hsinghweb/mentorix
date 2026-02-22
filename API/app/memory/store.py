@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.core.settings import settings
@@ -107,7 +107,7 @@ class MongoMemoryStore(MemoryStore):
     def upsert_hub_entry(self, hub_type: str, item_key: str, payload: dict, learner_id: str | None = None) -> None:
         if hub_type not in HUB_KEYS:
             raise ValueError(f"Unsupported hub_type: {hub_type}")
-        now = datetime.now(datetime.UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         self._hubs.update_one(
             {"hub_type": hub_type, "item_key": item_key},
             {
@@ -132,7 +132,7 @@ class MongoMemoryStore(MemoryStore):
 
     def save_snapshot(self, payload: dict) -> None:
         doc = dict(payload)
-        doc.setdefault("timestamp", datetime.now(datetime.UTC).isoformat())
+        doc.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
         self._snapshots.insert_one(doc)
 
     def load_latest_snapshot(self) -> dict:
@@ -235,4 +235,39 @@ def build_memory_store() -> MemoryStore:
 
 
 memory_store = build_memory_store()
+
+
+def _mongo_ping() -> tuple[bool, str | None]:
+    try:
+        from pymongo import MongoClient
+
+        client = MongoClient(settings.mongodb_url, serverSelectionTimeoutMS=3000)
+        client.admin.command("ping")
+        return True, None
+    except Exception as exc:  # noqa: BLE001
+        return False, str(exc)
+
+
+def get_memory_runtime_status() -> dict:
+    configured_backend = settings.memory_store_backend.strip().lower()
+    dual_write_enabled = settings.memory_dual_write
+
+    if dual_write_enabled:
+        active_mode = "dual_write_file_read"
+    elif isinstance(memory_store, MongoMemoryStore):
+        active_mode = "mongo"
+    else:
+        active_mode = "file"
+
+    mongo_ok, mongo_error = _mongo_ping()
+    return {
+        "configured_backend": configured_backend,
+        "active_mode": active_mode,
+        "dual_write_enabled": dual_write_enabled,
+        "mongo": {
+            "connected": mongo_ok,
+            "db_name": settings.mongodb_db_name,
+            "error": mongo_error,
+        },
+    }
 

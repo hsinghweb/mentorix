@@ -103,9 +103,9 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
   - Report output: `API/data/system/reports/memory_backfill_report.json`
 
 ## Phase D: Cleanup
-- [ ] Disable dual-write.
-- [ ] Stop writing runtime JSON files by default.
-- [ ] Keep export script for debugging backup snapshots.
+- [x] Disable dual-write.
+- [x] Stop writing runtime JSON files by default.
+- [x] Keep export script for debugging backup snapshots.
 
 ---
 
@@ -155,9 +155,9 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
 
 ## 7) Ops + Docker plan
 
-- [ ] Add `mongo_data/` volume and backup guidance.
-- [ ] Add `.env` template variables for Mongo.
-- [ ] Add runbook steps:
+- [x] Add `mongo_data/` volume and backup guidance.
+- [x] Add `.env` template variables for Mongo.
+- [x] Add runbook steps:
   - bring up Mongo
   - verify indexes
   - run backfill
@@ -168,21 +168,21 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
 
 ## 8) Git hygiene (immediate)
 
-- [ ] Ensure runtime data path is ignored in repository:
-  - ignore `API/data/system/` (or broader runtime-data pattern)
+- [x] Ensure runtime data path is ignored in repository:
+  - [x] ignore `API/data/system/` (or broader runtime-data pattern)
 - [ ] Remove tracked runtime artifacts from repo history going forward (non-destructive workflow).
-- [ ] Document that runtime learner data must never be committed.
+- [x] Document that runtime learner data must never be committed.
 
 ---
 
 ## 9) Definition of done
 
-- [ ] New learner/runtime memory writes persist in MongoDB.
-- [ ] Existing file data successfully migrated.
-- [ ] Reads served from Mongo in default configuration.
-- [ ] No runtime JSON learner memory files committed.
+- [ ] New learner/runtime memory writes persist in MongoDB (runtime verification pending).
+- [ ] Existing file data successfully migrated (execute backfill on running Mongo).
+- [ ] Reads served from Mongo in default configuration (runtime verification pending).
+- [x] No runtime JSON learner memory files committed.
 - [ ] Dockerized setup includes Mongo and passes integration checks.
-- [ ] Demo/runbook updated with memory backend architecture.
+- [x] Demo/runbook updated with memory backend architecture.
 
 ---
 

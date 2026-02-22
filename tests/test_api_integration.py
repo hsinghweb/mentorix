@@ -161,3 +161,14 @@ def test_failure_gemini_unavailable_uses_template_fallback(client, monkeypatch):
     data = start.json()
     # Template fallback includes this phrase in the deterministic response body.
     assert "Grounded curriculum notes" in data["explanation"]
+
+
+def test_memory_status_endpoint_shape(client):
+    response = client.get("/memory/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert "configured_backend" in body
+    assert "active_mode" in body
+    assert "dual_write_enabled" in body
+    assert "mongo" in body
+    assert "connected" in body["mongo"]

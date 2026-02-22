@@ -35,6 +35,19 @@ Notes:
 - `syllabus.txt` is auto-preferred if present beside `syllabus.pdf`.
 - This ensures embeddings are precomputed before learner session flow.
 
+## 3.2) Memory migration + backup ops (NoSQL)
+Use this once (or when needed) to keep runtime memory fully in MongoDB.
+
+```powershell
+cd API
+uv run python scripts/backfill_memory_to_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix
+uv run python scripts/export_memory_from_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix --out-dir data/system/export_from_mongo
+```
+
+Outputs:
+- Backfill parity report: `API/data/system/reports/memory_backfill_report.json`
+- Optional backup export: `API/data/system/export_from_mongo/`
+
 ## 4) Frontend demo
 ```powershell
 cd frontend

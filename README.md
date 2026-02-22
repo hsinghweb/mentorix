@@ -39,6 +39,17 @@ Grounding endpoints:
 - `GET /grounding/status` -> readiness check (missing files / missing embeddings)
 - `POST /grounding/ingest` -> run ingestion (`?force_rebuild=true` optional)
 
+## Runtime Memory Backend (MongoDB default)
+
+- Runtime learner/system memory now defaults to **MongoDB** via `MEMORY_STORE_BACKEND=mongo`.
+- File-based JSON memory storage is kept only as an optional compatibility mode.
+- Migration/backfill command:
+  - `cd API`
+  - `uv run python scripts/backfill_memory_to_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix`
+- Optional export backup command (Mongo -> JSON files):
+  - `cd API`
+  - `uv run python scripts/export_memory_from_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix --out-dir data/system/export_from_mongo`
+
 ## Session 19 Additions (Visible in Demo)
 
 - **System 2 reasoning:** content generation runs a bounded Draft-Verify-Refine loop with trace artifacts.
