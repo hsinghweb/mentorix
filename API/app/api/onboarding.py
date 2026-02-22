@@ -206,6 +206,18 @@ def _weekly_forecast_adjustment(*, decision: str, score: float, threshold: float
     return 0
 
 
+def _adaptive_pace_extend_compress(
+    selected_weeks: int, current_forecast_weeks: int
+) -> int:
+    """Adaptive pace: behind -> extend (+1 week); ahead -> compress (-1 week, not below min). Returns delta to add."""
+    delta = current_forecast_weeks - selected_weeks
+    if delta >= 2:
+        return 1  # behind: extend
+    if delta <= -1 and current_forecast_weeks > TIMELINE_MIN_WEEKS:
+        return -1  # ahead: compress carefully (don't go below min)
+    return 0
+
+
 async def _upsert_revision_queue_item(
     *, db: AsyncSession, learner_id: UUID, chapter: str, reason: str, priority: int = 1
 ) -> None:
@@ -1027,6 +1039,9 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
     baseline_forecast = int(profile.current_forecast_weeks or recommended_weeks)
     forecast_delta = _weekly_forecast_adjustment(decision=decision, score=score, threshold=threshold)
     current_forecast_weeks = _clamp_weeks(baseline_forecast + forecast_delta)
+    # Adaptive pace: behind -> extend; ahead -> compress carefully
+    adaptive_delta = _adaptive_pace_extend_compress(selected_weeks, current_forecast_weeks)
+    current_forecast_weeks = _clamp_weeks(current_forecast_weeks + adaptive_delta)
     timeline_delta_weeks = current_forecast_weeks - selected_weeks
     pacing_status = _pacing_status(timeline_delta_weeks)
 

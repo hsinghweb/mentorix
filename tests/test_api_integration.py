@@ -102,6 +102,75 @@ def test_onboarding_timeline_bounds_validation(client):
     assert response.status_code == 422
 
 
+def test_onboarding_diagnostic_to_profile_timeline_integration(client, monkeypatch):
+    """Full onboarding start -> submit; assert timeline bounds and recommendation payload."""
+    from app.api import onboarding as onboarding_module
+
+    # One chunk: content chosen so _extract_keywords last word is "clear" for fill_blank
+    class MockChunk:
+        content = "Something good and clear."
+        chapter_number = 1
+
+    async def _mock_get_diagnostic_chunks(_db):
+        return [MockChunk()]
+
+    monkeypatch.setattr(onboarding_module, "_get_diagnostic_chunks", _mock_get_diagnostic_chunks)
+
+    start = client.post(
+        "/onboarding/start",
+        json={
+            "name": "Finish Line Learner",
+            "grade_level": "10",
+            "exam_in_months": 10,
+            "selected_timeline_weeks": 16,
+        },
+    )
+    assert start.status_code == 200, start.text
+    start_data = start.json()
+    learner_id = start_data["learner_id"]
+    diagnostic_attempt_id = start_data["diagnostic_attempt_id"]
+    questions = start_data.get("questions", [])
+
+    answers = []
+    for q in questions:
+        qid, qtype = q["question_id"], q.get("question_type", "")
+        if qtype == "true_false":
+            answers.append({"question_id": qid, "answer": "true"})
+        elif qtype == "fill_blank":
+            answers.append({"question_id": qid, "answer": "clear"})
+        elif qtype == "mcq":
+            answers.append({"question_id": qid, "answer": "1"})
+
+    submit = client.post(
+        "/onboarding/submit",
+        json={
+            "learner_id": learner_id,
+            "diagnostic_attempt_id": diagnostic_attempt_id,
+            "answers": answers,
+            "time_spent_minutes": 15,
+        },
+    )
+    assert submit.status_code == 200, submit.text
+    body = submit.json()
+
+    assert "recommended_timeline_weeks" in body
+    assert "current_forecast_weeks" in body
+    assert "timeline_delta_weeks" in body
+    assert "timeline_recommendation_note" in body
+    assert "selected_timeline_weeks" in body
+
+    rec = int(body["recommended_timeline_weeks"])
+    curr = int(body["current_forecast_weeks"])
+    delta = int(body["timeline_delta_weeks"])
+    assert 14 <= rec <= 28
+    assert 14 <= curr <= 28
+    assert curr - body["selected_timeline_weeks"] == delta
+    assert isinstance(body["timeline_recommendation_note"], str) and len(body["timeline_recommendation_note"]) > 0
+    assert isinstance(body.get("rough_plan"), list)
+    assert isinstance(body.get("profile_snapshot"), dict)
+    assert body["profile_snapshot"].get("current_forecast_weeks") == curr
+
+
 def test_weekly_replan_policy_flow(client):
     learner_id = str(uuid.uuid4())
     # Ensures learner/profile exists through existing stable MVP flow.

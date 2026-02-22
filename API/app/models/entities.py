@@ -178,6 +178,33 @@ class EmbeddingChunk(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SyllabusHierarchy(Base):
+    """Chapter > section > concept hierarchy parsed from syllabus/chapter documents."""
+    __tablename__ = "syllabus_hierarchy"
+    __table_args__ = (
+        Index("idx_syllabus_hierarchy_document_id", "document_id"),
+        Index("idx_syllabus_hierarchy_parent_id", "parent_id"),
+        Index("idx_syllabus_hierarchy_type", "type"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("curriculum_documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("syllabus_hierarchy.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    type: Mapped[str] = mapped_column(String(32), nullable=False)  # chapter | section | concept
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class IngestionRun(Base):
     __tablename__ = "ingestion_runs"
     __table_args__ = (

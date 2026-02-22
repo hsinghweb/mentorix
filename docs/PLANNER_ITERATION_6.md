@@ -3,6 +3,8 @@
 Status date: 2026-02-21  
 Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive, multi-agent learning platform for Class 10 CBSE Mathematics.
 
+**Submission finish line:** See `docs/SUBMISSION_FINISH_LINE.md` for remaining unchecked items split into backend-critical vs frontend/demo-later.
+
 ---
 
 ## 0) North-Star Outcomes
@@ -459,8 +461,8 @@ Exit criteria:
 
 ## Reliability Tests
 - [x] fallback behavior tests
-- [ ] scheduler restart/state recovery tests
-- [ ] load test (small local profile)
+- [x] scheduler restart/state recovery tests
+- [x] load test (small local profile)
 
 ---
 

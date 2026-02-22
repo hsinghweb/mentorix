@@ -175,6 +175,9 @@ Response fields:
 Write-route idempotency support:
 - `POST /submit-answer`, `POST /onboarding/weekly-replan`, and `POST /onboarding/tasks/{task_id}/complete` accept optional `idempotency_key` in request body for safe retries.
 
+Reliability regression checks:
+- `uv run pytest ../tests/test_reliability_scheduler.py -q` -> scheduler restart/state recovery + small local load profile smoke
+
 ## Key References for Review
 
 - Demo flow: `docs/DEMO_RUNBOOK.md`

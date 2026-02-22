@@ -1,6 +1,7 @@
 import hashlib
 import logging
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.settings import settings
-from app.models.entities import CurriculumDocument, EmbeddingChunk, IngestionRun
+from app.models.entities import CurriculumDocument, EmbeddingChunk, IngestionRun, SyllabusHierarchy
 from app.rag.embeddings import embed_text
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,68 @@ def _extract_chapter_num(path: Path) -> int | None:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _parse_syllabus_hierarchy(
+    raw_text: str, doc_type: str, doc_chapter_number: int | None
+) -> list[dict]:
+    """Parse chapter > section > concept from document text. Returns list of dicts with type, title, sort_order, chapter_number."""
+    items: list[dict] = []
+    lines = (raw_text or "").splitlines()
+    sort_order = 0
+
+    # For a chapter doc we may have a single chapter (doc_chapter_number) and sections/concepts inside.
+    current_chapter_num = doc_chapter_number
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Chapter: "Chapter 1", "CHAPTER 1", "Ch. 1", or "1. Title"
+        chapter_match = re.match(r"(?i)^(?:chapter|ch\.?)\s*(\d+)\s*[.:\-]?\s*(.*)$", line)
+        if chapter_match:
+            current_chapter_num = int(chapter_match.group(1))
+            title = (chapter_match.group(2) or f"Chapter {current_chapter_num}").strip() or f"Chapter {current_chapter_num}"
+            items.append({"type": "chapter", "title": title, "sort_order": sort_order, "chapter_number": current_chapter_num})
+            sort_order += 1
+            continue
+
+        num_dot_title = re.match(r"^\s*(\d+)\s*[.:]\s+(.+)$", line)
+        if num_dot_title and not re.match(r"^\d+\.\d+", line):
+            # "1. Introduction" style chapter
+            n = int(num_dot_title.group(1))
+            if 1 <= n <= 15 and (current_chapter_num is None or n == current_chapter_num):
+                current_chapter_num = n
+                title = num_dot_title.group(2).strip()
+                items.append({"type": "chapter", "title": title or f"Chapter {n}", "sort_order": sort_order, "chapter_number": n})
+                sort_order += 1
+            continue
+
+        # Section: "1.1", "1.1 Real Numbers", "Section 1.1"
+        section_match = re.match(r"(?i)^(?:section\s+)?(\d+)\.(\d+)\s*[.:\-]?\s*(.*)$", line)
+        if section_match:
+            ch_num = int(section_match.group(1))
+            title = (section_match.group(3) or f"{section_match.group(1)}.{section_match.group(2)}").strip()
+            items.append({"type": "section", "title": title, "sort_order": sort_order, "chapter_number": ch_num})
+            sort_order += 1
+            continue
+
+        # Concept: "Concept:", "• concept name"
+        if line.lower().startswith("concept:") or re.match(r"^[•\-]\s+", line):
+            title = re.sub(r"^(?i)concept:\s*", "", line).strip()
+            title = re.sub(r"^[•\-]\s+", "", title).strip()
+            if title:
+                items.append({"type": "concept", "title": title, "sort_order": sort_order, "chapter_number": current_chapter_num})
+                sort_order += 1
+
+    # If doc is a single chapter and we found no chapters but have doc_chapter_number, add one chapter node
+    if doc_type == "chapter" and doc_chapter_number is not None and not any(i["type"] == "chapter" for i in items):
+        items.insert(0, {"type": "chapter", "title": f"Chapter {doc_chapter_number}", "sort_order": 0, "chapter_number": doc_chapter_number})
+        for i in items[1:]:
+            i["sort_order"] = i["sort_order"] + 1
+
+    return items
 
 
 def _split_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
@@ -203,6 +266,55 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
                 total_documents += 1
                 total_chunks += existing_chunk_count
                 continue
+
+            await db.execute(delete(SyllabusHierarchy).where(SyllabusHierarchy.document_id == existing_doc.id))
+            hierarchy_items = _parse_syllabus_hierarchy(raw_text, doc.doc_type, doc.chapter_number)
+            last_chapter_id: uuid.UUID | None = None
+            last_section_id: uuid.UUID | None = None
+            for item in hierarchy_items:
+                parent_id = None
+                if item["type"] == "chapter":
+                    last_chapter_id = uuid.uuid4()
+                    last_section_id = None
+                    db.add(
+                        SyllabusHierarchy(
+                            id=last_chapter_id,
+                            document_id=existing_doc.id,
+                            parent_id=None,
+                            type="chapter",
+                            title=item["title"][:512],
+                            sort_order=item["sort_order"],
+                            chapter_number=item.get("chapter_number"),
+                        )
+                    )
+                    continue
+                if item["type"] == "section":
+                    last_section_id = uuid.uuid4()
+                    parent_id = last_chapter_id
+                    db.add(
+                        SyllabusHierarchy(
+                            id=last_section_id,
+                            document_id=existing_doc.id,
+                            parent_id=parent_id,
+                            type="section",
+                            title=item["title"][:512],
+                            sort_order=item["sort_order"],
+                            chapter_number=item.get("chapter_number"),
+                        )
+                    )
+                    continue
+                if item["type"] == "concept":
+                    parent_id = last_section_id if last_section_id else last_chapter_id
+                    db.add(
+                        SyllabusHierarchy(
+                            document_id=existing_doc.id,
+                            parent_id=parent_id,
+                            type="concept",
+                            title=item["title"][:512],
+                            sort_order=item["sort_order"],
+                            chapter_number=item.get("chapter_number"),
+                        )
+                    )
 
             await db.execute(delete(EmbeddingChunk).where(EmbeddingChunk.document_id == existing_doc.id))
             for idx, chunk in enumerate(chunks):
