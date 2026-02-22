@@ -31,10 +31,131 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 
 ## 1) Execution Strategy (Phased)
 
+## 1A) Strict Implementation Sequence (Backend-First Vertical Slices)
+
+Use this order as the execution source of truth. Do not start later slices before exit criteria of the current slice are met.
+
+### Slice 0 - Platform Prerequisites (already completed)
+1. Complete NoSQL memory migration gate (`docs/PLANNER_NOSQL_MEMORY_MIGRATION.md`).
+2. Ensure Postgres + pgvector + Redis + Mongo local stack is healthy.
+3. Confirm grounding pre-work readiness check is available.
+
+Exit criteria:
+- `/memory/status` healthy in local secured flow.
+- backfill parity report generated.
+- runtime memory files are not tracked in git.
+
+### Slice 1 - Onboarding Timeline Contract + Diagnostic Core (backend first)
+1. Add onboarding request/response contract for:
+   - `selected_timeline_weeks` (bounded `14`-`28`)
+   - `recommended_timeline_weeks`
+   - `current_forecast_weeks`
+   - `timeline_delta_weeks`
+2. Enforce validation bounds and policy errors in API.
+3. Persist timeline fields to profile domain.
+4. Generate diagnostic and scoring-driven recommendation.
+5. Return student goal vs Mentorix recommendation in onboarding response.
+
+Exit criteria:
+- onboarding integration test passes with timeline bounds + recommendation.
+- Swagger examples show selected vs recommended timeline.
+
+### Slice 2 - Week-1 Commit + Forecast-Only Long-Range Plan
+1. Build long-range roadmap from timeline selection/recommendation.
+2. Commit only current week schedule (immutable committed set).
+3. Keep future weeks as read-only forecast projection.
+4. Persist weekly plan version + weekly forecast snapshot.
+5. Expose plan API with:
+   - active week tasks
+   - remaining forecast
+   - completion estimate vs selected goal.
+
+Exit criteria:
+- student sees active week + forecast separation.
+- DB contains weekly plan + forecast history.
+
+### Slice 3 - Schedule Integrity + Proof-Based Completion
+1. Implement tasks + task_attempts + schedule lock model.
+2. Block manual completion toggles.
+3. Require evidence-based completion (read/test proof).
+4. Add policy violation logging for skip/edit attempts.
+5. Add idempotent completion APIs.
+
+Exit criteria:
+- locked task policy tests pass.
+- policy violations are captured and queryable.
+
+### Slice 4 - Weekly Adaptive Replan + Timeline Drift Loop
+1. Execute weekly evaluation window.
+2. Apply threshold/retry/timeout logic.
+3. Recompute `current_forecast_weeks` weekly.
+4. Compute/show timeline delta (`forecast - selected`).
+5. Emit pacing hint (ahead/on-track/behind) for learner.
+
+Exit criteria:
+- weekly replan tests pass for repeat/proceed/revision outcomes.
+- timeline drift updates appear in profile and weekly forecast history.
+
+### Slice 5 - Profiling + Engagement Telemetry
+1. Track login/logoff, streaks, engagement minutes, adherence.
+2. Update profile attributes after each task/test.
+3. Persist profile snapshots (history trail).
+4. Add learner "Where I Stand" payload (chapter + concept + confidence).
+
+Exit criteria:
+- profile history snapshots present.
+- engagement/streak KPIs available in API payloads.
+
+### Slice 6 - Adaptive Content (Pace + Tone + Depth)
+1. Implement profile-aware content policy:
+   - weak learner: slower pace, simpler tone, more examples
+   - strong learner: compact tone, challenge items
+2. Keep generation syllabus-grounded with citations.
+3. Add out-of-syllabus safe response behavior.
+
+Exit criteria:
+- content adaptation test matrix passes by profile bands.
+- grounded output includes citation metadata.
+
+### Slice 7 - Revision Pass Engine (Pass1/Pass2/Pass3)
+1. Build revision queue and priorities.
+2. Enforce pass-1 completion, pass-2 full revision, pass-3 weak-zone focus.
+3. Add retention checks and re-entry to queue if needed.
+
+Exit criteria:
+- revision queue trigger tests pass.
+- revision pass state visible per learner.
+
+### Slice 8 - Frontend Student Vertical Slice
+1. Onboarding wizard + bounded timeline selector.
+2. Show goal vs recommendation vs current forecast.
+3. Show locked current-week board + completion evidence UX.
+4. Add where-I-stand and confidence/mastery views.
+
+Exit criteria:
+- end-to-end student journey demo works without manual API calls.
+
+### Slice 9 - Admin + Observability Vertical Slice
+1. Admin panel for cohort progress and timeline drift.
+2. System health panel (DB/cache/latency/errors/agent failures).
+3. Ingestion and RAG readiness quality indicators.
+4. Alerts for inactivity, repeated low scores, scheduler drift.
+
+Exit criteria:
+- evaluator can see learner and system state in one admin view.
+
+### Slice 10 - Hardening + Final Validation
+1. Security hardening (auth, secrets, input policy checks).
+2. Reliability tests (fallback, restart/recovery, small load).
+3. Final KPI dashboards and demo runbook lock.
+
+Exit criteria:
+- full capstone demo flow is reproducible and measurable.
+
 ## Phase 0: Runtime Memory Store Hardening (Pre-Iteration-6 Gate)
-- [ ] Complete `docs/PLANNER_NOSQL_MEMORY_MIGRATION.md`
-- [ ] Move learner/runtime JSON memory from filesystem to NoSQL backend (MongoDB)
-- [ ] Keep runtime learner data out of repository workflows
+- [x] Complete `docs/PLANNER_NOSQL_MEMORY_MIGRATION.md`
+- [x] Move learner/runtime JSON memory from filesystem to NoSQL backend (MongoDB)
+- [x] Keep runtime learner data out of repository workflows
 
 ## Phase 1: Data Grounding Pre-Work
 - [x] Build offline ingestion job for syllabus + chapters PDFs
@@ -61,6 +182,8 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
   - [ ] persist requested timeline weeks
   - [ ] generate system-recommended timeline from diagnostic score/profile
   - [ ] return both values (requested + recommended) in onboarding response
+  - [ ] persist current forecast completion weeks (recomputed weekly)
+  - [ ] persist and expose timeline delta (`forecast_weeks - selected_weeks`)
 - [ ] Implement strict progression rules:
   - [x] chapter unlock threshold check (default 60%)
   - [ ] no skip without policy override
@@ -77,6 +200,8 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] Enforce planning mode:
   - [ ] rough long-range roadmap based on requested/recommended timeline (`14`-`28` weeks)
   - [ ] only current week schedule is active/committed
+  - [ ] keep upcoming weeks as forecast-only (read-only projection, not committed tasks)
+  - [ ] re-forecast remaining completion weeks after each weekly evaluation
 
 ## Phase 3: Frontend Enterprise UX
 - [ ] Build student portal:
@@ -130,6 +255,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] `student_profiles`
 - [ ] `student_profile_history` (snapshot trail)
 - [ ] timeline fields in profile domain (`requested_timeline_weeks`, `recommended_timeline_weeks`, `timeline_bounds_version`)
+- [ ] timeline drift fields (`current_forecast_weeks`, `timeline_delta_weeks`, `last_forecast_at`)
 
 ## Curriculum & Grounding
 - [ ] `chapters`
@@ -145,6 +271,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] `tasks`
 - [ ] `task_attempts` (proof-based completion)
 - [ ] `schedule_locks` / immutable task flags
+- [ ] `weekly_forecasts` (goal vs current projection history)
 
 ## Assessment & Mastery
 - [ ] `question_bank`
@@ -225,6 +352,9 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] Create daily task breakdown (read/practice/test)
 - [ ] Lock completion without proof
 - [ ] Track completion timestamps and evidence
+- [ ] Enforce immutable schedule API contract:
+  - [ ] student cannot edit/reorder locked tasks
+  - [ ] only system policy engine can replan next week
 - [ ] Track engagement evidence:
   - [ ] reading duration
   - [ ] test attempt proof
@@ -251,6 +381,10 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
   - [ ] slider/input constrained to `14`-`28` weeks
   - [ ] helper text for minimum/maximum policy
   - [ ] show "your target" vs "Mentorix recommendation" after test
+- [ ] Timeline progress/forecast visibility:
+  - [ ] show selected goal weeks
+  - [ ] show current forecast weeks
+  - [ ] show delta and pacing hint (ahead/on-track/behind)
 - [ ] Diagnostic test interface
 - [ ] Current-week task board (locked completion logic)
 - [ ] Daily/weekly streak and engagement tracker
@@ -272,6 +406,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] Ingestion and vector DB readiness panel
 - [ ] Policy violations + compliance panel
 - [ ] Performance diagnostics (DB/cache/latency/errors)
+- [ ] Timeline drift dashboard (goal vs forecast across cohort)
 
 ---
 
@@ -335,6 +470,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] streak length and engagement minutes
 - [ ] chapter retry count and timeout progression rate
 - [ ] timeline adherence: expected pace vs actual pace against selected timeline
+- [ ] forecast drift trend: weekly change in projected completion timeline
 
 ## System KPIs
 - [ ] p50/p95 API latency
