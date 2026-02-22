@@ -161,10 +161,19 @@ Response fields:
 - `GET|POST|PATCH|DELETE /scheduler/jobs` -> scheduler CRUD + trigger
 - `GET /grounding/status` -> ingestion readiness state
 - `POST /grounding/ingest` -> build grounding embeddings and manifest
+- `uv run python scripts/evaluate_retrieval_quality.py --json` -> run manual gold retrieval checks + confidence report
 - `POST /onboarding/start` -> generate objective diagnostic set from grounded chunks
 - `POST /onboarding/submit` -> score diagnostic, update profile, return rough 14+ week plan + active week
 - `POST /onboarding/weekly-replan` -> apply threshold + retry + timeout progression decision
 - `GET /onboarding/plan/{learner_id}` -> fetch latest persisted rough weekly plan
+- `POST /onboarding/engagement/events` -> ingest login/logout/study/task/test engagement events
+- `GET /onboarding/engagement/summary/{learner_id}` -> day/week minutes + streak + adherence summary
+- `GET /onboarding/where-i-stand/{learner_id}` -> chapter status + strengths/weaknesses + confidence snapshot
+- `GET /onboarding/evaluation-analytics/{learner_id}` -> objective evaluation + misconception patterns + risk/recommendations
+- `GET /onboarding/daily-plan/{learner_id}` -> committed-week daily breakdown (forecast remains read-only)
+
+Write-route idempotency support:
+- `POST /submit-answer`, `POST /onboarding/weekly-replan`, and `POST /onboarding/tasks/{task_id}/complete` accept optional `idempotency_key` in request body for safe retries.
 
 ## Key References for Review
 

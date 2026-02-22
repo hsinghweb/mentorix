@@ -90,6 +90,24 @@ async def initialize_database(session: AsyncSession, engine) -> None:
         await conn.execute(
             text("CREATE INDEX IF NOT EXISTS idx_generated_artifacts_created_at ON generated_artifacts (created_at)")
         )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_profile_snapshots_learner_created "
+                "ON learner_profile_snapshots (learner_id, created_at)"
+            )
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_profile_snapshots_reason ON learner_profile_snapshots (reason)")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_engagement_events_learner_created "
+                "ON engagement_events (learner_id, created_at)"
+            )
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_engagement_events_event_type ON engagement_events (event_type)")
+        )
 
         if settings.retention_cleanup_enabled and settings.session_retention_days > 0:
             params = {"days": settings.session_retention_days}

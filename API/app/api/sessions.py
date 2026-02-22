@@ -1,7 +1,7 @@
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, select
@@ -25,7 +25,7 @@ from app.models.entities import AssessmentResult, GeneratedArtifact, Learner, Le
 from app.orchestrator.engine import StateEngine
 from app.orchestrator.states import SessionState
 from app.rag.embeddings import embed_text
-from app.rag.retriever import retrieve_concept_chunks
+from app.rag.retriever import retrieve_concept_chunks_with_meta
 from app.schemas.session import (
     DashboardResponse,
     StartSessionRequest,
@@ -48,6 +48,8 @@ reflection_agent = ReflectionAgent()
 analytics_agent = AnalyticsEvaluationAgent()
 compliance_agent = ComplianceAgent()
 memory_manager_agent = MemoryManagementAgent()
+_degraded_session_cache: dict[str, dict[str, str]] = {}
+_idempotency_response_cache: dict[str, dict] = {}
 
 
 DEFAULT_MASTERY = {
@@ -118,7 +120,7 @@ def _log_state_transition(
         "to_state": to_state.value,
         "event": event,
         "payload": payload or {},
-        "ts": datetime.utcnow().isoformat(),
+        "ts": datetime.now(timezone.utc).isoformat(),
     }
     logger.info(json.dumps(log_obj))
 
@@ -143,6 +145,55 @@ def _advance_state(
         payload=payload,
     )
     return transition.next_state, transition.step_index
+
+
+async def _persist_session_state(session_key: str, payload: dict) -> None:
+    mapping = {k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) for k, v in payload.items()}
+    _degraded_session_cache[session_key] = dict(mapping)
+    try:
+        await redis_client.hset(session_key, mapping=mapping)
+        await redis_client.expire(session_key, 3600)
+    except Exception as exc:
+        logger.warning("Redis unavailable for session persist. Using degraded cache: %s", exc)
+
+
+async def _load_session_state(session_key: str) -> dict[str, str]:
+    try:
+        raw = await redis_client.hgetall(session_key)
+        if raw:
+            return raw
+    except Exception as exc:
+        logger.warning("Redis unavailable for session load. Falling back to degraded cache: %s", exc)
+    return dict(_degraded_session_cache.get(session_key, {}))
+
+
+async def _update_session_state(session_key: str, mapping: dict[str, str]) -> None:
+    cached = dict(_degraded_session_cache.get(session_key, {}))
+    cached.update(mapping)
+    _degraded_session_cache[session_key] = cached
+    try:
+        await redis_client.hset(session_key, mapping=mapping)
+        await redis_client.expire(session_key, 3600)
+    except Exception as exc:
+        logger.warning("Redis unavailable for session update. Using degraded cache: %s", exc)
+
+
+async def _get_idempotent_response(cache_key: str) -> dict | None:
+    try:
+        raw = await redis_client.get(cache_key)
+        if raw:
+            return json.loads(raw)
+    except Exception as exc:
+        logger.warning("Redis unavailable for idempotency read. Using degraded cache: %s", exc)
+    return _idempotency_response_cache.get(cache_key)
+
+
+async def _set_idempotent_response(cache_key: str, payload: dict) -> None:
+    _idempotency_response_cache[cache_key] = payload
+    try:
+        await redis_client.set(cache_key, json.dumps(payload), ex=3600)
+    except Exception as exc:
+        logger.warning("Redis unavailable for idempotency write. Using degraded cache: %s", exc)
 
 
 async def _get_or_create_learner_profile(db: AsyncSession, learner_id: uuid.UUID) -> LearnerProfile:
@@ -175,15 +226,19 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         raise HTTPException(status_code=400, detail="Invalid learner_id UUID") from exc
 
     session_id = str(uuid.uuid4())
-    profile = await _get_or_create_learner_profile(db, learner_id)
-    recent = (
-        await db.execute(
-            select(SessionLog.concept)
-            .where(SessionLog.learner_id == learner_id)
-            .order_by(desc(SessionLog.timestamp))
-            .limit(5)
-        )
-    ).scalars().all()
+    try:
+        profile = await _get_or_create_learner_profile(db, learner_id)
+        recent = (
+            await db.execute(
+                select(SessionLog.concept)
+                .where(SessionLog.learner_id == learner_id)
+                .order_by(desc(SessionLog.timestamp))
+                .limit(5)
+            )
+        ).scalars().all()
+    except Exception as exc:
+        logger.warning("Database unavailable during session start: %s", exc)
+        raise HTTPException(status_code=503, detail="Database unavailable. Please retry shortly.") from exc
 
     step_idx = 0
     state = SessionState.INITIALIZE_SESSION
@@ -220,11 +275,18 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         payload={"concept": concept, "difficulty": difficulty},
     )
 
-    chunks = await retrieve_concept_chunks(db, concept=concept, top_k=5, difficulty=difficulty)
+    retrieval = await retrieve_concept_chunks_with_meta(db, concept=concept, top_k=5, difficulty=difficulty)
+    chunks = retrieval["chunks"]
     memory_context = get_memory_context(str(learner_id))
     memory_hint = f"Learner memory context: {json.dumps(memory_context)}"
     content = await content_agent.run(
-        {"concept": concept, "difficulty": difficulty, "retrieved_chunks": chunks + [memory_hint]}
+        {
+            "concept": concept,
+            "difficulty": difficulty,
+            "retrieved_chunks": chunks + [memory_hint],
+            "retrieval_confidence": retrieval.get("retrieval_confidence", 0.0),
+            "retrieval_message": retrieval.get("message", ""),
+        }
     )
     state, step_idx = _advance_state(
         session_id=session_id,
@@ -232,7 +294,11 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         state=state,
         step_index=step_idx,
         event="content_generated",
-        payload={"source": content.get("source", "template"), "chunk_count": len(chunks)},
+        payload={
+            "source": content.get("source", "template"),
+            "chunk_count": len(chunks),
+            "retrieval_confidence": retrieval.get("retrieval_confidence", 0.0),
+        },
     )
 
     adaptation = await adaptation_agent.run(
@@ -258,10 +324,9 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         "expected_answer": question_payload["expected_answer"],
         "question": question_payload["generated_question"],
         "step_index": step_idx,
-        "updated_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
     }
-    await redis_client.hset(session_key, mapping={k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) for k, v in session_payload.items()})
-    await redis_client.expire(session_key, 3600)
+    await _persist_session_state(session_key, session_payload)
 
     db.add(
         SessionLog(
@@ -310,7 +375,11 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         session_id=session_id,
         concept=concept,
         difficulty=adaptation["new_difficulty"],
-        explanation=content["explanation"],
+        explanation=(
+            content["explanation"]
+            if retrieval.get("retrieval_confidence", 0.0) >= 0.35
+            else f"{content['explanation']}\n\nNote: {retrieval.get('message', '')}"
+        ),
         question=question_payload["generated_question"],
         state=SessionState.DELIVER.value,
         onboarding_summary=onboarding_summary,
@@ -320,7 +389,13 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
 @router.post("/submit-answer", response_model=SubmitAnswerResponse)
 async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends(get_db)):
     session_key = f"session:{payload.session_id}"
-    raw = await redis_client.hgetall(session_key)
+    idempotency_cache_key = None
+    if (payload.idempotency_key or "").strip():
+        idempotency_cache_key = f"idempotency:submit-answer:{payload.session_id}:{payload.idempotency_key.strip()}"
+        cached = await _get_idempotent_response(idempotency_cache_key)
+        if isinstance(cached, dict):
+            return SubmitAnswerResponse(**cached)
+    raw = await _load_session_state(session_key)
     if not raw:
         raise HTTPException(status_code=404, detail="Session not found or expired")
 
@@ -400,7 +475,7 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
     profile.concept_mastery = {**profile.concept_mastery, concept: reflection["new_mastery"]}
     profile.engagement_score = reflection["engagement_score"]
     profile.retention_decay = reflection["retention_decay"]
-    profile.last_updated = datetime.utcnow()
+    profile.last_updated = datetime.now(timezone.utc)
 
     recent_assessments = (
         await db.execute(
@@ -414,6 +489,7 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         {
             "recent_scores": [a.score for a in reversed(recent_assessments)],
             "recent_response_times": [a.response_time for a in reversed(recent_assessments)],
+            "recent_error_types": [a.error_type for a in reversed(recent_assessments)],
         }
     )
     compliance_status = await compliance_agent.run(
@@ -459,12 +535,17 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
             metadata={"learner_id": str(learner_id), "session_id": payload.session_id, "concept": concept},
         )
 
-    chunks = await retrieve_concept_chunks(db, concept=concept, top_k=5, difficulty=adaptation["new_difficulty"])
+    retrieval = await retrieve_concept_chunks_with_meta(
+        db, concept=concept, top_k=5, difficulty=adaptation["new_difficulty"]
+    )
+    chunks = retrieval["chunks"]
     content = await content_agent.run(
         {
             "concept": concept,
             "difficulty": adaptation["new_difficulty"],
             "retrieved_chunks": chunks,
+            "retrieval_confidence": retrieval.get("retrieval_confidence", 0.0),
+            "retrieval_message": retrieval.get("message", ""),
         }
     )
     db.add(
@@ -478,28 +559,34 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
     )
     await db.commit()
 
-    await redis_client.hset(
+    await _update_session_state(
         session_key,
-        mapping={
+        {
             "difficulty": str(adaptation["new_difficulty"]),
             "rolling_error_rate": str(rolling_error_rate),
             "consecutive_failures": str(failures),
             "adaptation_state": json.dumps(adaptation),
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
             "step_index": str(step_idx + 3),
         },
     )
-    await redis_client.expire(session_key, 3600)
 
-    return SubmitAnswerResponse(
+    response = SubmitAnswerResponse(
         session_id=payload.session_id,
         score=score,
         error_type=error_type,
         adaptation_applied=adaptation,
-        next_explanation=content["explanation"],
+        next_explanation=(
+            content["explanation"]
+            if retrieval.get("retrieval_confidence", 0.0) >= 0.35
+            else f"{content['explanation']}\n\nNote: {retrieval.get('message', '')}"
+        ),
         analytics_evaluation=analytics_evaluation,
         compliance_status=compliance_status,
     )
+    if idempotency_cache_key:
+        await _set_idempotent_response(idempotency_cache_key, response.model_dump(mode="json"))
+    return response
 
 
 @router.get("/dashboard/{learner_id}", response_model=DashboardResponse)
@@ -535,6 +622,7 @@ async def dashboard(learner_id: str, db: AsyncSession = Depends(get_db)):
         {
             "recent_scores": [a.score for a in reversed(recent_assessments)],
             "recent_response_times": [a.response_time for a in reversed(recent_assessments)],
+            "recent_error_types": [a.error_type for a in reversed(recent_assessments)],
         }
     )
     compliance_summary = await compliance_agent.run(

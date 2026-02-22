@@ -209,3 +209,369 @@ def test_memory_write_flow_for_active_backend(client):
     context = memory_ctx.json()["context"]
     assert isinstance(context, dict)
     assert any(bool(context.get(key)) for key in ("learner_preferences", "operating_context", "soft_identity"))
+
+
+def test_locked_task_completion_policy_flow(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    tasks_resp = client.get(f"/onboarding/tasks/{learner_id}")
+    assert tasks_resp.status_code == 200
+    tasks = tasks_resp.json().get("tasks", [])
+    assert tasks
+    read_task = tasks[0]
+    assert read_task["is_locked"] is True
+    assert read_task["status"] == "pending"
+
+    fail_complete = client.post(
+        f"/onboarding/tasks/{read_task['task_id']}/complete",
+        json={"learner_id": learner_id, "reading_minutes": 1},
+    )
+    assert fail_complete.status_code == 200
+    fail_body = fail_complete.json()
+    assert fail_body["accepted"] is False
+    assert fail_body["status"] == "pending"
+
+    pass_complete = client.post(
+        f"/onboarding/tasks/{read_task['task_id']}/complete",
+        json={"learner_id": learner_id, "reading_minutes": 15},
+    )
+    assert pass_complete.status_code == 200
+    pass_body = pass_complete.json()
+    assert pass_body["accepted"] is True
+    assert pass_body["status"] == "completed"
+
+
+def test_revision_queue_trigger_flow(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    for score in (0.30, 0.35, 0.40):
+        r = client.post(
+            "/onboarding/weekly-replan",
+            json={
+                "learner_id": learner_id,
+                "evaluation": {"chapter": "Chapter 2", "score": score},
+                "threshold": 0.60,
+                "max_attempts": 3,
+            },
+        )
+        assert r.status_code == 200
+
+    queue_resp = client.get(f"/onboarding/revision-queue/{learner_id}")
+    assert queue_resp.status_code == 200
+    items = queue_resp.json().get("items", [])
+    assert any(item.get("chapter") == "Chapter 2" for item in items)
+
+
+def test_no_skip_policy_override_checks(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    blocked = client.post(
+        "/onboarding/chapters/advance",
+        json={
+            "learner_id": learner_id,
+            "chapter": "Chapter 3",
+            "score": 0.25,
+            "threshold": 0.60,
+            "allow_policy_override": False,
+        },
+    )
+    assert blocked.status_code == 409
+
+    allowed = client.post(
+        "/onboarding/chapters/advance",
+        json={
+            "learner_id": learner_id,
+            "chapter": "Chapter 3",
+            "score": 0.25,
+            "threshold": 0.60,
+            "allow_policy_override": True,
+            "override_reason": "Teacher approved controlled skip for pacing.",
+        },
+    )
+    assert allowed.status_code == 200
+    body = allowed.json()
+    assert body["advanced"] is True
+    assert body["used_policy_override"] is True
+
+    queue_resp = client.get(f"/onboarding/revision-queue/{learner_id}")
+    assert queue_resp.status_code == 200
+    items = queue_resp.json().get("items", [])
+    assert any(item.get("chapter") == "Chapter 3" for item in items)
+
+
+def test_weekly_plan_contract_and_versions(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    tasks_resp = client.get(f"/onboarding/tasks/{learner_id}")
+    assert tasks_resp.status_code == 200
+
+    plan_resp = client.get(f"/onboarding/plan/{learner_id}")
+    assert plan_resp.status_code == 200
+    plan_body = plan_resp.json()
+    assert "committed_week_schedule" in plan_body
+    assert "forecast_plan" in plan_body
+    assert "planning_mode" in plan_body
+    assert plan_body["planning_mode"]["committed_week_locked"] is True
+    assert plan_body["planning_mode"]["forecast_read_only"] is True
+    assert "current_week_daily_breakdown" in plan_body
+    assert isinstance(plan_body["current_week_daily_breakdown"], list)
+    committed = plan_body.get("committed_week_schedule")
+    assert committed is not None
+    current_week = int(plan_body.get("current_week", 1))
+    for item in plan_body.get("forecast_plan", []):
+        assert int(item.get("week", 0)) > current_week
+
+    versions_before = client.get(f"/onboarding/plan-versions/{learner_id}")
+    assert versions_before.status_code == 200
+    before_count = len(versions_before.json().get("versions", []))
+    assert before_count >= 1
+
+    r = client.post(
+        "/onboarding/weekly-replan",
+        json={
+            "learner_id": learner_id,
+            "evaluation": {"chapter": "Chapter 1", "score": 0.55},
+            "threshold": 0.60,
+            "max_attempts": 3,
+        },
+    )
+    assert r.status_code == 200
+
+    versions_after = client.get(f"/onboarding/plan-versions/{learner_id}")
+    assert versions_after.status_code == 200
+    after_count = len(versions_after.json().get("versions", []))
+    assert after_count >= before_count
+
+
+def test_daily_plan_endpoint_committed_week_breakdown(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+    bootstrap = client.get(f"/onboarding/tasks/{learner_id}")
+    assert bootstrap.status_code == 200
+
+    daily = client.get(f"/onboarding/daily-plan/{learner_id}")
+    assert daily.status_code == 200
+    body = daily.json()
+    assert body["is_committed_week"] is True
+    assert body["forecast_read_only"] is True
+    assert isinstance(body.get("daily_breakdown"), list)
+    if body["daily_breakdown"]:
+        task_types = {slot.get("task_type") for slot in body["daily_breakdown"]}
+        assert "read" in task_types
+        assert "practice" in task_types
+        assert "test" in task_types
+
+
+def test_revision_policy_state_lifecycle_and_weak_zone_orchestration(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    first = client.get(f"/onboarding/revision-policy/{learner_id}")
+    assert first.status_code == 200
+    body1 = first.json()
+    assert body1["active_pass"] == 1
+    assert 0.0 <= float(body1["retention_score"]) <= 1.0
+    assert isinstance(body1.get("next_actions"), list)
+
+    low = client.post(
+        "/onboarding/weekly-replan",
+        json={
+            "learner_id": learner_id,
+            "evaluation": {"chapter": "Chapter 5", "score": 0.30},
+            "threshold": 0.60,
+            "max_attempts": 1,
+        },
+    )
+    assert low.status_code == 200
+
+    second = client.get(f"/onboarding/revision-policy/{learner_id}")
+    assert second.status_code == 200
+    body2 = second.json()
+    assert "Chapter 5" in body2.get("weak_zones", [])
+
+
+def test_engagement_telemetry_and_where_i_stand_contract(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    evt1 = client.post(
+        "/onboarding/engagement/events",
+        json={
+            "learner_id": learner_id,
+            "event_type": "login",
+            "duration_minutes": 0,
+            "details": {"source": "integration_test"},
+        },
+    )
+    assert evt1.status_code == 200
+
+    evt2 = client.post(
+        "/onboarding/engagement/events",
+        json={
+            "learner_id": learner_id,
+            "event_type": "study",
+            "duration_minutes": 25,
+            "details": {"chapter": "Chapter 1"},
+        },
+    )
+    assert evt2.status_code == 200
+
+    replan = client.post(
+        "/onboarding/weekly-replan",
+        json={
+            "learner_id": learner_id,
+            "evaluation": {"chapter": "Chapter 1", "score": 0.62},
+            "threshold": 0.60,
+            "max_attempts": 3,
+        },
+    )
+    assert replan.status_code == 200
+
+    summary = client.get(f"/onboarding/engagement/summary/{learner_id}")
+    assert summary.status_code == 200
+    summary_body = summary.json()
+    assert int(summary_body.get("engagement_minutes_week", 0)) >= 25
+    assert "login_streak_days" in summary_body
+    assert "adherence_rate_week" in summary_body
+
+    stand = client.get(f"/onboarding/where-i-stand/{learner_id}")
+    assert stand.status_code == 200
+    stand_body = stand.json()
+    assert "chapter_status" in stand_body
+    assert "confidence_score" in stand_body
+    assert "retention_score" in stand_body
+
+    history = client.get(f"/onboarding/profile-history/{learner_id}")
+    assert history.status_code == 200
+    items = history.json().get("items", [])
+    assert items
+    assert any(item.get("reason") in ("engagement_event", "weekly_replan") for item in items)
+
+
+def test_evaluation_analytics_risk_and_recommendation_payload(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+    session_id = start.json()["session_id"]
+
+    for answer in ("wrong", "still wrong", "maybe this concept?"):
+        submit = client.post(
+            "/submit-answer",
+            json={"session_id": session_id, "answer": answer, "response_time": 24.0},
+        )
+        assert submit.status_code == 200
+
+    replan = client.post(
+        "/onboarding/weekly-replan",
+        json={
+            "learner_id": learner_id,
+            "evaluation": {"chapter": "Chapter 1", "score": 0.35},
+            "threshold": 0.60,
+            "max_attempts": 2,
+        },
+    )
+    assert replan.status_code == 200
+
+    response = client.get(f"/onboarding/evaluation-analytics/{learner_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["risk_level"] in ("low", "medium", "high")
+    assert isinstance(body.get("recommendations"), list)
+    assert isinstance(body.get("misconception_patterns"), list)
+    objective = body.get("objective_evaluation", {})
+    assert "avg_score" in objective
+    assert "score_trend" in objective
+    assert "attempted_questions" in objective
+    assert isinstance(body.get("chapter_attempt_summary"), list)
+
+
+def test_submit_answer_idempotency_key_returns_cached_response(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+    session_id = start.json()["session_id"]
+
+    payload = {
+        "session_id": session_id,
+        "answer": "stepwise attempt answer",
+        "response_time": 9.0,
+        "idempotency_key": "idem-submit-1",
+    }
+    first = client.post("/submit-answer", json=payload)
+    assert first.status_code == 200
+    second = client.post("/submit-answer", json=payload)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+
+
+def test_weekly_replan_idempotency_key_returns_cached_response(client):
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+
+    payload = {
+        "learner_id": learner_id,
+        "evaluation": {"chapter": "Chapter 7", "score": 0.45},
+        "threshold": 0.60,
+        "max_attempts": 3,
+        "idempotency_key": "idem-replan-1",
+    }
+    first = client.post("/onboarding/weekly-replan", json=payload)
+    assert first.status_code == 200
+    second = client.post("/onboarding/weekly-replan", json=payload)
+    assert second.status_code == 200
+    assert second.json() == first.json()
+    assert second.json()["attempt_count"] == 1
+
+
+def test_ollama_unavailable_uses_template_fallback(client, monkeypatch):
+    from app.api import sessions as sessions_module
+
+    original_provider_name = getattr(sessions_module.content_agent.provider, "provider_name", "none")
+
+    async def _broken_generate(_prompt: str):
+        raise RuntimeError("ollama unavailable")
+
+    monkeypatch.setattr(sessions_module.content_agent.provider, "generate", _broken_generate)
+    monkeypatch.setattr(sessions_module.content_agent.provider, "provider_name", "ollama", raising=False)
+
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+    data = start.json()
+    assert "Grounded curriculum notes" in data["explanation"]
+
+    monkeypatch.setattr(sessions_module.content_agent.provider, "provider_name", original_provider_name, raising=False)
+
+
+def test_redis_outage_falls_back_to_degraded_session_cache(client, monkeypatch):
+    from app.api import sessions as sessions_module
+
+    async def _raise(*_args, **_kwargs):
+        raise RuntimeError("redis unavailable")
+
+    monkeypatch.setattr(sessions_module.redis_client, "hset", _raise)
+    monkeypatch.setattr(sessions_module.redis_client, "hgetall", _raise)
+    monkeypatch.setattr(sessions_module.redis_client, "expire", _raise)
+
+    learner_id = str(uuid.uuid4())
+    start = client.post("/start-session", json={"learner_id": learner_id})
+    assert start.status_code == 200
+    session_id = start.json()["session_id"]
+
+    submit = client.post(
+        "/submit-answer",
+        json={"session_id": session_id, "answer": "try solving", "response_time": 7.0},
+    )
+    assert submit.status_code == 200

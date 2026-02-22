@@ -1,32 +1,64 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.memory.cache import redis_client
 from app.memory.database import get_db
-from app.models.entities import ChapterProgression, EmbeddingChunk, Learner, LearnerProfile, WeeklyForecast, WeeklyPlan
+from app.models.entities import (
+    ChapterProgression,
+    EmbeddingChunk,
+    EngagementEvent,
+    Learner,
+    LearnerProfile,
+    LearnerProfileSnapshot,
+    PolicyViolation,
+    RevisionPolicyState,
+    RevisionQueueItem,
+    AssessmentResult,
+    Task,
+    TaskAttempt,
+    WeeklyForecast,
+    WeeklyPlan,
+    WeeklyPlanVersion,
+)
 from app.schemas.onboarding import (
     ChapterPlan,
+    ChapterAdvanceRequest,
+    ChapterAdvanceResponse,
     DiagnosticQuestion,
+    RevisionPolicyStateResponse,
     OnboardingStartRequest,
     OnboardingStartResponse,
+    RevisionQueueItemResponse,
+    TaskCompletionRequest,
+    TaskCompletionResponse,
+    TaskItem,
     OnboardingSubmitRequest,
     OnboardingSubmitResponse,
     WeeklyPlanResponse,
     WeeklyReplanRequest,
     WeeklyReplanResponse,
+    EngagementEventRequest,
+    EngagementEventResponse,
+    EngagementSummaryResponse,
+    LearnerStandResponse,
+    EvaluationAnalyticsResponse,
+    DailyPlanResponse,
 )
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
+logger = logging.getLogger(__name__)
 TIMELINE_MIN_WEEKS = 14
 TIMELINE_MAX_WEEKS = 28
+_idempotency_response_cache: dict[str, dict] = {}
 
 
 def _extract_sentence(text: str) -> str:
@@ -46,6 +78,24 @@ def _extract_keywords(text: str, limit: int = 5) -> list[str]:
         if len(seen) >= limit:
             break
     return seen or ["concept", "chapter"]
+
+
+async def _get_idempotent_response(cache_key: str) -> dict | None:
+    try:
+        raw = await redis_client.get(cache_key)
+        if raw:
+            return json.loads(raw)
+    except Exception as exc:
+        logger.warning("Redis unavailable for idempotency read. Using degraded cache: %s", exc)
+    return _idempotency_response_cache.get(cache_key)
+
+
+async def _set_idempotent_response(cache_key: str, payload: dict) -> None:
+    _idempotency_response_cache[cache_key] = payload
+    try:
+        await redis_client.set(cache_key, json.dumps(payload), ex=3600)
+    except Exception as exc:
+        logger.warning("Redis unavailable for idempotency write. Using degraded cache: %s", exc)
 
 
 def _build_questions(chunks: list[EmbeddingChunk]) -> tuple[list[DiagnosticQuestion], dict[str, str]]:
@@ -156,6 +206,442 @@ def _weekly_forecast_adjustment(*, decision: str, score: float, threshold: float
     return 0
 
 
+async def _upsert_revision_queue_item(
+    *, db: AsyncSession, learner_id: UUID, chapter: str, reason: str, priority: int = 1
+) -> None:
+    existing = (
+        await db.execute(
+            select(RevisionQueueItem).where(
+                RevisionQueueItem.learner_id == learner_id,
+                RevisionQueueItem.chapter == chapter,
+                RevisionQueueItem.status == "pending",
+            )
+        )
+    ).scalar_one_or_none()
+    if existing:
+        existing.priority = max(existing.priority, priority)
+        existing.reason = reason
+        existing.updated_at = datetime.now(timezone.utc)
+        return
+    db.add(
+        RevisionQueueItem(
+            learner_id=learner_id,
+            chapter=chapter,
+            status="pending",
+            priority=priority,
+            reason=reason,
+        )
+    )
+
+
+def _log_policy_violation(
+    *,
+    db: AsyncSession,
+    learner_id: UUID,
+    policy_code: str,
+    chapter: str | None,
+    details: dict,
+) -> None:
+    db.add(
+        PolicyViolation(
+            learner_id=learner_id,
+            policy_code=policy_code,
+            chapter=chapter,
+            details=details,
+        )
+    )
+
+
+async def _compute_retention_score(db: AsyncSession, learner_id: UUID) -> float:
+    recent = (
+        await db.execute(
+            select(AssessmentResult.score)
+            .where(AssessmentResult.learner_id == learner_id)
+            .order_by(desc(AssessmentResult.timestamp))
+            .limit(20)
+        )
+    ).scalars().all()
+    if not recent:
+        return 0.5
+    return max(0.0, min(1.0, float(sum(recent) / len(recent))))
+
+
+def _profile_snapshot_payload(profile: LearnerProfile) -> dict:
+    return {
+        "concept_mastery": dict(profile.concept_mastery or {}),
+        "retention_decay": float(profile.retention_decay or 0.0),
+        "cognitive_depth": float(profile.cognitive_depth or 0.0),
+        "engagement_score": float(profile.engagement_score or 0.0),
+        "selected_timeline_weeks": profile.selected_timeline_weeks,
+        "recommended_timeline_weeks": profile.recommended_timeline_weeks,
+        "current_forecast_weeks": profile.current_forecast_weeks,
+        "timeline_delta_weeks": profile.timeline_delta_weeks,
+        "last_updated": profile.last_updated.isoformat() if profile.last_updated else None,
+    }
+
+
+def _persist_profile_snapshot(
+    db: AsyncSession, learner_id: UUID, profile: LearnerProfile, reason: str, extra: dict | None = None
+) -> None:
+    payload = _profile_snapshot_payload(profile)
+    if isinstance(extra, dict) and extra:
+        payload["extra"] = extra
+    db.add(
+        LearnerProfileSnapshot(
+            learner_id=learner_id,
+            reason=reason,
+            payload=payload,
+        )
+    )
+
+
+def _log_engagement_event(
+    db: AsyncSession, learner_id: UUID, event_type: str, duration_minutes: int = 0, details: dict | None = None
+) -> None:
+    db.add(
+        EngagementEvent(
+            learner_id=learner_id,
+            event_type=event_type,
+            duration_minutes=max(0, int(duration_minutes)),
+            details=details or {},
+        )
+    )
+
+
+async def _compute_adherence_rate_week(db: AsyncSession, learner_id: UUID) -> float:
+    week_start = datetime.now(timezone.utc) - timedelta(days=7)
+    tasks = (
+        await db.execute(
+            select(Task).where(
+                Task.learner_id == learner_id,
+                Task.created_at >= week_start,
+            )
+        )
+    ).scalars().all()
+    if not tasks:
+        return 0.0
+    completed = len([t for t in tasks if t.status == "completed"])
+    return round(float(completed / max(1, len(tasks))), 3)
+
+
+async def _engagement_minutes_since(db: AsyncSession, learner_id: UUID, since: datetime) -> int:
+    rows = (
+        await db.execute(
+            select(EngagementEvent.duration_minutes).where(
+                EngagementEvent.learner_id == learner_id,
+                EngagementEvent.created_at >= since,
+            )
+        )
+    ).scalars().all()
+    return int(sum(int(v or 0) for v in rows))
+
+
+async def _update_profile_after_outcome(
+    db: AsyncSession,
+    learner_id: UUID,
+    profile: LearnerProfile,
+    *,
+    reason: str,
+    mastery_update: dict | None = None,
+    engagement_minutes: int = 0,
+    extra: dict | None = None,
+) -> None:
+    if isinstance(mastery_update, dict) and mastery_update:
+        merged = dict(profile.concept_mastery or {})
+        merged.update(mastery_update)
+        profile.concept_mastery = merged
+    week_start = datetime.now(timezone.utc) - timedelta(days=7)
+    minutes_week = await _engagement_minutes_since(db, learner_id, since=week_start)
+    adherence = await _compute_adherence_rate_week(db, learner_id)
+    normalized_minutes = min(1.0, float(max(0, minutes_week + max(0, int(engagement_minutes))) / 300.0))
+    profile.engagement_score = round(max(0.1, min(1.0, (0.7 * normalized_minutes) + (0.3 * adherence))), 3)
+    profile.last_updated = datetime.now(timezone.utc)
+    _persist_profile_snapshot(
+        db=db,
+        learner_id=learner_id,
+        profile=profile,
+        reason=reason,
+        extra={"adherence_rate_week": adherence, "engagement_minutes_week": minutes_week, **(extra or {})},
+    )
+
+
+async def _compute_login_streak_days(db: AsyncSession, learner_id: UUID) -> int:
+    rows = (
+        await db.execute(
+            select(EngagementEvent.created_at)
+            .where(
+                EngagementEvent.learner_id == learner_id,
+                EngagementEvent.event_type == "login",
+            )
+            .order_by(EngagementEvent.created_at.desc())
+            .limit(60)
+        )
+    ).scalars().all()
+    if not rows:
+        return 0
+    dates = sorted({dt.astimezone(timezone.utc).date() for dt in rows}, reverse=True)
+    streak = 0
+    cursor = datetime.now(timezone.utc).date()
+    for login_day in dates:
+        if login_day == cursor:
+            streak += 1
+            cursor = cursor - timedelta(days=1)
+            continue
+        if streak == 0 and login_day == cursor - timedelta(days=1):
+            streak += 1
+            cursor = login_day - timedelta(days=1)
+            continue
+        if login_day < cursor:
+            break
+    return streak
+
+
+def _derive_recommendations(*, risk_level: str, misconception_patterns: list[dict], trend: str) -> list[str]:
+    recommendations: list[str] = []
+    if risk_level == "high":
+        recommendations.append("Run a reinforced remediation cycle with worked examples before advancing pace.")
+    elif risk_level == "medium":
+        recommendations.append("Keep chapter progression controlled and add one focused revision block this week.")
+    else:
+        recommendations.append("Maintain current pace and include one challenge task to consolidate mastery.")
+    if trend == "down":
+        recommendations.append("Score trend is declining; schedule a short corrective quiz within 48 hours.")
+    if misconception_patterns:
+        top = misconception_patterns[0]["error_type"]
+        recommendations.append(f"Prioritize fixing '{top}' mistakes in the next practice plan.")
+    return recommendations
+
+
+async def _build_evaluation_analytics(db: AsyncSession, learner_id: UUID) -> dict:
+    results = (
+        await db.execute(
+            select(AssessmentResult)
+            .where(AssessmentResult.learner_id == learner_id)
+            .order_by(AssessmentResult.timestamp.desc())
+            .limit(30)
+        )
+    ).scalars().all()
+    scores = [float(r.score) for r in reversed(results)]
+    response_times = [float(r.response_time) for r in reversed(results)]
+    error_types = [str(r.error_type or "none").lower() for r in results]
+    avg_score = float(sum(scores) / max(1, len(scores)))
+    trend = "flat"
+    if len(scores) > 1:
+        trend = "up" if scores[-1] >= scores[0] else "down"
+    misconceptions: dict[str, int] = {}
+    for error in error_types:
+        if error == "none":
+            continue
+        misconceptions[error] = misconceptions.get(error, 0) + 1
+    misconception_patterns = [
+        {"error_type": key, "count": value}
+        for key, value in sorted(misconceptions.items(), key=lambda item: item[1], reverse=True)
+    ]
+    risk_level = "low"
+    avg_response = float(sum(response_times) / max(1, len(response_times))) if response_times else 0.0
+    if avg_score < 0.5 or (trend == "down" and avg_score < 0.65):
+        risk_level = "high"
+    elif avg_score < 0.75 or avg_response > 20.0:
+        risk_level = "medium"
+    chapter_rows = (
+        await db.execute(
+            select(ChapterProgression)
+            .where(ChapterProgression.learner_id == learner_id)
+            .order_by(ChapterProgression.updated_at.desc())
+            .limit(20)
+        )
+    ).scalars().all()
+    chapter_attempt_summary = [
+        {
+            "chapter": row.chapter,
+            "attempt_count": int(row.attempt_count),
+            "best_score": float(row.best_score),
+            "last_score": float(row.last_score),
+            "status": row.status,
+            "revision_queued": bool(row.revision_queued),
+        }
+        for row in chapter_rows
+    ]
+    return {
+        "objective_evaluation": {
+            "attempted_questions": len(scores),
+            "latest_score": round(scores[-1], 4) if scores else 0.0,
+            "avg_score": round(avg_score, 4),
+            "avg_response_time": round(avg_response, 4),
+            "score_trend": trend,
+        },
+        "misconception_patterns": misconception_patterns,
+        "risk_level": risk_level,
+        "recommendations": _derive_recommendations(
+            risk_level=risk_level, misconception_patterns=misconception_patterns, trend=trend
+        ),
+        "chapter_attempt_summary": chapter_attempt_summary,
+    }
+
+
+async def _upsert_revision_policy_state(db: AsyncSession, learner_id: UUID) -> RevisionPolicyState:
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Learner profile not found.")
+
+    state = (
+        await db.execute(select(RevisionPolicyState).where(RevisionPolicyState.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if state is None:
+        state = RevisionPolicyState(learner_id=learner_id)
+        db.add(state)
+        await db.flush()
+
+    mastery = dict(profile.concept_mastery or {})
+    covered_chapters = len([k for k, v in mastery.items() if str(k).startswith("Chapter") and float(v) > 0.0])
+    weak_zones = [k for k, v in mastery.items() if str(k).startswith("Chapter") and float(v) < 0.60]
+    pending_revision = (
+        await db.execute(
+            select(RevisionQueueItem).where(
+                RevisionQueueItem.learner_id == learner_id,
+                RevisionQueueItem.status == "pending",
+            )
+        )
+    ).scalars().all()
+    pending_chapters = sorted({item.chapter for item in pending_revision})
+    retention_score = await _compute_retention_score(db, learner_id)
+
+    now = datetime.now(timezone.utc)
+    pass1_completed = covered_chapters >= 14
+    if pass1_completed and state.pass1_completed_at is None:
+        state.pass1_completed_at = now
+
+    pass2_completed = bool(state.pass1_completed_at) and not pending_chapters and retention_score >= 0.70
+    if pass2_completed and state.pass2_completed_at is None:
+        state.pass2_completed_at = now
+
+    if not pass1_completed:
+        active_pass = 1
+        next_actions = [
+            "Complete remaining chapters to finish first full syllabus pass.",
+            "Keep weekly chapter completion above threshold.",
+        ]
+    elif not pass2_completed:
+        active_pass = 2
+        next_actions = [
+            "Clear pending revision queue chapters.",
+            "Improve retention score to at least 0.70.",
+        ]
+    else:
+        active_pass = 3
+        next_actions = [
+            "Focus only on weak-zone chapters and concepts.",
+            "Run targeted revision cycles before final assessments.",
+        ]
+
+    weak_zone_list = sorted(set(weak_zones + pending_chapters))
+    state.active_pass = active_pass
+    state.retention_score = retention_score
+    state.weak_zones = {"chapters": weak_zone_list}
+    state.next_actions = {"items": next_actions}
+    state.updated_at = now
+    await db.commit()
+    await db.refresh(state)
+    return state
+
+
+def _default_week_tasks(*, learner_id: UUID, chapter: str, week_number: int) -> list[Task]:
+    return [
+        Task(
+            learner_id=learner_id,
+            week_number=week_number,
+            chapter=chapter,
+            task_type="read",
+            title=f"{chapter}: Read concept notes",
+            sort_order=1,
+            status="pending",
+            is_locked=True,
+            proof_policy={"min_reading_minutes": 8},
+        ),
+        Task(
+            learner_id=learner_id,
+            week_number=week_number,
+            chapter=chapter,
+            task_type="practice",
+            title=f"{chapter}: Practice worksheet",
+            sort_order=2,
+            status="pending",
+            is_locked=True,
+            proof_policy={"min_reading_minutes": 12},
+        ),
+        Task(
+            learner_id=learner_id,
+            week_number=week_number,
+            chapter=chapter,
+            task_type="test",
+            title=f"{chapter}: Weekly quiz attempt",
+            sort_order=3,
+            status="pending",
+            is_locked=True,
+            proof_policy={"require_test_attempt_id": True},
+        ),
+    ]
+
+
+def _to_task_item(task: Task) -> TaskItem:
+    return TaskItem(
+        task_id=task.id,
+        chapter=task.chapter,
+        task_type=task.task_type,
+        title=task.title,
+        week_number=task.week_number,
+        sort_order=task.sort_order,
+        status=task.status,
+        is_locked=bool(task.is_locked),
+        proof_policy=task.proof_policy or {},
+    )
+
+
+def _daily_breakdown_from_tasks(tasks: list[Task], week_number: int) -> list[dict]:
+    day_slots = ["Mon", "Wed", "Fri", "Sat", "Sun"]
+    if not tasks:
+        return []
+    breakdown = []
+    for idx, task in enumerate(tasks):
+        proof = task.proof_policy or {}
+        breakdown.append(
+            {
+                "day": day_slots[idx % len(day_slots)],
+                "week_number": week_number,
+                "task_id": str(task.id),
+                "task_type": task.task_type,
+                "title": task.title,
+                "status": task.status,
+                "proof_required": bool(proof),
+            }
+        )
+    return breakdown
+
+
+async def _create_plan_version(*, db: AsyncSession, plan: WeeklyPlan, reason: str) -> None:
+    latest_version = (
+        await db.execute(
+            select(WeeklyPlanVersion.version_number)
+            .where(WeeklyPlanVersion.weekly_plan_id == plan.id)
+            .order_by(WeeklyPlanVersion.version_number.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    version_number = int(latest_version or 0) + 1
+    db.add(
+        WeeklyPlanVersion(
+            weekly_plan_id=plan.id,
+            learner_id=plan.learner_id,
+            version_number=version_number,
+            current_week=plan.current_week,
+            plan_payload=plan.plan_payload if isinstance(plan.plan_payload, dict) else {},
+            reason=reason,
+        )
+    )
+
+
 def _build_rough_plan(chapter_scores: dict[str, float], target_weeks: int) -> tuple[list[ChapterPlan], ChapterPlan]:
     chapter_count = 14
     target_weeks = _clamp_weeks(target_weeks)
@@ -196,6 +682,13 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
         timeline_delta_weeks=None,
     )
     db.add(profile)
+    _log_engagement_event(
+        db=db,
+        learner_id=learner.id,
+        event_type="login",
+        duration_minutes=0,
+        details={"source": "onboarding_start"},
+    )
     await db.commit()
 
     chunks = await _get_diagnostic_chunks(db)
@@ -227,6 +720,15 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
 
 @router.post("/submit", response_model=OnboardingSubmitResponse)
 async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession = Depends(get_db)):
+    idempotency_cache_key = None
+    if (payload.idempotency_key or "").strip():
+        idempotency_cache_key = (
+            f"idempotency:onboarding-submit:{payload.learner_id}:{payload.diagnostic_attempt_id}:{payload.idempotency_key.strip()}"
+        )
+        cached = await _get_idempotent_response(idempotency_cache_key)
+        if isinstance(cached, dict):
+            return OnboardingSubmitResponse(**cached)
+
     redis_key = f"onboarding:attempt:{payload.diagnostic_attempt_id}"
     attempt_raw = await redis_client.get(redis_key)
     if not attempt_raw:
@@ -277,12 +779,14 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     if learner is None or profile is None:
         raise HTTPException(status_code=404, detail="Learner profile not found.")
 
-    profile.concept_mastery = chapter_scores
     profile.cognitive_depth = max(0.1, min(1.0, 0.35 + (0.65 * score)))
-    engagement_norm = min(1.0, payload.time_spent_minutes / 60.0)
-    profile.engagement_score = max(0.1, min(1.0, engagement_norm))
-    profile.last_updated = datetime.now(timezone.utc)
-    await db.commit()
+    _log_engagement_event(
+        db=db,
+        learner_id=payload.learner_id,
+        event_type="test_submission",
+        duration_minutes=payload.time_spent_minutes,
+        details={"source": "onboarding_submit", "score": score},
+    )
 
     recommended_timeline_weeks, recommendation_note = _recommend_timeline_weeks(selected_timeline_weeks, score)
     current_forecast_weeks = recommended_timeline_weeks
@@ -294,24 +798,37 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     profile.recommended_timeline_weeks = recommended_timeline_weeks
     profile.current_forecast_weeks = current_forecast_weeks
     profile.timeline_delta_weeks = timeline_delta_weeks
-
-    db.add(
-        WeeklyPlan(
-            learner_id=payload.learner_id,
-            status="active",
-            current_week=1,
-            total_weeks=len(rough_plan),
-            plan_payload={
-                "rough_plan": [item.model_dump() for item in rough_plan],
-                "timeline": {
-                    "selected_timeline_weeks": selected_timeline_weeks,
-                    "recommended_timeline_weeks": recommended_timeline_weeks,
-                    "current_forecast_weeks": current_forecast_weeks,
-                    "timeline_delta_weeks": timeline_delta_weeks,
-                },
-            },
-        )
+    await _update_profile_after_outcome(
+        db=db,
+        learner_id=payload.learner_id,
+        profile=profile,
+        reason="onboarding_submit",
+        mastery_update=chapter_scores,
+        engagement_minutes=payload.time_spent_minutes,
+        extra={"diagnostic_score": score},
     )
+
+    plan = WeeklyPlan(
+        learner_id=payload.learner_id,
+        status="active",
+        current_week=1,
+        total_weeks=len(rough_plan),
+        plan_payload={
+            "rough_plan": [item.model_dump() for item in rough_plan],
+            "timeline": {
+                "selected_timeline_weeks": selected_timeline_weeks,
+                "recommended_timeline_weeks": recommended_timeline_weeks,
+                "current_forecast_weeks": current_forecast_weeks,
+                "timeline_delta_weeks": timeline_delta_weeks,
+            },
+        },
+    )
+    db.add(plan)
+    await db.flush()
+    await _create_plan_version(db=db, plan=plan, reason="onboarding_initial_plan")
+    week_tasks = _default_week_tasks(learner_id=payload.learner_id, chapter=week_1.chapter, week_number=1)
+    for task in week_tasks:
+        db.add(task)
     db.add(
         WeeklyForecast(
             learner_id=payload.learner_id,
@@ -326,7 +843,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     )
     await db.commit()
 
-    return OnboardingSubmitResponse(
+    response = OnboardingSubmitResponse(
         learner_id=payload.learner_id,
         score=score,
         selected_timeline_weeks=selected_timeline_weeks,
@@ -346,7 +863,11 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         },
         rough_plan=rough_plan,
         current_week_schedule=week_1,
+        current_week_tasks=[_to_task_item(task) for task in week_tasks],
     )
+    if idempotency_cache_key:
+        await _set_idempotent_response(idempotency_cache_key, response.model_dump(mode="json"))
+    return response
 
 
 @router.get("/plan/{learner_id}", response_model=WeeklyPlanResponse)
@@ -364,7 +885,18 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
 
     rough = row.plan_payload.get("rough_plan", []) if isinstance(row.plan_payload, dict) else []
     parsed = [ChapterPlan(**item) for item in rough]
+    committed_week_schedule = next((item for item in parsed if item.week == row.current_week), None)
+    forecast_plan = [item for item in parsed if item.week > row.current_week]
     timeline = row.plan_payload.get("timeline", {}) if isinstance(row.plan_payload, dict) else {}
+    tasks = (
+        await db.execute(
+            select(Task)
+            .where(Task.learner_id == learner_id, Task.week_number == row.current_week)
+            .order_by(Task.sort_order.asc(), Task.created_at.asc())
+        )
+    ).scalars().all()
+    estimate_weeks = timeline.get("current_forecast_weeks")
+    selected_weeks = timeline.get("selected_timeline_weeks")
     return WeeklyPlanResponse(
         learner_id=row.learner_id,
         current_week=row.current_week,
@@ -374,11 +906,36 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         current_forecast_weeks=timeline.get("current_forecast_weeks"),
         timeline_delta_weeks=timeline.get("timeline_delta_weeks"),
         rough_plan=parsed,
+        committed_week_schedule=committed_week_schedule,
+        forecast_plan=forecast_plan,
+        current_week_tasks=[_to_task_item(task) for task in tasks],
+        current_week_daily_breakdown=_daily_breakdown_from_tasks(tasks, row.current_week),
+        planning_mode={
+            "committed_week_active_only": True,
+            "committed_week_locked": True,
+            "forecast_read_only": True,
+            "system_replan_only": True,
+        },
+        completion_estimate_weeks=estimate_weeks,
+        completion_estimate_vs_goal_weeks=(
+            int(estimate_weeks) - int(selected_weeks)
+            if estimate_weeks is not None and selected_weeks is not None
+            else None
+        ),
     )
 
 
 @router.post("/weekly-replan", response_model=WeeklyReplanResponse)
 async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends(get_db)):
+    idempotency_cache_key = None
+    if (payload.idempotency_key or "").strip():
+        idempotency_cache_key = (
+            f"idempotency:weekly-replan:{payload.learner_id}:{payload.evaluation.chapter}:{payload.idempotency_key.strip()}"
+        )
+        cached = await _get_idempotent_response(idempotency_cache_key)
+        if isinstance(cached, dict):
+            return WeeklyReplanResponse(**cached)
+
     learner = (await db.execute(select(Learner).where(Learner.id == payload.learner_id))).scalar_one_or_none()
     profile = (
         await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == payload.learner_id))
@@ -433,12 +990,30 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
     revision_queue = []
     if decision in ("proceed_with_revision_queue",) and chapter not in revision_queue:
         revision_queue.append(chapter)
+        await _upsert_revision_queue_item(
+            db=db,
+            learner_id=payload.learner_id,
+            chapter=chapter,
+            reason=decision,
+            priority=2,
+        )
 
-    # Update dynamic mastery profile at chapter level.
-    mastery = dict(profile.concept_mastery or {})
-    mastery[chapter] = score
-    profile.concept_mastery = mastery
-    profile.last_updated = datetime.now(timezone.utc)
+    _log_engagement_event(
+        db=db,
+        learner_id=payload.learner_id,
+        event_type="test_submission",
+        duration_minutes=0,
+        details={"source": "weekly_replan", "chapter": chapter, "score": score},
+    )
+    await _update_profile_after_outcome(
+        db=db,
+        learner_id=payload.learner_id,
+        profile=profile,
+        reason="weekly_replan",
+        mastery_update={chapter: score},
+        engagement_minutes=0,
+        extra={"decision": decision, "threshold": threshold, "attempt_count": attempt_count},
+    )
 
     progress.attempt_count = attempt_count
     progress.best_score = best_score
@@ -482,6 +1057,7 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
         plan_payload["timeline"] = timeline
         latest_plan.plan_payload = plan_payload
         latest_plan.total_weeks = max(latest_plan.total_weeks, current_forecast_weeks)
+        await _create_plan_version(db=db, plan=latest_plan, reason="weekly_replan_update")
 
     db.add(
         WeeklyForecast(
@@ -497,7 +1073,7 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
     )
     await db.commit()
 
-    return WeeklyReplanResponse(
+    response = WeeklyReplanResponse(
         learner_id=payload.learner_id,
         chapter=chapter,
         score=score,
@@ -512,3 +1088,497 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
         reason=reason,
         revision_queue=revision_queue,
     )
+    if idempotency_cache_key:
+        await _set_idempotent_response(idempotency_cache_key, response.model_dump(mode="json"))
+    return response
+
+
+@router.get("/revision-queue/{learner_id}")
+async def get_revision_queue(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    rows = (
+        await db.execute(
+            select(RevisionQueueItem)
+            .where(RevisionQueueItem.learner_id == learner_id)
+            .order_by(RevisionQueueItem.priority.desc(), RevisionQueueItem.created_at.asc())
+        )
+    ).scalars().all()
+    return {
+        "learner_id": learner_id,
+        "items": [
+            RevisionQueueItemResponse(
+                chapter=row.chapter,
+                status=row.status,
+                priority=row.priority,
+                reason=row.reason,
+            )
+            for row in rows
+        ],
+    }
+
+
+@router.get("/revision-policy/{learner_id}", response_model=RevisionPolicyStateResponse)
+async def get_revision_policy_state(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    state = await _upsert_revision_policy_state(db, learner_id)
+    weak_zones = list((state.weak_zones or {}).get("chapters", []))
+    next_actions = list((state.next_actions or {}).get("items", []))
+    return RevisionPolicyStateResponse(
+        learner_id=learner_id,
+        active_pass=state.active_pass,
+        retention_score=float(state.retention_score),
+        pass1_completed=bool(state.pass1_completed_at),
+        pass2_completed=bool(state.pass2_completed_at),
+        weak_zones=weak_zones,
+        next_actions=next_actions,
+    )
+
+
+@router.post("/chapters/advance", response_model=ChapterAdvanceResponse)
+async def advance_chapter(payload: ChapterAdvanceRequest, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == payload.learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+
+    chapter = payload.chapter.strip()
+    if payload.score >= payload.threshold:
+        return ChapterAdvanceResponse(
+            learner_id=payload.learner_id,
+            chapter=chapter,
+            advanced=True,
+            used_policy_override=False,
+            reason="threshold_met",
+        )
+
+    if not payload.allow_policy_override:
+        _log_policy_violation(
+            db=db,
+            learner_id=payload.learner_id,
+            policy_code="NO_SKIP_BELOW_THRESHOLD",
+            chapter=chapter,
+            details={
+                "score": payload.score,
+                "threshold": payload.threshold,
+                "action": "blocked",
+            },
+        )
+        await db.commit()
+        raise HTTPException(status_code=409, detail="Cannot skip chapter below threshold without policy override.")
+
+    if not (payload.override_reason or "").strip():
+        raise HTTPException(status_code=422, detail="override_reason is required when allow_policy_override=true")
+
+    _log_policy_violation(
+        db=db,
+        learner_id=payload.learner_id,
+        policy_code="NO_SKIP_OVERRIDE_APPROVED",
+        chapter=chapter,
+        details={
+            "score": payload.score,
+            "threshold": payload.threshold,
+            "action": "override",
+            "override_reason": payload.override_reason,
+        },
+    )
+    await _upsert_revision_queue_item(
+        db=db,
+        learner_id=payload.learner_id,
+        chapter=chapter,
+        reason="policy_override_skip",
+        priority=3,
+    )
+    await db.commit()
+    return ChapterAdvanceResponse(
+        learner_id=payload.learner_id,
+        chapter=chapter,
+        advanced=True,
+        used_policy_override=True,
+        reason="override_approved_and_revision_queued",
+    )
+
+
+@router.get("/tasks/{learner_id}")
+async def list_current_week_tasks(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+
+    plan = (
+        await db.execute(
+            select(WeeklyPlan)
+            .where(WeeklyPlan.learner_id == learner_id)
+            .order_by(WeeklyPlan.generated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if plan is None:
+        plan = WeeklyPlan(
+            learner_id=learner_id,
+            status="active",
+            current_week=1,
+            total_weeks=14,
+            plan_payload={"rough_plan": [{"week": 1, "chapter": "Chapter 1", "focus": "learn + practice"}]},
+        )
+        db.add(plan)
+        await db.flush()
+        await _create_plan_version(db=db, plan=plan, reason="system_bootstrap_current_week")
+        for task in _default_week_tasks(learner_id=learner_id, chapter="Chapter 1", week_number=1):
+            db.add(task)
+        await db.commit()
+
+    tasks = (
+        await db.execute(
+            select(Task)
+            .where(Task.learner_id == learner_id, Task.week_number == plan.current_week)
+            .order_by(Task.sort_order.asc(), Task.created_at.asc())
+        )
+    ).scalars().all()
+    return {
+        "learner_id": learner_id,
+        "week_number": plan.current_week,
+        "is_committed_week": True,
+        "forecast_read_only": True,
+        "tasks": [_to_task_item(task) for task in tasks],
+        "daily_breakdown": _daily_breakdown_from_tasks(tasks, plan.current_week),
+    }
+
+
+@router.post("/tasks/{task_id}/complete", response_model=TaskCompletionResponse)
+async def complete_task(task_id: UUID, payload: TaskCompletionRequest, db: AsyncSession = Depends(get_db)):
+    idempotency_cache_key = None
+    if (payload.idempotency_key or "").strip():
+        idempotency_cache_key = (
+            f"idempotency:task-complete:{payload.learner_id}:{task_id}:{payload.idempotency_key.strip()}"
+        )
+        cached = await _get_idempotent_response(idempotency_cache_key)
+        if isinstance(cached, dict):
+            return TaskCompletionResponse(**cached)
+
+    task = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one_or_none()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    if task.learner_id != payload.learner_id:
+        raise HTTPException(status_code=403, detail="Task does not belong to learner.")
+    latest_plan = (
+        await db.execute(
+            select(WeeklyPlan)
+            .where(WeeklyPlan.learner_id == payload.learner_id)
+            .order_by(WeeklyPlan.generated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest_plan and task.week_number != latest_plan.current_week:
+        _log_policy_violation(
+            db=db,
+            learner_id=payload.learner_id,
+            policy_code="IMMUTABLE_WEEK_BOUNDARY",
+            chapter=task.chapter,
+            details={
+                "task_week": task.week_number,
+                "current_week": latest_plan.current_week,
+                "task_id": str(task.id),
+            },
+        )
+        await db.commit()
+        raise HTTPException(status_code=409, detail="Task is outside current committed week boundary.")
+
+    if task.status == "completed":
+        response = TaskCompletionResponse(
+            learner_id=payload.learner_id,
+            task_id=task_id,
+            accepted=True,
+            reason="already_completed",
+            status=task.status,
+        )
+        if idempotency_cache_key:
+            await _set_idempotent_response(idempotency_cache_key, response.model_dump(mode="json"))
+        return response
+
+    policy = task.proof_policy or {}
+    accepted = False
+    reason = ""
+    if task.task_type in ("read", "practice"):
+        required_minutes = int(policy.get("min_reading_minutes", 0))
+        accepted = int(payload.reading_minutes) >= required_minutes
+        reason = "reading_proof_ok" if accepted else f"min_reading_minutes_{required_minutes}_required"
+    elif task.task_type == "test":
+        required = bool(policy.get("require_test_attempt_id", True))
+        has_attempt = bool((payload.test_attempt_id or "").strip())
+        accepted = (not required) or has_attempt
+        reason = "test_proof_ok" if accepted else "test_attempt_id_required"
+    else:
+        accepted = bool((payload.notes or "").strip())
+        reason = "notes_proof_ok" if accepted else "notes_required"
+
+    db.add(
+        TaskAttempt(
+            task_id=task.id,
+            learner_id=payload.learner_id,
+            proof_payload={
+                "reading_minutes": payload.reading_minutes,
+                "test_attempt_id": payload.test_attempt_id,
+                "notes": payload.notes,
+            },
+            accepted=accepted,
+            reason=reason,
+        )
+    )
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == payload.learner_id))
+    ).scalar_one_or_none()
+    if accepted:
+        task.status = "completed"
+        task.completed_at = datetime.now(timezone.utc)
+        event_minutes = int(payload.reading_minutes or 0)
+        _log_engagement_event(
+            db=db,
+            learner_id=payload.learner_id,
+            event_type="task_completion",
+            duration_minutes=event_minutes,
+            details={
+                "task_id": str(task.id),
+                "task_type": task.task_type,
+                "week_number": task.week_number,
+                "chapter": task.chapter,
+                "proof_reason": reason,
+            },
+        )
+        if profile is not None:
+            await _update_profile_after_outcome(
+                db=db,
+                learner_id=payload.learner_id,
+                profile=profile,
+                reason="task_completion",
+                engagement_minutes=event_minutes,
+                extra={"task_id": str(task.id), "task_type": task.task_type},
+            )
+    await db.commit()
+    await db.refresh(task)
+    response = TaskCompletionResponse(
+        learner_id=payload.learner_id,
+        task_id=task.id,
+        accepted=accepted,
+        reason=reason,
+        status=task.status,
+    )
+    if idempotency_cache_key:
+        await _set_idempotent_response(idempotency_cache_key, response.model_dump(mode="json"))
+    return response
+
+
+@router.post("/engagement/events", response_model=EngagementEventResponse)
+async def ingest_engagement_event(payload: EngagementEventRequest, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == payload.learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    _log_engagement_event(
+        db=db,
+        learner_id=payload.learner_id,
+        event_type=payload.event_type,
+        duration_minutes=payload.duration_minutes,
+        details=payload.details,
+    )
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == payload.learner_id))
+    ).scalar_one_or_none()
+    if profile is not None and payload.event_type in ("study", "task_completion", "test_submission"):
+        await _update_profile_after_outcome(
+            db=db,
+            learner_id=payload.learner_id,
+            profile=profile,
+            reason="engagement_event",
+            engagement_minutes=payload.duration_minutes,
+            extra={"event_type": payload.event_type},
+        )
+    await db.commit()
+    return EngagementEventResponse(
+        learner_id=payload.learner_id,
+        event_type=payload.event_type,
+        duration_minutes=payload.duration_minutes,
+        accepted=True,
+    )
+
+
+@router.get("/engagement/summary/{learner_id}", response_model=EngagementSummaryResponse)
+async def get_engagement_summary(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    now = datetime.now(timezone.utc)
+    day_start = now - timedelta(days=1)
+    week_start = now - timedelta(days=7)
+    minutes_today = await _engagement_minutes_since(db, learner_id, day_start)
+    minutes_week = await _engagement_minutes_since(db, learner_id, week_start)
+    adherence_rate = await _compute_adherence_rate_week(db, learner_id)
+    login_streak_days = await _compute_login_streak_days(db, learner_id)
+    last_login = (
+        await db.execute(
+            select(EngagementEvent.created_at)
+            .where(EngagementEvent.learner_id == learner_id, EngagementEvent.event_type == "login")
+            .order_by(EngagementEvent.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    last_logout = (
+        await db.execute(
+            select(EngagementEvent.created_at)
+            .where(EngagementEvent.learner_id == learner_id, EngagementEvent.event_type == "logout")
+            .order_by(EngagementEvent.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return EngagementSummaryResponse(
+        learner_id=learner_id,
+        engagement_minutes_today=minutes_today,
+        engagement_minutes_week=minutes_week,
+        login_streak_days=login_streak_days,
+        adherence_rate_week=adherence_rate,
+        last_login_at=last_login,
+        last_logout_at=last_logout,
+    )
+
+
+@router.get("/profile-history/{learner_id}")
+async def get_profile_history(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    rows = (
+        await db.execute(
+            select(LearnerProfileSnapshot)
+            .where(LearnerProfileSnapshot.learner_id == learner_id)
+            .order_by(LearnerProfileSnapshot.created_at.desc())
+            .limit(50)
+        )
+    ).scalars().all()
+    return {
+        "learner_id": learner_id,
+        "items": [
+            {
+                "reason": row.reason,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "payload": row.payload if isinstance(row.payload, dict) else {},
+            }
+            for row in rows
+        ],
+    }
+
+
+@router.get("/where-i-stand/{learner_id}", response_model=LearnerStandResponse)
+async def get_where_i_stand(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if learner is None or profile is None:
+        raise HTTPException(status_code=404, detail="Learner profile not found.")
+
+    mastery_map = dict(profile.concept_mastery or {})
+    chapter_status = []
+    strengths = []
+    weaknesses = []
+    for chapter, value in sorted(mastery_map.items(), key=lambda item: item[0]):
+        score = float(value)
+        if score >= 0.85:
+            band = "Mastered"
+            strengths.append(chapter)
+        elif score >= 0.70:
+            band = "Proficient"
+            strengths.append(chapter)
+        elif score >= 0.45:
+            band = "Developing"
+        else:
+            band = "Beginner"
+            weaknesses.append(chapter)
+        chapter_status.append({"chapter": chapter, "score": round(score, 3), "band": band})
+
+    retention = await _compute_retention_score(db, learner_id)
+    adherence = await _compute_adherence_rate_week(db, learner_id)
+    confidence_score = round(
+        max(
+            0.0,
+            min(
+                1.0,
+                (0.45 * float(profile.cognitive_depth or 0.0))
+                + (0.25 * float(profile.engagement_score or 0.0))
+                + (0.20 * retention)
+                + (0.10 * adherence),
+            ),
+        ),
+        3,
+    )
+    return LearnerStandResponse(
+        learner_id=learner_id,
+        chapter_status=chapter_status,
+        concept_strengths=sorted(set(strengths))[:8],
+        concept_weaknesses=sorted(set(weaknesses))[:8],
+        confidence_score=confidence_score,
+        retention_score=retention,
+        adherence_rate_week=adherence,
+    )
+
+
+@router.get("/evaluation-analytics/{learner_id}", response_model=EvaluationAnalyticsResponse)
+async def get_evaluation_analytics(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    payload = await _build_evaluation_analytics(db, learner_id)
+    return EvaluationAnalyticsResponse(learner_id=learner_id, **payload)
+
+
+@router.get("/daily-plan/{learner_id}", response_model=DailyPlanResponse)
+async def get_daily_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    plan = (
+        await db.execute(
+            select(WeeklyPlan)
+            .where(WeeklyPlan.learner_id == learner_id)
+            .order_by(WeeklyPlan.generated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if plan is None:
+        raise HTTPException(status_code=404, detail="No weekly plan found for learner.")
+    tasks = (
+        await db.execute(
+            select(Task)
+            .where(Task.learner_id == learner_id, Task.week_number == plan.current_week)
+            .order_by(Task.sort_order.asc(), Task.created_at.asc())
+        )
+    ).scalars().all()
+    chapter = tasks[0].chapter if tasks else None
+    return DailyPlanResponse(
+        learner_id=learner_id,
+        week_number=plan.current_week,
+        chapter=chapter,
+        is_committed_week=True,
+        forecast_read_only=True,
+        daily_breakdown=_daily_breakdown_from_tasks(tasks, plan.current_week),
+    )
+
+
+@router.get("/plan-versions/{learner_id}")
+async def list_plan_versions(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    rows = (
+        await db.execute(
+            select(WeeklyPlanVersion)
+            .where(WeeklyPlanVersion.learner_id == learner_id)
+            .order_by(WeeklyPlanVersion.version_number.asc(), WeeklyPlanVersion.created_at.asc())
+        )
+    ).scalars().all()
+    return {
+        "learner_id": learner_id,
+        "versions": [
+            {
+                "version_number": row.version_number,
+                "current_week": row.current_week,
+                "reason": row.reason,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ],
+    }

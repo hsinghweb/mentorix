@@ -19,6 +19,7 @@ class SubmitAnswerRequest(BaseModel):
     session_id: str
     answer: str
     response_time: float = 0.0
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
 
 class SubmitAnswerResponse(BaseModel):

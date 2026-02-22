@@ -1,4 +1,4 @@
-from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from starlette.requests import Request
 
 from app.core.settings import settings
@@ -18,5 +18,8 @@ async def api_key_auth_middleware(request: Request, call_next):
         if not any(path.startswith(prefix) for prefix in EXEMPT_PATH_PREFIXES):
             provided = request.headers.get("x-api-key", "")
             if not settings.gateway_api_key or provided != settings.gateway_api_key:
-                raise HTTPException(status_code=401, detail="Unauthorized: invalid or missing x-api-key")
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Unauthorized: invalid or missing x-api-key"},
+                )
     return await call_next(request)

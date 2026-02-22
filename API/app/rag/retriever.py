@@ -10,7 +10,7 @@ from app.rag.vector_backends import get_vector_backend
 
 
 def _tokenize(text: str) -> set[str]:
-    return set(re.findall(r"[a-zA-Z0-9_]+", (text or "").lower()))
+    return set(re.findall(r"\w+", (text or "").lower()))
 
 
 def _keyword_score(query_tokens: set[str], chunk: ConceptChunk) -> float:
@@ -32,6 +32,29 @@ def _keyword_score_text(query_tokens: set[str], text: str) -> float:
 async def retrieve_concept_chunks(
     db: AsyncSession, concept: str, top_k: int = 5, difficulty: int | None = None
 ) -> list[str]:
+    result = await retrieve_concept_chunks_with_meta(db=db, concept=concept, top_k=top_k, difficulty=difficulty)
+    return result["chunks"]
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _retrieval_confidence(scored: list[tuple[float, object]], top_k: int) -> float:
+    if not scored:
+        return 0.0
+    top_scores = [_clamp01(score) for score, _ in scored[: max(1, top_k)]]
+    avg_top = sum(top_scores) / len(top_scores)
+    if len(scored) < 2:
+        margin = top_scores[0]
+    else:
+        margin = _clamp01(float(scored[0][0]) - float(scored[1][0]))
+    return round(_clamp01((0.65 * avg_top) + (0.35 * margin)), 3)
+
+
+async def retrieve_concept_chunks_with_meta(
+    db: AsyncSession, concept: str, top_k: int = 5, difficulty: int | None = None
+) -> dict:
     """
     Hybrid retrieval:
     1) Vector-semantic retrieval (primary, concept-focused).
@@ -49,11 +72,13 @@ async def retrieve_concept_chunks(
     stmt = stmt.limit(max(top_k * 6, 12))
 
     rows: list[ConceptChunk] = []
+    semantic_fallback_used = False
     backend = get_vector_backend()
     try:
         semantic_stmt = backend.order_concept_chunks(stmt, query_vec)
         rows = (await db.execute(semantic_stmt)).scalars().all()
     except Exception:
+        semantic_fallback_used = True
         rows = (await db.execute(stmt)).scalars().all()
 
     scored: list[tuple[float, ConceptChunk]] = []
@@ -77,4 +102,21 @@ async def retrieve_concept_chunks(
             scored.append((0.45 + (0.25 * keyword_score), a))
 
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [item.content for _score, item in scored[:top_k]]
+    top_items = scored[:top_k]
+    chunks = [item.content for _score, item in top_items]
+    confidence = _retrieval_confidence(scored, top_k=top_k)
+
+    if not chunks:
+        message = "No grounded chunks found for requested concept."
+    elif confidence < 0.35:
+        message = "Low retrieval confidence. Showing best grounded matches; consider narrowing concept."
+    else:
+        message = "Grounded retrieval confidence is acceptable."
+
+    return {
+        "chunks": chunks,
+        "retrieval_confidence": confidence,
+        "semantic_fallback_used": semantic_fallback_used,
+        "message": message,
+        "candidate_count": len(scored),
+    }

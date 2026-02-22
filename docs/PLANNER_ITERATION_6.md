@@ -175,8 +175,8 @@ Exit criteria:
   - [x] diagnostics
   - [x] profile
   - [x] weekly plan
-  - [ ] schedule execution
-  - [ ] revision queue
+  - [x] schedule execution
+  - [x] revision queue
 - [ ] Add onboarding timeline contract (student-selected goal duration):
   - [x] enforce min/max bounds (`14` to `28` weeks)
   - [x] persist requested timeline weeks
@@ -186,8 +186,8 @@ Exit criteria:
   - [x] persist and expose timeline delta (`forecast_weeks - selected_weeks`)
 - [ ] Implement strict progression rules:
   - [x] chapter unlock threshold check (default 60%)
-  - [ ] no skip without policy override
-  - [ ] task completion by proof, not toggle
+  - [x] no skip without policy override
+  - [x] task completion by proof, not toggle
   - [x] timeout policy for stuck chapters (max attempts / max weeks before controlled progression)
   - [x] retry policy for low-score chapters (repeat with stronger support before timeout progression)
 - [ ] Add adaptive pace engine:
@@ -199,8 +199,8 @@ Exit criteria:
   - [ ] pass 3 weak-zone focus
 - [ ] Enforce planning mode:
   - [x] rough long-range roadmap based on requested/recommended timeline (`14`-`28` weeks)
-  - [ ] only current week schedule is active/committed
-  - [ ] keep upcoming weeks as forecast-only (read-only projection, not committed tasks)
+  - [x] only current week schedule is active/committed
+  - [x] keep upcoming weeks as forecast-only (read-only projection, not committed tasks)
   - [x] re-forecast remaining completion weeks after each weekly evaluation
 
 ## Phase 3: Frontend Enterprise UX
@@ -253,7 +253,7 @@ Exit criteria:
 ## Core Student Domain
 - [ ] `students`
 - [ ] `student_profiles`
-- [ ] `student_profile_history` (snapshot trail)
+- [x] `student_profile_history` (snapshot trail)
 - [x] timeline fields in profile domain (`requested_timeline_weeks`, `recommended_timeline_weeks`, `timeline_bounds_version`)
 - [ ] timeline drift fields (`current_forecast_weeks`, `timeline_delta_weeks`, `last_forecast_at`)
 
@@ -267,10 +267,10 @@ Exit criteria:
 
 ## Learning Journey
 - [x] `weekly_plans`
-- [ ] `weekly_plan_versions`
-- [ ] `tasks`
-- [ ] `task_attempts` (proof-based completion)
-- [ ] `schedule_locks` / immutable task flags
+- [x] `weekly_plan_versions`
+- [x] `tasks`
+- [x] `task_attempts` (proof-based completion)
+- [x] `schedule_locks` / immutable task flags
 - [x] `weekly_forecasts` (goal vs current projection history)
 
 ## Assessment & Mastery
@@ -280,13 +280,13 @@ Exit criteria:
 - [ ] `chapter_scores`
 - [ ] `mastery_tracking`
 - [ ] `concept_mastery_tracking`
-- [ ] `revision_queue`
+- [x] `revision_queue`
 
 ## Observability & Governance
 - [ ] `agent_decision_logs`
 - [ ] `system_events`
 - [ ] `notifications`
-- [ ] `policy_violations`
+- [x] `policy_violations`
 
 ---
 
@@ -327,9 +327,9 @@ Exit criteria:
   - [ ] revision priority
   - [ ] chapter-level attempt count / retry count
   - [ ] chapter-level timeout flag
-  - [ ] engagement minutes per day/week
-  - [ ] login/logout events and streak count
-- [ ] Update profile after every task/test outcome
+  - [x] engagement minutes per day/week
+  - [x] login/logout events and streak count
+- [x] Update profile after every task/test outcome
 
 ## Planner Engine (Weekly Adaptive)
 - [x] Build rough long-range map from bounded timeline selection (`14`-`28` weeks)
@@ -342,35 +342,35 @@ Exit criteria:
   - [x] if repeatedly below threshold with timeout -> progress + push chapter to revision queue
 
 ## Content Agent
-- [ ] RAG-only grounded explanation generation
-- [ ] Difficulty and depth adaptation by profile
-- [ ] Generate examples + practice set per concept
-- [ ] Adapt tone and explanation style per learner profile:
-  - [ ] weak learner -> simpler language + more examples
-  - [ ] strong learner -> concise explanation + challenge questions
+- [x] RAG-only grounded explanation generation
+- [x] Difficulty and depth adaptation by profile
+- [x] Generate examples + practice set per concept
+- [x] Adapt tone and explanation style per learner profile:
+  - [x] weak learner -> simpler language + more examples
+  - [x] strong learner -> concise explanation + challenge questions
 
 ## Scheduler Engine
-- [ ] Create daily task breakdown (read/practice/test)
-- [ ] Lock completion without proof
-- [ ] Track completion timestamps and evidence
-- [ ] Enforce immutable schedule API contract:
-  - [ ] student cannot edit/reorder locked tasks
-  - [ ] only system policy engine can replan next week
+- [x] Create daily task breakdown (read/practice/test)
+- [x] Lock completion without proof
+- [x] Track completion timestamps and evidence
+- [x] Enforce immutable schedule API contract:
+  - [x] student cannot edit/reorder locked tasks
+  - [x] only system policy engine can replan next week
 - [ ] Track engagement evidence:
-  - [ ] reading duration
-  - [ ] test attempt proof
-  - [ ] weekly adherence summary
+  - [x] reading duration
+  - [x] test attempt proof
+  - [x] weekly adherence summary
 
 ## Evaluation + Analytics
-- [ ] Evaluate objective answers
-- [ ] Update chapter/concept mastery
-- [ ] Detect misconception patterns
-- [ ] Emit recommendations + risk level
+- [x] Evaluate objective answers
+- [x] Update chapter/concept mastery
+- [x] Detect misconception patterns
+- [x] Emit recommendations + risk level
 
 ## Progress + Revision
-- [ ] Build/maintain revision queue
-- [ ] Trigger full-pass and weak-area pass policies
-- [ ] Measure retention over time
+- [x] Build/maintain revision queue
+- [x] Trigger full-pass and weak-area pass policies
+- [x] Measure retention over time
 
 ---
 
@@ -413,24 +413,24 @@ Exit criteria:
 
 ## 6) Grounding + RAG Quality Controls
 
-- [ ] Add strict syllabus boundary checker for generation prompts
-- [ ] Store citation metadata for each generated output
-- [ ] Add retrieval confidence score and fallback messaging
-- [ ] Add "out of syllabus" safe response path
-- [ ] Add retrieval evaluation script (manual gold checks on selected concepts)
+- [x] Add strict syllabus boundary checker for generation prompts
+- [x] Store citation metadata for each generated output
+- [x] Add retrieval confidence score and fallback messaging
+- [x] Add "out of syllabus" safe response path
+- [x] Add retrieval evaluation script (manual gold checks on selected concepts)
 
 ---
 
 ## 7) Security, Reliability, and Guardrails
 
-- [ ] API gateway auth enabled path (default off locally, on in secured mode)
-- [ ] Secret handling hardening (never log keys)
-- [ ] Input validation and policy checks on all write routes
-- [ ] Failure fallback paths for:
-  - [ ] Gemini outage
-  - [ ] Ollama outage
-  - [ ] DB/Redis outage
-- [ ] Idempotent scheduling and test submission endpoints
+- [x] API gateway auth enabled path (default off locally, on in secured mode)
+- [x] Secret handling hardening (never log keys)
+- [x] Input validation and policy checks on all write routes
+- [x] Failure fallback paths for:
+  - [x] Gemini outage
+  - [x] Ollama outage
+  - [x] DB/Redis outage
+- [x] Idempotent scheduling and test submission endpoints
 
 ---
 
@@ -444,9 +444,13 @@ Exit criteria:
 ## Backend Tests
 - [ ] onboarding -> diagnostic -> profile integration test (including timeline bounds and recommendation payload)
 - [x] weekly planning and threshold unlock tests
-- [ ] locked-task completion policy tests
-- [ ] revision queue trigger tests
-- [ ] RAG grounding compliance tests
+- [x] locked-task completion policy tests
+- [x] revision queue trigger tests
+- [x] no-skip override policy tests
+- [x] weekly plan versions + committed/forecast contract tests
+- [x] revision pass lifecycle + weak-zone orchestration tests
+- [x] adaptive content policy tests (tone/depth/guardrail)
+- [x] RAG grounding compliance tests
 - [x] grounding readiness endpoint shape test
 
 ## Frontend Tests
@@ -454,7 +458,7 @@ Exit criteria:
 - [ ] admin metrics panel rendering tests
 
 ## Reliability Tests
-- [ ] fallback behavior tests
+- [x] fallback behavior tests
 - [ ] scheduler restart/state recovery tests
 - [ ] load test (small local profile)
 
