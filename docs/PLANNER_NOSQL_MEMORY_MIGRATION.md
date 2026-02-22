@@ -84,17 +84,23 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
   - [x] `MongoMemoryStore` (new behavior)
 
 ## Phase B: Dual-write transition
-- [ ] Add optional dual-write mode (`MEMORY_DUAL_WRITE=true`) for verification.
-- [ ] Route existing memory writes through repository abstraction.
-- [ ] Continue reads from file store initially, compare Mongo parity in logs.
+- [x] Add optional dual-write mode (`MEMORY_DUAL_WRITE=true`) for verification.
+- [x] Route existing memory writes through repository abstraction.
+- [x] Continue reads from file store initially, compare Mongo parity in logs.
 
 ## Phase C: Backfill and switch
-- [ ] Build one-time migration script:
-  - read all existing JSON files under `API/data/system`
-  - upsert into Mongo collections
-  - emit counts/checksum report
-- [ ] Validate data parity (document counts + random spot checks).
-- [ ] Switch reads to Mongo (`MEMORY_STORE_BACKEND=mongo`).
+- [x] Build one-time migration script:
+  - [x] read all existing JSON files under `API/data/system`
+  - [x] upsert into Mongo collections
+  - [x] emit counts/checksum report
+- [x] Validate data parity (document counts + random spot checks).
+- [x] Switch reads to Mongo (`MEMORY_STORE_BACKEND=mongo`).
+
+### Phase C command
+- Backfill + parity report:
+  - `cd API`
+  - `uv run python scripts/backfill_memory_to_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix`
+  - Report output: `API/data/system/reports/memory_backfill_report.json`
 
 ## Phase D: Cleanup
 - [ ] Disable dual-write.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 from app.core.settings import settings
 
 HUB_KEYS = ("learner_preferences", "operating_context", "soft_identity")
+logger = logging.getLogger(__name__)
 
 
 class MemoryStore(ABC):
@@ -147,11 +149,89 @@ class MongoMemoryStore(MemoryStore):
         self._episodes.replace_one({"run_id": run_id}, doc, upsert=True)
 
 
+class DualWriteMemoryStore(MemoryStore):
+    """
+    Phase-B migration mode:
+    - reads remain on file store
+    - writes go to file + mongo
+    """
+
+    def __init__(self, read_store: MemoryStore, primary_write_store: MemoryStore, secondary_write_store: MemoryStore):
+        self._read_store = read_store
+        self._primary = primary_write_store
+        self._secondary = secondary_write_store
+
+    def _write_both(self, op_name: str, primary_call, secondary_call) -> None:
+        primary_call()
+        try:
+            secondary_call()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dual-write secondary write failed op=%s error=%s", op_name, str(exc))
+
+    def upsert_hub_entry(self, hub_type: str, item_key: str, payload: dict, learner_id: str | None = None) -> None:
+        self._write_both(
+            "upsert_hub_entry",
+            lambda: self._primary.upsert_hub_entry(hub_type, item_key, payload, learner_id=learner_id),
+            lambda: self._secondary.upsert_hub_entry(hub_type, item_key, payload, learner_id=learner_id),
+        )
+
+    def get_all_hubs(self) -> dict[str, dict]:
+        file_payload = self._read_store.get_all_hubs()
+        try:
+            mongo_payload = self._secondary.get_all_hubs()
+            if file_payload != mongo_payload:
+                logger.info("Dual-write parity check: memory hubs differ between file and mongo stores")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dual-write parity check failed for hubs error=%s", str(exc))
+        return file_payload
+
+    def save_snapshot(self, payload: dict) -> None:
+        self._write_both(
+            "save_snapshot",
+            lambda: self._primary.save_snapshot(payload),
+            lambda: self._secondary.save_snapshot(payload),
+        )
+
+    def load_latest_snapshot(self) -> dict:
+        file_payload = self._read_store.load_latest_snapshot()
+        try:
+            mongo_payload = self._secondary.load_latest_snapshot()
+            if bool(file_payload) != bool(mongo_payload):
+                logger.info("Dual-write parity check: snapshot presence differs between file and mongo stores")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dual-write parity check failed for snapshots error=%s", str(exc))
+        return file_payload
+
+    def save_episode(self, skeleton: dict) -> None:
+        self._write_both(
+            "save_episode",
+            lambda: self._primary.save_episode(skeleton),
+            lambda: self._secondary.save_episode(skeleton),
+        )
+
+
 def build_memory_store() -> MemoryStore:
     backend = settings.memory_store_backend.strip().lower()
+    dual_write = settings.memory_dual_write
+    file_store = FileMemoryStore(Path(settings.runtime_data_dir))
+
+    if dual_write:
+        mongo_store = MongoMemoryStore(settings.mongodb_url, settings.mongodb_db_name)
+        if backend != "file":
+            logger.warning(
+                "MEMORY_DUAL_WRITE=true forces file-read migration mode. "
+                "Current MEMORY_STORE_BACKEND=%s; reads will still come from file store.",
+                backend,
+            )
+        return DualWriteMemoryStore(
+            read_store=file_store,
+            primary_write_store=file_store,
+            secondary_write_store=mongo_store,
+        )
+
     if backend == "mongo":
         return MongoMemoryStore(settings.mongodb_url, settings.mongodb_db_name)
-    return FileMemoryStore(Path(settings.runtime_data_dir))
+    return file_store
 
 
 memory_store = build_memory_store()
