@@ -49,6 +49,13 @@ Grounding endpoints:
 - Optional export backup command (Mongo -> JSON files):
   - `cd API`
   - `uv run python scripts/export_memory_from_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix --out-dir data/system/export_from_mongo`
+- Runtime verification endpoint:
+  - `GET /memory/status`
+
+### Memory PII/Security Mapping
+- Learner runtime payloads are stored in Mongo collections (`memory_hubs`, `runtime_snapshots`, `episodic_memory`).
+- Sensitive keys are redacted before persistence (for example: `password`, `secret`, `token`, `api_key`, `authorization`).
+- Mongo connection errors returned by status checks are sanitized to avoid credential leakage.
 
 ## Session 19 Additions (Visible in Demo)
 
