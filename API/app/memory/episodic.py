@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
-from app.core.settings import settings
+from app.memory.store import memory_store
 
 
 class MemorySkeletonizer:
@@ -72,16 +69,9 @@ class MemorySkeletonizer:
 
 
 class EpisodicMemory:
-    def __init__(self):
-        self.base = Path(settings.runtime_data_dir) / "episodes"
-        self.base.mkdir(parents=True, exist_ok=True)
-
-    def save_episode(self, run_payload: dict) -> Path:
+    def save_episode(self, run_payload: dict) -> None:
         skeleton = MemorySkeletonizer.skeletonize(run_payload)
-        run_id = skeleton.get("run_id") or "unknown"
-        target = self.base / f"skeleton_{run_id}.json"
-        target.write_text(json.dumps(skeleton, indent=2), encoding="utf-8")
-        return target
+        memory_store.save_episode(skeleton)
 
 
 episodic_memory = EpisodicMemory()

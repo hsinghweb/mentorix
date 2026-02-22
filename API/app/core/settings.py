@@ -9,6 +9,10 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://mentorix:mentorix@localhost:5432/mentorix"
     redis_url: str = "redis://localhost:6379/0"
+    mongodb_url: str = "mongodb://localhost:27017"
+    mongodb_db_name: str = "mentorix"
+    memory_store_backend: str = "file"
+    memory_dual_write: bool = False
     session_ttl_seconds: int = 3600
     retention_cleanup_enabled: bool = True
     session_retention_days: int = 30

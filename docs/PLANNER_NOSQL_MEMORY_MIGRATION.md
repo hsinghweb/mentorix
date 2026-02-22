@@ -73,15 +73,15 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
 ## 3) Migration strategy (safe rollout)
 
 ## Phase A: Foundation
-- [ ] Add MongoDB service to local Docker compose (`mongo`, named volume, healthcheck).
-- [ ] Add backend settings:
+- [x] Add MongoDB service to local Docker compose (`mongo`, named volume, healthcheck).
+- [x] Add backend settings:
   - `MONGODB_URL`
   - `MONGODB_DB_NAME`
   - `MEMORY_STORE_BACKEND` (`file|mongo`, default `file` during transition)
-- [ ] Add memory repository abstraction:
-  - `MemoryStore` interface
-  - `FileMemoryStore` (existing behavior)
-  - `MongoMemoryStore` (new behavior)
+- [x] Add memory repository abstraction:
+  - [x] `MemoryStore` interface
+  - [x] `FileMemoryStore` (existing behavior)
+  - [x] `MongoMemoryStore` (new behavior)
 
 ## Phase B: Dual-write transition
 - [ ] Add optional dual-write mode (`MEMORY_DUAL_WRITE=true`) for verification.
@@ -105,13 +105,13 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
 
 ## 4) Backend implementation tasks
 
-- [ ] Refactor `app/memory/hubs.py` to use memory repository (no direct file IO).
-- [ ] Refactor `app/runtime/persistence.py` snapshot save/load via repository.
-- [ ] Refactor `app/memory/episodic.py` episodic save via repository.
-- [ ] Add `app/memory/repository/` package:
-  - [ ] interface + DTOs
-  - [ ] file implementation
-  - [ ] mongo implementation
+- [x] Refactor `app/memory/hubs.py` to use memory repository (no direct file IO).
+- [x] Refactor `app/runtime/persistence.py` snapshot save/load via repository.
+- [x] Refactor `app/memory/episodic.py` episodic save via repository.
+- [x] Add repository module (`app/memory/store.py`):
+  - [x] interface
+  - [x] file implementation
+  - [x] mongo implementation
 - [ ] Add startup check endpoint extension:
   - memory backend status
   - Mongo connectivity

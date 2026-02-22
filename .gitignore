@@ -24,6 +24,7 @@ API/htmlcov/
 postgres_data/
 redis_data/
 vector_data/
+API/data/system/
 
 frontend/node_modules/
 frontend/dist/
