@@ -51,6 +51,11 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
   - [x] weekly plan
   - [ ] schedule execution
   - [ ] revision queue
+- [ ] Add onboarding timeline contract (student-selected goal duration):
+  - [ ] enforce min/max bounds (`14` to `28` weeks)
+  - [ ] persist requested timeline weeks
+  - [ ] generate system-recommended timeline from diagnostic score/profile
+  - [ ] return both values (requested + recommended) in onboarding response
 - [ ] Implement strict progression rules:
   - [x] chapter unlock threshold check (default 60%)
   - [ ] no skip without policy override
@@ -65,7 +70,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
   - [ ] pass 2 full revision
   - [ ] pass 3 weak-zone focus
 - [ ] Enforce planning mode:
-  - [ ] rough long-range roadmap (14-15 weeks) as forecast
+  - [ ] rough long-range roadmap based on requested/recommended timeline (`14`-`28` weeks)
   - [ ] only current week schedule is active/committed
 
 ## Phase 3: Frontend Enterprise UX
@@ -119,6 +124,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] `students`
 - [ ] `student_profiles`
 - [ ] `student_profile_history` (snapshot trail)
+- [ ] timeline fields in profile domain (`requested_timeline_weeks`, `recommended_timeline_weeks`, `timeline_bounds_version`)
 
 ## Curriculum & Grounding
 - [ ] `chapters`
@@ -168,11 +174,16 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 
 ## Onboarding + Diagnostics
 - [x] Collect student demographic + academic baseline
+- [ ] Collect target completion timeline during onboarding (`14`-`28` weeks only)
 - [x] Generate diagnostic objective test set from RAG:
   - [x] MCQ
   - [x] Fill-in-the-blank
   - [x] True/False
 - [x] Score and initialize profile state
+- [ ] Generate timeline recommendation after diagnostic:
+  - [ ] keep student-selected timeline as explicit goal
+  - [ ] compute recommended timeline and rationale (e.g., "you may need ~16 weeks")
+  - [ ] use selected/recommended values to shape week-1 load and roadmap pacing
 
 ## Profiling Engine
 - [ ] Maintain dynamic attributes:
@@ -189,7 +200,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] Update profile after every task/test outcome
 
 ## Planner Engine (Weekly Adaptive)
-- [x] Build rough long-range map (example 15 weeks)
+- [ ] Build rough long-range map from bounded timeline selection (`14`-`28` weeks)
 - [x] Activate only current week details
 - [x] Recalculate weekly plan after each evaluation window
 - [x] Enforce threshold-based chapter unlocks
@@ -231,6 +242,10 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 
 ## Student Experience
 - [ ] Onboarding wizard
+- [ ] Timeline selector in onboarding:
+  - [ ] slider/input constrained to `14`-`28` weeks
+  - [ ] helper text for minimum/maximum policy
+  - [ ] show "your target" vs "Mentorix recommendation" after test
 - [ ] Diagnostic test interface
 - [ ] Current-week task board (locked completion logic)
 - [ ] Daily/weekly streak and engagement tracker
@@ -286,7 +301,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] ingestion idempotency tests
 
 ## Backend Tests
-- [ ] onboarding -> diagnostic -> profile integration test
+- [ ] onboarding -> diagnostic -> profile integration test (including timeline bounds and recommendation payload)
 - [x] weekly planning and threshold unlock tests
 - [ ] locked-task completion policy tests
 - [ ] revision queue trigger tests
@@ -314,6 +329,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [ ] weekly adherence rate
 - [ ] streak length and engagement minutes
 - [ ] chapter retry count and timeout progression rate
+- [ ] timeline adherence: expected pace vs actual pace against selected timeline
 
 ## System KPIs
 - [ ] p50/p95 API latency
@@ -330,6 +346,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 - [x] Pre-work embedding pipeline complete for syllabus + first 3 chapters
 - [ ] Full student lifecycle operational in UI
 - [x] Dynamic onboarding-based initial plan generation operational
+- [ ] Student-selectable bounded timeline + system recommendation operational
 - [ ] Weekly re-planning with threshold + timeout rules operational
 - [ ] Adaptive tone/content delivery operational and demonstrable
 - [ ] Admin observability panel operational
