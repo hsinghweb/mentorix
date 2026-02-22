@@ -39,6 +39,17 @@ async def initialize_database(session: AsyncSession, engine) -> None:
     async with engine.begin() as conn:
         await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
+        # Backward-compatible column sync for learner profile timeline fields.
+        await conn.execute(
+            text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS selected_timeline_weeks INTEGER")
+        )
+        await conn.execute(
+            text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS recommended_timeline_weeks INTEGER")
+        )
+        await conn.execute(
+            text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS current_forecast_weeks INTEGER")
+        )
+        await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS timeline_delta_weeks INTEGER"))
         # Ensure indexes also exist for DBs created before index metadata changes.
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_session_logs_learner_id ON session_logs (learner_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_session_logs_concept ON session_logs (concept)"))

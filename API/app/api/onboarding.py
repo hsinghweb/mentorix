@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.memory.cache import redis_client
 from app.memory.database import get_db
-from app.models.entities import ChapterProgression, EmbeddingChunk, Learner, LearnerProfile, WeeklyPlan
+from app.models.entities import ChapterProgression, EmbeddingChunk, Learner, LearnerProfile, WeeklyForecast, WeeklyPlan
 from app.schemas.onboarding import (
     ChapterPlan,
     DiagnosticQuestion,
@@ -25,6 +25,8 @@ from app.schemas.onboarding import (
 )
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
+TIMELINE_MIN_WEEKS = 14
+TIMELINE_MAX_WEEKS = 28
 
 
 def _extract_sentence(text: str) -> str:
@@ -115,11 +117,48 @@ async def _get_diagnostic_chunks(db: AsyncSession) -> list[EmbeddingChunk]:
     return list(rows)
 
 
-def _build_rough_plan(chapter_scores: dict[str, float], exam_in_months: int) -> tuple[list[ChapterPlan], ChapterPlan]:
+def _clamp_weeks(weeks: int) -> int:
+    return max(TIMELINE_MIN_WEEKS, min(TIMELINE_MAX_WEEKS, int(weeks)))
+
+
+def _recommend_timeline_weeks(selected_timeline_weeks: int, score: float) -> tuple[int, str]:
+    selected = _clamp_weeks(selected_timeline_weeks)
+    if score >= 0.85:
+        recommended = _clamp_weeks(selected - 1)
+        return recommended, "Strong diagnostic performance. You can target a slightly faster completion plan."
+    if score >= 0.70:
+        return selected, "Good baseline. Your selected timeline looks realistic."
+    if score >= 0.55:
+        recommended = _clamp_weeks(selected + 2)
+        return recommended, "Moderate baseline. A slightly extended timeline should improve retention."
+    if score >= 0.40:
+        recommended = _clamp_weeks(selected + 4)
+        return recommended, "Foundation needs reinforcement. A longer timeline is recommended for confidence."
+    recommended = _clamp_weeks(selected + 6)
+    return recommended, "Strongly recommended to extend timeline and focus on fundamentals first."
+
+
+def _pacing_status(delta_weeks: int) -> str:
+    if delta_weeks <= -1:
+        return "ahead"
+    if delta_weeks >= 2:
+        return "behind"
+    return "on_track"
+
+
+def _weekly_forecast_adjustment(*, decision: str, score: float, threshold: float) -> int:
+    if decision == "repeat_chapter":
+        return 1
+    if decision == "proceed_with_revision_queue" and score < threshold:
+        return 1
+    if decision == "proceed_next_chapter" and score >= min(1.0, threshold + 0.20):
+        return -1
+    return 0
+
+
+def _build_rough_plan(chapter_scores: dict[str, float], target_weeks: int) -> tuple[list[ChapterPlan], ChapterPlan]:
     chapter_count = 14
-    avg_score = (sum(chapter_scores.values()) / len(chapter_scores)) if chapter_scores else 0.5
-    extra_weeks = max(0, min(6, int((0.65 - avg_score) * 10)))
-    target_weeks = max(14, min(max(14, exam_in_months * 4), 20 + extra_weeks))
+    target_weeks = _clamp_weeks(target_weeks)
 
     weak_chapters = {k for k, v in chapter_scores.items() if v < 0.60}
     plan: list[ChapterPlan] = []
@@ -151,6 +190,10 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
         retention_decay=0.1,
         cognitive_depth=0.5,
         engagement_score=0.5,
+        selected_timeline_weeks=_clamp_weeks(payload.selected_timeline_weeks),
+        recommended_timeline_weeks=None,
+        current_forecast_weeks=None,
+        timeline_delta_weeks=None,
     )
     db.add(profile)
     await db.commit()
@@ -162,7 +205,17 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
     questions, answer_key = _build_questions(chunks)
     attempt_id = str(uuid4())
     redis_key = f"onboarding:attempt:{attempt_id}"
-    await redis_client.set(redis_key, json.dumps({"answer_key": answer_key, "exam_in_months": payload.exam_in_months}), ex=7200)
+    await redis_client.set(
+        redis_key,
+        json.dumps(
+            {
+                "answer_key": answer_key,
+                "exam_in_months": payload.exam_in_months,
+                "selected_timeline_weeks": _clamp_weeks(payload.selected_timeline_weeks),
+            }
+        ),
+        ex=7200,
+    )
 
     return OnboardingStartResponse(
         learner_id=learner.id,
@@ -181,7 +234,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
 
     attempt = json.loads(attempt_raw)
     answer_key: dict[str, str] = attempt.get("answer_key", {})
-    exam_in_months = int(attempt.get("exam_in_months", 10))
+    selected_timeline_weeks = _clamp_weeks(int(attempt.get("selected_timeline_weeks", TIMELINE_MIN_WEEKS)))
 
     if not answer_key:
         raise HTTPException(status_code=400, detail="Diagnostic answer key is unavailable.")
@@ -231,8 +284,16 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     profile.last_updated = datetime.now(timezone.utc)
     await db.commit()
 
-    rough_plan, week_1 = _build_rough_plan(chapter_scores, exam_in_months=exam_in_months)
+    recommended_timeline_weeks, recommendation_note = _recommend_timeline_weeks(selected_timeline_weeks, score)
+    current_forecast_weeks = recommended_timeline_weeks
+    timeline_delta_weeks = current_forecast_weeks - selected_timeline_weeks
+    rough_plan, week_1 = _build_rough_plan(chapter_scores, target_weeks=current_forecast_weeks)
     await redis_client.delete(redis_key)
+
+    profile.selected_timeline_weeks = selected_timeline_weeks
+    profile.recommended_timeline_weeks = recommended_timeline_weeks
+    profile.current_forecast_weeks = current_forecast_weeks
+    profile.timeline_delta_weeks = timeline_delta_weeks
 
     db.add(
         WeeklyPlan(
@@ -240,7 +301,27 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
             status="active",
             current_week=1,
             total_weeks=len(rough_plan),
-            plan_payload={"rough_plan": [item.model_dump() for item in rough_plan]},
+            plan_payload={
+                "rough_plan": [item.model_dump() for item in rough_plan],
+                "timeline": {
+                    "selected_timeline_weeks": selected_timeline_weeks,
+                    "recommended_timeline_weeks": recommended_timeline_weeks,
+                    "current_forecast_weeks": current_forecast_weeks,
+                    "timeline_delta_weeks": timeline_delta_weeks,
+                },
+            },
+        )
+    )
+    db.add(
+        WeeklyForecast(
+            learner_id=payload.learner_id,
+            week_number=1,
+            selected_timeline_weeks=selected_timeline_weeks,
+            recommended_timeline_weeks=recommended_timeline_weeks,
+            current_forecast_weeks=current_forecast_weeks,
+            timeline_delta_weeks=timeline_delta_weeks,
+            pacing_status=_pacing_status(timeline_delta_weeks),
+            reason="initial_onboarding_forecast",
         )
     )
     await db.commit()
@@ -248,11 +329,20 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     return OnboardingSubmitResponse(
         learner_id=payload.learner_id,
         score=score,
+        selected_timeline_weeks=selected_timeline_weeks,
+        recommended_timeline_weeks=recommended_timeline_weeks,
+        current_forecast_weeks=current_forecast_weeks,
+        timeline_delta_weeks=timeline_delta_weeks,
+        timeline_recommendation_note=recommendation_note,
         chapter_scores=chapter_scores,
         profile_snapshot={
             "cognitive_depth": profile.cognitive_depth,
             "engagement_score": profile.engagement_score,
             "chapter_mastery": chapter_scores,
+            "selected_timeline_weeks": selected_timeline_weeks,
+            "recommended_timeline_weeks": recommended_timeline_weeks,
+            "current_forecast_weeks": current_forecast_weeks,
+            "timeline_delta_weeks": timeline_delta_weeks,
         },
         rough_plan=rough_plan,
         current_week_schedule=week_1,
@@ -274,10 +364,15 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
 
     rough = row.plan_payload.get("rough_plan", []) if isinstance(row.plan_payload, dict) else []
     parsed = [ChapterPlan(**item) for item in rough]
+    timeline = row.plan_payload.get("timeline", {}) if isinstance(row.plan_payload, dict) else {}
     return WeeklyPlanResponse(
         learner_id=row.learner_id,
         current_week=row.current_week,
         total_weeks=row.total_weeks,
+        selected_timeline_weeks=timeline.get("selected_timeline_weeks"),
+        recommended_timeline_weeks=timeline.get("recommended_timeline_weeks"),
+        current_forecast_weeks=timeline.get("current_forecast_weeks"),
+        timeline_delta_weeks=timeline.get("timeline_delta_weeks"),
         rough_plan=parsed,
     )
 
@@ -351,6 +446,55 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
     progress.status = decision
     progress.revision_queued = decision == "proceed_with_revision_queue"
     progress.updated_at = datetime.now(timezone.utc)
+
+    selected_weeks = int(profile.selected_timeline_weeks or TIMELINE_MIN_WEEKS)
+    recommended_weeks = int(profile.recommended_timeline_weeks or selected_weeks)
+    baseline_forecast = int(profile.current_forecast_weeks or recommended_weeks)
+    forecast_delta = _weekly_forecast_adjustment(decision=decision, score=score, threshold=threshold)
+    current_forecast_weeks = _clamp_weeks(baseline_forecast + forecast_delta)
+    timeline_delta_weeks = current_forecast_weeks - selected_weeks
+    pacing_status = _pacing_status(timeline_delta_weeks)
+
+    profile.current_forecast_weeks = current_forecast_weeks
+    profile.timeline_delta_weeks = timeline_delta_weeks
+    profile.recommended_timeline_weeks = recommended_weeks
+
+    latest_plan = (
+        await db.execute(
+            select(WeeklyPlan)
+            .where(WeeklyPlan.learner_id == payload.learner_id)
+            .order_by(WeeklyPlan.generated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if latest_plan and isinstance(latest_plan.plan_payload, dict):
+        plan_payload = dict(latest_plan.plan_payload)
+        timeline = dict(plan_payload.get("timeline", {}))
+        timeline.update(
+            {
+                "selected_timeline_weeks": selected_weeks,
+                "recommended_timeline_weeks": recommended_weeks,
+                "current_forecast_weeks": current_forecast_weeks,
+                "timeline_delta_weeks": timeline_delta_weeks,
+                "pacing_status": pacing_status,
+            }
+        )
+        plan_payload["timeline"] = timeline
+        latest_plan.plan_payload = plan_payload
+        latest_plan.total_weeks = max(latest_plan.total_weeks, current_forecast_weeks)
+
+    db.add(
+        WeeklyForecast(
+            learner_id=payload.learner_id,
+            week_number=max(1, attempt_count),
+            selected_timeline_weeks=selected_weeks,
+            recommended_timeline_weeks=recommended_weeks,
+            current_forecast_weeks=current_forecast_weeks,
+            timeline_delta_weeks=timeline_delta_weeks,
+            pacing_status=pacing_status,
+            reason=decision,
+        )
+    )
     await db.commit()
 
     return WeeklyReplanResponse(
@@ -359,6 +503,11 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
         score=score,
         threshold=threshold,
         attempt_count=attempt_count,
+        selected_timeline_weeks=selected_weeks,
+        recommended_timeline_weeks=recommended_weeks,
+        current_forecast_weeks=current_forecast_weeks,
+        timeline_delta_weeks=timeline_delta_weeks,
+        pacing_status=pacing_status,
         decision=decision,
         reason=reason,
         revision_queue=revision_queue,

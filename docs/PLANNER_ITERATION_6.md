@@ -178,12 +178,12 @@ Exit criteria:
   - [ ] schedule execution
   - [ ] revision queue
 - [ ] Add onboarding timeline contract (student-selected goal duration):
-  - [ ] enforce min/max bounds (`14` to `28` weeks)
-  - [ ] persist requested timeline weeks
-  - [ ] generate system-recommended timeline from diagnostic score/profile
-  - [ ] return both values (requested + recommended) in onboarding response
-  - [ ] persist current forecast completion weeks (recomputed weekly)
-  - [ ] persist and expose timeline delta (`forecast_weeks - selected_weeks`)
+  - [x] enforce min/max bounds (`14` to `28` weeks)
+  - [x] persist requested timeline weeks
+  - [x] generate system-recommended timeline from diagnostic score/profile
+  - [x] return both values (requested + recommended) in onboarding response
+  - [x] persist current forecast completion weeks (initial onboarding forecast)
+  - [x] persist and expose timeline delta (`forecast_weeks - selected_weeks`)
 - [ ] Implement strict progression rules:
   - [x] chapter unlock threshold check (default 60%)
   - [ ] no skip without policy override
@@ -198,10 +198,10 @@ Exit criteria:
   - [ ] pass 2 full revision
   - [ ] pass 3 weak-zone focus
 - [ ] Enforce planning mode:
-  - [ ] rough long-range roadmap based on requested/recommended timeline (`14`-`28` weeks)
+  - [x] rough long-range roadmap based on requested/recommended timeline (`14`-`28` weeks)
   - [ ] only current week schedule is active/committed
   - [ ] keep upcoming weeks as forecast-only (read-only projection, not committed tasks)
-  - [ ] re-forecast remaining completion weeks after each weekly evaluation
+  - [x] re-forecast remaining completion weeks after each weekly evaluation
 
 ## Phase 3: Frontend Enterprise UX
 - [ ] Build student portal:
@@ -254,7 +254,7 @@ Exit criteria:
 - [ ] `students`
 - [ ] `student_profiles`
 - [ ] `student_profile_history` (snapshot trail)
-- [ ] timeline fields in profile domain (`requested_timeline_weeks`, `recommended_timeline_weeks`, `timeline_bounds_version`)
+- [x] timeline fields in profile domain (`requested_timeline_weeks`, `recommended_timeline_weeks`, `timeline_bounds_version`)
 - [ ] timeline drift fields (`current_forecast_weeks`, `timeline_delta_weeks`, `last_forecast_at`)
 
 ## Curriculum & Grounding
@@ -271,7 +271,7 @@ Exit criteria:
 - [ ] `tasks`
 - [ ] `task_attempts` (proof-based completion)
 - [ ] `schedule_locks` / immutable task flags
-- [ ] `weekly_forecasts` (goal vs current projection history)
+- [x] `weekly_forecasts` (goal vs current projection history)
 
 ## Assessment & Mastery
 - [ ] `question_bank`
@@ -306,16 +306,16 @@ Exit criteria:
 
 ## Onboarding + Diagnostics
 - [x] Collect student demographic + academic baseline
-- [ ] Collect target completion timeline during onboarding (`14`-`28` weeks only)
+- [x] Collect target completion timeline during onboarding (`14`-`28` weeks only)
 - [x] Generate diagnostic objective test set from RAG:
   - [x] MCQ
   - [x] Fill-in-the-blank
   - [x] True/False
 - [x] Score and initialize profile state
-- [ ] Generate timeline recommendation after diagnostic:
-  - [ ] keep student-selected timeline as explicit goal
-  - [ ] compute recommended timeline and rationale (e.g., "you may need ~16 weeks")
-  - [ ] use selected/recommended values to shape week-1 load and roadmap pacing
+- [x] Generate timeline recommendation after diagnostic:
+  - [x] keep student-selected timeline as explicit goal
+  - [x] compute recommended timeline and rationale (e.g., "you may need ~16 weeks")
+  - [x] use selected/recommended values to shape week-1 load and roadmap pacing
 
 ## Profiling Engine
 - [ ] Maintain dynamic attributes:
@@ -332,10 +332,11 @@ Exit criteria:
 - [ ] Update profile after every task/test outcome
 
 ## Planner Engine (Weekly Adaptive)
-- [ ] Build rough long-range map from bounded timeline selection (`14`-`28` weeks)
+- [x] Build rough long-range map from bounded timeline selection (`14`-`28` weeks)
 - [x] Activate only current week details
 - [x] Recalculate weekly plan after each evaluation window
 - [x] Enforce threshold-based chapter unlocks
+- [x] Re-forecast completion timeline weekly and persist drift metrics
 - [ ] Implement stuck-chapter rules:
   - [x] if below threshold -> reinforce and retry
   - [x] if repeatedly below threshold with timeout -> progress + push chapter to revision queue

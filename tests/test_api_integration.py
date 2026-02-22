@@ -70,7 +70,12 @@ def test_grounding_status_endpoint_shape(client):
 def test_onboarding_start_endpoint_available(client):
     response = client.post(
         "/onboarding/start",
-        json={"name": "Test Learner", "grade_level": "10", "exam_in_months": 10},
+        json={
+            "name": "Test Learner",
+            "grade_level": "10",
+            "exam_in_months": 10,
+            "selected_timeline_weeks": 16,
+        },
     )
     # When grounding isn't ingested yet, endpoint returns 400 by design.
     # Otherwise it returns generated diagnostic questions.
@@ -82,6 +87,19 @@ def test_onboarding_start_endpoint_available(client):
         assert isinstance(body.get("questions"), list)
     else:
         assert "Run /grounding/ingest first" in str(body)
+
+
+def test_onboarding_timeline_bounds_validation(client):
+    response = client.post(
+        "/onboarding/start",
+        json={
+            "name": "Bounds Learner",
+            "grade_level": "10",
+            "exam_in_months": 10,
+            "selected_timeline_weeks": 10,
+        },
+    )
+    assert response.status_code == 422
 
 
 def test_weekly_replan_policy_flow(client):
@@ -121,11 +139,8 @@ def test_weekly_replan_policy_flow(client):
 
 def test_onboarding_plan_endpoint_available(client):
     learner_id = str(uuid.uuid4())
-    start = client.post("/start-session", json={"learner_id": learner_id})
-    assert start.status_code == 200
-
     response = client.get(f"/onboarding/plan/{learner_id}")
-    assert response.status_code in (200, 404)
+    assert response.status_code == 404
 
 
 def test_failure_embedding_service_unavailable_falls_back(client, monkeypatch):

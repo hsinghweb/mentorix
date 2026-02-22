@@ -29,6 +29,10 @@ class LearnerProfile(Base):
     retention_decay: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
     cognitive_depth: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     engagement_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    selected_timeline_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    recommended_timeline_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    current_forecast_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    timeline_delta_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_updated: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -195,3 +199,24 @@ class ChapterProgression(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class WeeklyForecast(Base):
+    __tablename__ = "weekly_forecasts"
+    __table_args__ = (
+        Index("idx_weekly_forecasts_learner_id", "learner_id"),
+        Index("idx_weekly_forecasts_generated_at", "generated_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("learners.id", ondelete="CASCADE"), nullable=False
+    )
+    week_number: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    selected_timeline_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    recommended_timeline_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    current_forecast_weeks: Mapped[int] = mapped_column(Integer, nullable=False)
+    timeline_delta_weeks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pacing_status: Mapped[str] = mapped_column(String(24), nullable=False, default="on_track")
+    reason: Mapped[str] = mapped_column(String(255), nullable=False, default="initial_forecast")
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
