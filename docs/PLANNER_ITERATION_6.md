@@ -31,6 +31,11 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 
 ## 1) Execution Strategy (Phased)
 
+## Phase 0: Runtime Memory Store Hardening (Pre-Iteration-6 Gate)
+- [ ] Complete `docs/PLANNER_NOSQL_MEMORY_MIGRATION.md`
+- [ ] Move learner/runtime JSON memory from filesystem to NoSQL backend (MongoDB)
+- [ ] Keep runtime learner data out of repository workflows
+
 ## Phase 1: Data Grounding Pre-Work
 - [x] Build offline ingestion job for syllabus + chapters PDFs
 - [ ] Parse and persist syllabus hierarchy (chapter > section > concept)
