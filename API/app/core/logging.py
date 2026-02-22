@@ -1,6 +1,28 @@
 import logging
 import re
 import sys
+# Domain names for structured logging (onboarding, planning, adaptation, scheduling, compliance, RAG).
+DOMAIN_ONBOARDING = "onboarding"
+DOMAIN_PLANNING = "planning"
+DOMAIN_ADAPTATION = "adaptation"
+DOMAIN_SCHEDULING = "scheduling"
+DOMAIN_COMPLIANCE = "compliance"
+DOMAIN_RAG = "rag"
+
+
+def get_domain_logger(name: str, domain: str) -> logging.LoggerAdapter[logging.Logger]:
+    """Return a logger that adds the given domain to every log record (for filtering by domain)."""
+    base = logging.getLogger(name)
+    return logging.LoggerAdapter(base, {"domain": domain})
+
+
+class DomainDefaultFilter(logging.Filter):
+    """Ensure record has a 'domain' attribute so format string %(domain)s never fails."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not hasattr(record, "domain"):
+            record.domain = "app"  # type: ignore[attr-defined]
+        return True
 
 
 _SECRET_PATTERNS = [
@@ -28,13 +50,15 @@ class SecretRedactionFilter(logging.Filter):
 
 def configure_logging(level: str = "INFO") -> None:
     redaction_filter = SecretRedactionFilter()
+    domain_filter = DomainDefaultFilter()
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        format="%(asctime)s | %(levelname)s | [%(domain)s] | %(name)s | %(message)s",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
     root = logging.getLogger()
     for handler in root.handlers:
+        handler.addFilter(domain_filter)
         handler.addFilter(redaction_filter)
     # Avoid verbose request URL logging from http clients.
     logging.getLogger("httpx").setLevel(logging.WARNING)

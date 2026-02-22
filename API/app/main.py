@@ -17,6 +17,7 @@ from app.api.sessions import router as sessions_router
 from app.autonomy.scheduler import scheduler_service
 from app.core.auth import api_key_auth_middleware
 from app.core.bootstrap import initialize_database
+from app.core.app_metrics import metrics_middleware
 from app.core.errors import (
     http_exception_handler,
     request_id_middleware,
@@ -47,6 +48,7 @@ app.include_router(grounding_router)
 app.include_router(onboarding_router)
 app.middleware("http")(api_key_auth_middleware)
 app.middleware("http")(request_id_middleware)
+app.middleware("http")(metrics_middleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

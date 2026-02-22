@@ -48,10 +48,10 @@ Everything below can be deferred; backend and runbook demo do not depend on them
 
 ### Observability & metrics (no UI required for submission)
 
-- Structured logging per domain (onboarding, planning, adaptation, scheduling, compliance, RAG).
-- App metrics (latency, error rates, agent duration/failures, DB p95, Redis hit ratio, retrieval quality).
-- Student-learning metrics (mastery progression, confidence trend, weak-area velocity, adherence, streak, timeline adherence, forecast drift).
-- Alerts / anomaly flags (low scores, disengagement, scheduler drift, embedding/retrieval failures).
+- ~~Structured logging per domain (onboarding, planning, adaptation, scheduling, compliance, RAG)~~ — implemented: `get_domain_logger(name, domain)` in `app.core.logging`, format `[%(domain)s]`, used in onboarding, sessions (adaptation), run_manager (scheduling), RAG (grounding_ingest, embeddings), content (compliance).
+- ~~App metrics (latency, error rates)~~ — implemented: `app.core.app_metrics` (request_count, error_count, error_rate, latency_ms_p50, latency_ms_p95), `metrics_middleware`, GET `/metrics/app`; alerts list (`high_error_rate`, `high_latency_p95`) when thresholds exceeded.
+- ~~Student-learning metrics (mastery progression, confidence trend, weak-area velocity, adherence, streak, timeline adherence, forecast drift)~~ — GET `/onboarding/learning-metrics/{learner_id}` returns `StudentLearningMetricsResponse`: mastery_progression, avg_mastery_score, confidence_score, weak_area_count/weak_areas, adherence_rate_week, login_streak_days, timeline_adherence_weeks, forecast_drift_weeks, selected/current_forecast_weeks.
+- ~~Alerts / anomaly flags~~ — high_error_rate and high_latency_p95 in `/metrics/app`; extend for disengagement, scheduler drift, embedding/retrieval as needed.
 
 ### Profiling engine (exposed via APIs)
 
@@ -59,7 +59,7 @@ Everything below can be deferred; backend and runbook demo do not depend on them
 
 ### Testing
 
-- PDF parse integrity, embedding dimension consistency, ingestion idempotency tests.
+- ~~PDF parse integrity, embedding dimension consistency, ingestion idempotency tests~~ — added in `tests/test_grounding_ingestion.py`.
 - Frontend: critical student journey smoke tests, admin panel rendering tests.
 
 ### Deliverables wording (operational in UI)

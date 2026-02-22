@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import DOMAIN_ONBOARDING, get_domain_logger
 from app.memory.cache import redis_client
 from app.memory.database import get_db
 from app.models.entities import (
@@ -52,10 +53,11 @@ from app.schemas.onboarding import (
     LearnerStandResponse,
     EvaluationAnalyticsResponse,
     DailyPlanResponse,
+    StudentLearningMetricsResponse,
 )
 
 router = APIRouter(prefix="/onboarding", tags=["onboarding"])
-logger = logging.getLogger(__name__)
+logger = get_domain_logger(__name__, DOMAIN_ONBOARDING)
 TIMELINE_MIN_WEEKS = 14
 TIMELINE_MAX_WEEKS = 28
 _idempotency_response_cache: dict[str, dict] = {}
@@ -1541,6 +1543,59 @@ async def get_evaluation_analytics(learner_id: UUID, db: AsyncSession = Depends(
         raise HTTPException(status_code=404, detail="Learner not found.")
     payload = await _build_evaluation_analytics(db, learner_id)
     return EvaluationAnalyticsResponse(learner_id=learner_id, **payload)
+
+
+@router.get("/learning-metrics/{learner_id}", response_model=StudentLearningMetricsResponse)
+async def get_student_learning_metrics(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Aggregated student-learning metrics: mastery, confidence, weak areas, adherence, streak, timeline."""
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if learner is None or profile is None:
+        raise HTTPException(status_code=404, detail="Learner profile not found.")
+
+    mastery_map = dict(profile.concept_mastery or {})
+    weak_areas = [ch for ch, val in mastery_map.items() if float(val) < 0.45]
+    avg_mastery = (
+        sum(float(v) for v in mastery_map.values()) / len(mastery_map)
+        if mastery_map
+        else 0.0
+    )
+    retention = await _compute_retention_score(db, learner_id)
+    adherence = await _compute_adherence_rate_week(db, learner_id)
+    login_streak_days = await _compute_login_streak_days(db, learner_id)
+    confidence_score = round(
+        max(
+            0.0,
+            min(
+                1.0,
+                (0.45 * float(profile.cognitive_depth or 0.0))
+                + (0.25 * float(profile.engagement_score or 0.0))
+                + (0.20 * retention)
+                + (0.10 * adherence),
+            ),
+        ),
+        3,
+    )
+    selected_weeks = int(profile.selected_timeline_weeks or 0) or None
+    forecast_weeks = int(profile.current_forecast_weeks or 0) or None
+    delta = (forecast_weeks - selected_weeks) if (selected_weeks and forecast_weeks is not None) else None
+
+    return StudentLearningMetricsResponse(
+        learner_id=learner_id,
+        mastery_progression=mastery_map,
+        avg_mastery_score=round(avg_mastery, 3),
+        confidence_score=confidence_score,
+        weak_area_count=len(weak_areas),
+        weak_areas=sorted(weak_areas)[:20],
+        adherence_rate_week=adherence,
+        login_streak_days=login_streak_days,
+        timeline_adherence_weeks=delta,
+        forecast_drift_weeks=delta,
+        selected_timeline_weeks=selected_weeks,
+        current_forecast_weeks=forecast_weeks,
+    )
 
 
 @router.get("/daily-plan/{learner_id}", response_model=DailyPlanResponse)

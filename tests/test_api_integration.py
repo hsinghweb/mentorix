@@ -67,6 +67,44 @@ def test_grounding_status_endpoint_shape(client):
     assert "missing_embeddings" in body
 
 
+def test_student_learning_metrics_endpoint_contract(client):
+    """GET /onboarding/learning-metrics/{learner_id} returns aggregated metrics shape."""
+    learner_id = str(uuid.uuid4())
+    client.post("/start-session", json={"learner_id": learner_id})
+    client.get(f"/onboarding/tasks/{learner_id}")
+    resp = client.get(f"/onboarding/learning-metrics/{learner_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["learner_id"] == learner_id
+    assert "mastery_progression" in body
+    assert "avg_mastery_score" in body
+    assert "confidence_score" in body
+    assert "weak_area_count" in body
+    assert "weak_areas" in body
+    assert "adherence_rate_week" in body
+    assert "login_streak_days" in body
+    assert "timeline_adherence_weeks" in body
+    assert "forecast_drift_weeks" in body
+    assert "selected_timeline_weeks" in body
+    assert "current_forecast_weeks" in body
+    assert 0 <= body["confidence_score"] <= 1
+    assert body["login_streak_days"] >= 0
+
+
+def test_app_metrics_endpoint_contract(client):
+    response = client.get("/metrics/app")
+    assert response.status_code == 200
+    body = response.json()
+    assert "request_count" in body
+    assert "error_count" in body
+    assert "error_rate" in body
+    assert "latency_ms_p50" in body
+    assert "latency_ms_p95" in body
+    assert "alerts" in body
+    assert isinstance(body["alerts"], list)
+    assert 0 <= body["error_rate"] <= 1
+
+
 def test_onboarding_start_endpoint_available(client):
     response = client.post(
         "/onboarding/start",

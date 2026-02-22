@@ -8,6 +8,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.adaptation import AdaptationAgent
+from app.core.logging import DOMAIN_ADAPTATION, get_domain_logger
 from app.agents.analytics_evaluation import AnalyticsEvaluationAgent
 from app.agents.assessment import AssessmentAgent
 from app.agents.compliance import ComplianceAgent
@@ -35,7 +36,7 @@ from app.schemas.session import (
 )
 
 router = APIRouter(tags=["sessions"])
-logger = logging.getLogger(__name__)
+logger = get_domain_logger(__name__, DOMAIN_ADAPTATION)
 
 engine = StateEngine()
 profiling_agent = LearnerProfilingAgent()

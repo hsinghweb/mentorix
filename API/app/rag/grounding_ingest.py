@@ -10,11 +10,12 @@ from pypdf import PdfReader
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import DOMAIN_RAG, get_domain_logger
 from app.core.settings import settings
 from app.models.entities import CurriculumDocument, EmbeddingChunk, IngestionRun, SyllabusHierarchy
 from app.rag.embeddings import embed_text
 
-logger = logging.getLogger(__name__)
+logger = get_domain_logger(__name__, DOMAIN_RAG)
 
 
 @dataclass

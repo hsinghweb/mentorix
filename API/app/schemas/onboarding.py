@@ -225,3 +225,19 @@ class DailyPlanResponse(BaseModel):
     is_committed_week: bool
     forecast_read_only: bool
     daily_breakdown: list[dict] = Field(default_factory=list)
+
+
+class StudentLearningMetricsResponse(BaseModel):
+    """Aggregated student-learning metrics for monitoring/dashboards."""
+    learner_id: UUID
+    mastery_progression: dict  # chapter -> score (or summary)
+    avg_mastery_score: float
+    confidence_score: float
+    weak_area_count: int
+    weak_areas: list[str]
+    adherence_rate_week: float
+    login_streak_days: int
+    timeline_adherence_weeks: int | None  # delta (current_forecast - selected); negative = ahead
+    forecast_drift_weeks: int | None  # same as timeline_adherence_weeks for "drift from goal"
+    selected_timeline_weeks: int | None
+    current_forecast_weeks: int | None

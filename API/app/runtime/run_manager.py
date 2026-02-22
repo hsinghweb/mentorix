@@ -12,13 +12,14 @@ from app.agents.learner_profile import LearnerProfilingAgent
 from app.agents.planner import CurriculumPlannerAgent
 from app.agents.reflection import ReflectionAgent
 from app.core.event_bus import event_bus
+from app.core.logging import DOMAIN_SCHEDULING, get_domain_logger
 from app.core.query_optimizer import query_optimizer
 from app.core.resilience import retry_with_backoff
 from app.core.settings import settings
 from app.memory.episodic import episodic_memory
 from app.runtime.graph_context import GraphExecutionContext, RuntimeNode
 
-logger = logging.getLogger(__name__)
+logger = get_domain_logger(__name__, DOMAIN_SCHEDULING)
 
 
 class RuntimeRunManager:

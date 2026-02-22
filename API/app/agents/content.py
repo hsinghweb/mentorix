@@ -2,12 +2,13 @@ import logging
 import json
 
 from app.agents.base import BaseAgent
+from app.core.logging import DOMAIN_COMPLIANCE, get_domain_logger
 from app.core.llm_provider import get_llm_provider
 from app.core.query_optimizer import query_optimizer
 from app.core.reasoning import reasoning_engine
 from app.core.settings import settings
 
-logger = logging.getLogger(__name__)
+logger = get_domain_logger(__name__, DOMAIN_COMPLIANCE)
 
 
 class ContentGenerationAgent(BaseAgent):

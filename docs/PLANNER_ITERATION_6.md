@@ -7,7 +7,26 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 
 ---
 
-## 0) North-Star Outcomes
+## 0) Syllabus as Source of Truth & Extensibility
+
+**Canonical syllabus:** The file `class-10-maths/syllabus/syllabus.txt` (with optional `syllabus.pdf` fallback) is the **single source of truth** for the course. It defines the static structure used across the platform:
+
+- **Planning:** The syllabus (chapter → section/topic hierarchy) drives how we create and maintain the student’s plan — what to do and in what order.
+- **Progress & status:** The same syllabus is the reference against which we track **how much the student has completed** and **what is left** (per chapter, per topic).
+- **Profile:** For every chapter and every topic we maintain **confidence** and **accuracy/achievement**. This profile is the basis for adaptation, recommendations, and the end-of-course view.
+- **End view:** The profile is shown to the student so they see **how much they can gain** or **how much they are lagging** for the course (e.g. completion %, weak areas, timeline vs goal).
+
+**Extensibility to other subjects and classes:** The system is designed to support any subject (e.g. Science) or any class (e.g. Class 9) using the same pattern:
+
+1. **Onboard the syllabus** — Provide a syllabus file in the same format (e.g. `syllabus.txt` with chapter/section/topic lines). The ingestion pipeline parses and persists the hierarchy (chapter > section > concept/topic).
+2. **Onboard the course PDFs** — Add subject/class-specific PDFs (chapters, topics) to the grounding data directory; run the same ingestion to embed and index them.
+3. **Same pipeline and profile model** — Planning, progress tracking, and profiling (per-chapter/per-topic confidence and achievement) work identically; only the syllabus and PDF data change per course.
+
+No code change is required for a new course beyond adding the syllabus `.txt` and the course PDFs and re-running ingestion (and configuring the data path for that course).
+
+---
+
+## 0b) North-Star Outcomes
 
 - Build an autonomous tutor that helps a student:
   - complete syllabus once,
@@ -62,19 +81,19 @@ Exit criteria:
 - onboarding integration test passes with timeline bounds + recommendation.
 - Swagger examples show selected vs recommended timeline.
 
-### Slice 2 - Week-1 Commit + Forecast-Only Long-Range Plan
-1. Build long-range roadmap from timeline selection/recommendation.
+### Slice 2 - Week-1 Commit + Forecast-Only Long-Range Plan (Syllabus-Driven)
+1. Build long-range roadmap from **syllabus structure** (chapter/section/topic from `syllabus.txt`) and timeline selection/recommendation.
 2. Commit only current week schedule (immutable committed set).
 3. Keep future weeks as read-only forecast projection.
 4. Persist weekly plan version + weekly forecast snapshot.
 5. Expose plan API with:
    - active week tasks
    - remaining forecast
-   - completion estimate vs selected goal.
+   - completion estimate vs selected goal (what’s left vs syllabus).
 
 Exit criteria:
 - student sees active week + forecast separation.
-- DB contains weekly plan + forecast history.
+- DB contains weekly plan + forecast history; plan reflects syllabus order/structure.
 
 ### Slice 3 - Schedule Integrity + Proof-Based Completion
 1. Implement tasks + task_attempts + schedule lock model.
@@ -98,15 +117,17 @@ Exit criteria:
 - weekly replan tests pass for repeat/proceed/revision outcomes.
 - timeline drift updates appear in profile and weekly forecast history.
 
-### Slice 5 - Profiling + Engagement Telemetry
+### Slice 5 - Profiling + Engagement Telemetry (Syllabus-Aligned)
 1. Track login/logoff, streaks, engagement minutes, adherence.
-2. Update profile attributes after each task/test.
-3. Persist profile snapshots (history trail).
-4. Add learner "Where I Stand" payload (chapter + concept + confidence).
+2. Update profile attributes after each task/test (per chapter, per topic: confidence + accuracy/achievement).
+3. Persist profile snapshots (history trail) aligned to syllabus structure.
+4. Add learner "Where I Stand" payload (chapter + concept + confidence); same structure as syllabus (how much completed, what’s left).
+5. **End view:** Expose profile so the student sees how much they can gain or how much they are lagging for the course (completion %, weak areas, timeline vs goal).
 
 Exit criteria:
 - profile history snapshots present.
 - engagement/streak KPIs available in API payloads.
+- profile and where-I-stand are keyed by syllabus chapter/topic; end view (gain/lag) available via API.
 
 ### Slice 6 - Adaptive Content (Pace + Tone + Depth)
 1. Implement profile-aware content policy:
@@ -159,17 +180,21 @@ Exit criteria:
 - [x] Move learner/runtime JSON memory from filesystem to NoSQL backend (MongoDB)
 - [x] Keep runtime learner data out of repository workflows
 
-## Phase 1: Data Grounding Pre-Work
+## Phase 1: Data Grounding Pre-Work (Syllabus-Driven)
+
+**Syllabus source:** Prefer `class-10-maths/syllabus/syllabus.txt` when present; fallback to `syllabus.pdf`. The syllabus defines the static structure for plans and progress.
+
 - [x] Build offline ingestion job for syllabus + chapters PDFs
-- [ ] Parse and persist syllabus hierarchy (chapter > section > concept)
+- [x] Parse and persist syllabus hierarchy (chapter > section > concept) from syllabus text
 - [x] Generate embeddings for:
-  - [x] `class-10-maths/syllabus/syllabus.pdf` (full scope guardrail)
+  - [x] `class-10-maths/syllabus/syllabus.txt` / `syllabus.pdf` (full scope guardrail)
   - [x] `class-10-maths/chapters/ch_1.pdf`
   - [x] `class-10-maths/chapters/ch_2.pdf`
   - [x] `class-10-maths/chapters/ch_3.pdf`
 - [x] Store extracted chunks + metadata + embeddings in Postgres vector tables
 - [x] Add ingestion manifest tracking (what was embedded, when, hash/version)
 - [x] Add pre-start validation so app can fail-fast if mandatory embeddings missing
+- [ ] **Extensibility:** Document/script for onboarding a new course: add `syllabus.txt` (same format) + course PDFs to a new directory (e.g. `class-9-maths`, `class-10-science`), run ingestion; plan and profile model reuse unchanged
 
 ## Phase 2: Enterprise Backend Core
 - [ ] Introduce full student lifecycle APIs:
@@ -204,14 +229,16 @@ Exit criteria:
   - [x] only current week schedule is active/committed
   - [x] keep upcoming weeks as forecast-only (read-only projection, not committed tasks)
   - [x] re-forecast remaining completion weeks after each weekly evaluation
+- [ ] **Syllabus & multi-course:** Use `syllabus.txt` as canonical structure for plan and progress; profile = per chapter/topic confidence + achievement; end view = gain/lag. Extensibility: new course = new directory with `syllabus.txt` + course PDFs + run ingestion (no code change).
 
 ## Phase 3: Frontend Enterprise UX
 - [ ] Build student portal:
   - [ ] onboarding flow
-  - [ ] learning home with current week tasks
-  - [ ] chapter/concept mastery map
+  - [ ] learning home with current week tasks (syllabus-driven plan)
+  - [ ] chapter/topic mastery map (aligned to syllabus; per chapter/topic confidence + achievement)
   - [ ] confidence and score trends
   - [ ] revision queue and recommendations
+  - [ ] **End view:** how much the student can gain or how much they are lagging for the course (completion %, weak areas, timeline vs goal)
 - [ ] Build admin portal:
   - [ ] student cohort overview
   - [ ] system health/alerts
@@ -259,10 +286,10 @@ Exit criteria:
 - [x] timeline fields in profile domain (`requested_timeline_weeks`, `recommended_timeline_weeks`, `timeline_bounds_version`)
 - [ ] timeline drift fields (`current_forecast_weeks`, `timeline_delta_weeks`, `last_forecast_at`)
 
-## Curriculum & Grounding
-- [ ] `chapters`
-- [ ] `sections`
-- [ ] `concepts`
+## Curriculum & Grounding (Syllabus-Driven)
+- Syllabus structure from `syllabus.txt` (chapter > section > topic) drives plan and progress; same format supports any subject/class.
+- [x] `syllabus_hierarchy` (chapter > section > concept parsed from syllabus)
+- [ ] `chapters` / `sections` / `concepts` (normalized tables optional; hierarchy + embedding_chunks cover current need)
 - [x] `curriculum_documents`
 - [x] `embedding_chunks` (vector + source metadata)
 - [x] `ingestion_runs` (status, version, hash, counts)
