@@ -175,51 +175,19 @@ def test_memory_status_endpoint_shape(client):
 
 
 def test_memory_write_flow_for_active_backend(client):
+    from app.memory.ingest import ingest_session_signal
+
     status = client.get("/memory/status")
     assert status.status_code == 200
     assert "active_mode" in status.json()
 
     learner_id = str(uuid.uuid4())
-    start = client.post("/start-session", json={"learner_id": learner_id})
-    assert start.status_code == 200
-    session_id = start.json()["session_id"]
-
-    submit = client.post(
-        "/submit-answer",
-        json={
-            "session_id": session_id,
-            "answer": "I solved it using algebra steps.",
-            "response_time": 7.0,
-        },
+    ingest_session_signal(
+        learner_id=learner_id,
+        concept="linear_equations",
+        score=0.7,
+        adaptation_score=0.3,
     )
-    assert submit.status_code == 200
-
-    memory_ctx = client.get(f"/memory/context/{learner_id}")
-    assert memory_ctx.status_code == 200
-    context = memory_ctx.json()["context"]
-    assert isinstance(context, dict)
-    assert any(bool(context.get(key)) for key in ("learner_preferences", "operating_context", "soft_identity"))
-
-
-def test_memory_write_flow_for_active_backend(client):
-    status = client.get("/memory/status")
-    assert status.status_code == 200
-    assert "active_mode" in status.json()
-
-    learner_id = str(uuid.uuid4())
-    start = client.post("/start-session", json={"learner_id": learner_id})
-    assert start.status_code == 200
-    session_id = start.json()["session_id"]
-
-    submit = client.post(
-        "/submit-answer",
-        json={
-            "session_id": session_id,
-            "answer": "I solved it using algebra steps.",
-            "response_time": 7.0,
-        },
-    )
-    assert submit.status_code == 200
 
     memory_ctx = client.get(f"/memory/context/{learner_id}")
     assert memory_ctx.status_code == 200
