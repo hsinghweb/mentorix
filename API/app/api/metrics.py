@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.core.app_metrics import get_metrics
 from app.core.cache_metrics import get_cache_metrics
+from app.core.db_metrics import get_db_metrics
 from app.core.engagement_metrics import get_engagement_metrics
 from app.core.retrieval_metrics import get_retrieval_metrics
 from app.core.resilience import get_breakers_status
@@ -52,6 +53,10 @@ async def app_metrics():
     eng = out["engagement"]
     if eng.get("disengagement_recent_count", 0) >= 3:
         out["alerts"] = list(out.get("alerts", [])) + ["disengagement_risk"]
+    out["db"] = get_db_metrics()
+    db = out["db"]
+    if db.get("db_query_count", 0) >= 10 and (db.get("db_p95_ms") or 0) > 1000:
+        out["alerts"] = list(out.get("alerts", [])) + ["high_db_latency"]
     return out
 
 

@@ -9,10 +9,16 @@
   <body>
     <main class="container">
       <header>
-        <h1>Mentorix MVP</h1>
-        <p class="sub">Start Session -> Submit Answer -> Dashboard</p>
+        <h1>Mentorix</h1>
+        <p class="sub">Student portal · Onboarding &amp; Plan · Admin</p>
+        <nav class="tabs">
+          <button type="button" class="tab active" data-tab="student">Student</button>
+          <button type="button" class="tab" data-tab="onboarding">Onboarding &amp; Plan</button>
+          <button type="button" class="tab" data-tab="admin">Admin</button>
+        </nav>
       </header>
 
+      <div id="panel-student" class="panel">
       <section class="card">
         <h2>Session</h2>
         <div class="row">
@@ -105,6 +111,67 @@
         <h2>Status</h2>
         <pre id="status">Ready.</pre>
       </section>
+      </div>
+
+      <div id="panel-onboarding" class="panel hidden">
+        <section class="card">
+          <h2>Onboarding &amp; Plan</h2>
+          <div class="row">
+            <label for="obApiBase">API Base URL</label>
+            <input id="obApiBase" type="text" value="http://localhost:8000" />
+          </div>
+          <div class="row">
+            <label for="obName">Name</label>
+            <input id="obName" type="text" placeholder="Student name" value="Test Learner" />
+          </div>
+          <div class="row">
+            <label for="obGrade">Grade</label>
+            <input id="obGrade" type="text" value="10" />
+          </div>
+          <div class="row">
+            <label for="obTimeline">Timeline (weeks, 14–28)</label>
+            <input id="obTimeline" type="number" min="14" max="28" value="16" />
+          </div>
+          <div class="row actions">
+            <button id="obStartBtn" class="primary">Start Onboarding</button>
+          </div>
+          <div class="row">
+            <label>Learner ID (after start)</label>
+            <code id="obLearnerId">-</code>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Plan &amp; Tasks</h2>
+          <div class="row actions">
+            <button id="obPlanBtn">Get Plan</button>
+            <button id="obTasksBtn">Get Tasks</button>
+            <button id="obStandBtn">Where I Stand</button>
+          </div>
+          <div class="row">
+            <label>Plan / Tasks / Where I Stand</label>
+            <pre id="obResult">-</pre>
+          </div>
+        </section>
+      </div>
+
+      <div id="panel-admin" class="panel hidden">
+        <section class="card">
+          <h2>Admin · Health &amp; Metrics</h2>
+          <div class="row">
+            <label for="adminApiBase">API Base URL</label>
+            <input id="adminApiBase" type="text" value="http://localhost:8000" />
+          </div>
+          <div class="row actions">
+            <button id="adminHealthBtn">Health</button>
+            <button id="adminMetricsBtn">Metrics (app)</button>
+            <button id="adminGroundingBtn">Grounding Status</button>
+          </div>
+          <div class="row">
+            <label>Response</label>
+            <pre id="adminResult">-</pre>
+          </div>
+        </section>
+      </div>
     </main>
 
     <script src="./app.js"></script>

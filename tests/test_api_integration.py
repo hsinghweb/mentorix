@@ -129,6 +129,12 @@ def test_app_metrics_endpoint_contract(client):
     engagement = body["engagement"]
     assert "disengagement_recent_count" in engagement
     assert "disengagement_total_count" in engagement
+    # DB query performance (p50/p95)
+    assert "db" in body
+    db = body["db"]
+    assert "db_query_count" in db
+    assert "db_p50_ms" in db
+    assert "db_p95_ms" in db
 
 
 def test_onboarding_start_endpoint_available(client):
@@ -708,3 +714,40 @@ def test_redis_outage_falls_back_to_degraded_session_cache(client, monkeypatch):
         json={"session_id": session_id, "answer": "try solving", "response_time": 7.0},
     )
     assert submit.status_code == 200
+
+
+def test_student_ui_surface_endpoints_available(client):
+    """Smoke: API surface used by Student and Onboarding & Plan panels (critical student journey)."""
+    learner_id = str(uuid.uuid4())
+    # Health (shared)
+    r = client.get("/health")
+    assert r.status_code == 200
+    assert r.json().get("status") == "ok"
+    # Session flow
+    r = client.post("/start-session", json={"learner_id": learner_id})
+    assert r.status_code == 200
+    assert "session_id" in r.json()
+    # Plan, tasks, where-i-stand (Onboarding & Plan panel)
+    r = client.get(f"/onboarding/plan/{learner_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert "current_week_schedule" in body or "rough_plan" in body or "selected_timeline_weeks" in body
+    r = client.get(f"/onboarding/tasks/{learner_id}")
+    assert r.status_code == 200
+    assert isinstance(r.json().get("tasks"), list)
+    r = client.get(f"/onboarding/where-i-stand/{learner_id}")
+    assert r.status_code == 200
+    assert "chapter_status" in r.json() or "confidence_score" in r.json()
+
+
+def test_admin_ui_surface_endpoints_available(client):
+    """Smoke: API surface used by Admin panel (health, metrics, grounding status)."""
+    r = client.get("/health")
+    assert r.status_code == 200
+    r = client.get("/metrics/app")
+    assert r.status_code == 200
+    body = r.json()
+    assert "request_count" in body and "alerts" in body and "cache" in body
+    r = client.get("/grounding/status")
+    assert r.status_code == 200
+    assert "ready" in r.json() or "chunks" in r.json() or "status" in r.json()
