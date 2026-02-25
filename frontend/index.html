@@ -140,6 +140,23 @@
             <code id="obLearnerId">-</code>
           </div>
         </section>
+        <section class="card" id="obDiagnosticSection">
+          <h2>Diagnostic test</h2>
+          <div id="obQuestionsContainer" class="ob-questions">
+            <p class="muted">Start onboarding above to load questions.</p>
+          </div>
+          <div class="row" id="obSubmitDiagnosticRow" style="display: none;">
+            <label for="obTimeSpent">Time spent (minutes)</label>
+            <input id="obTimeSpent" type="number" min="1" max="240" value="15" />
+          </div>
+          <div class="row actions" id="obSubmitDiagnosticActions" style="display: none;">
+            <button id="obSubmitDiagnosticBtn" class="primary">Submit diagnostic</button>
+          </div>
+          <div class="row" id="obDiagnosticResult" style="display: none;">
+            <label>Result</label>
+            <pre id="obDiagnosticResultPre">-</pre>
+          </div>
+        </section>
         <section class="card">
           <h2>Plan &amp; Tasks</h2>
           <div class="row actions">
@@ -147,9 +164,48 @@
             <button id="obTasksBtn">Get Tasks</button>
             <button id="obStandBtn">Where I Stand</button>
           </div>
+          <div class="row" id="obTimelineSummaryRow" style="display: none;">
+            <label>Timeline</label>
+            <p id="obTimelineSummary" class="timeline-summary"></p>
+          </div>
           <div class="row">
             <label>Plan / Tasks / Where I Stand</label>
             <pre id="obResult">-</pre>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Streak &amp; engagement</h2>
+          <div class="row actions">
+            <button id="obStreakBtn">Load summary</button>
+          </div>
+          <div class="row" id="obStreakSummaryRow" style="display: none;">
+            <label>Summary</label>
+            <p id="obStreakSummary" class="streak-summary"></p>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Chapter tracker &amp; concept map</h2>
+          <div class="row actions">
+            <button id="obChapterTrackerBtn">Load chapter tracker</button>
+            <button id="obConceptMapBtn">Load concept map</button>
+          </div>
+          <div class="row" id="obChapterTrackerRow" style="display: none;">
+            <label>Chapters (mastery level)</label>
+            <p id="obChapterTrackerText" class="timeline-summary"></p>
+          </div>
+          <div class="row" id="obConceptMapRow" style="display: none;">
+            <label>Strengths / Weaknesses / Confidence</label>
+            <p id="obConceptMapText" class="streak-summary"></p>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Next-week guidance</h2>
+          <div class="row actions">
+            <button id="obNextWeekBtn">Load next week</button>
+          </div>
+          <div class="row" id="obNextWeekRow" style="display: none;">
+            <label>Next week</label>
+            <p id="obNextWeekText" class="timeline-summary"></p>
           </div>
         </section>
       </div>
@@ -165,6 +221,11 @@
             <button id="adminHealthBtn">Health</button>
             <button id="adminMetricsBtn">Metrics (app)</button>
             <button id="adminGroundingBtn">Grounding Status</button>
+          </div>
+          <div class="row actions">
+            <button id="adminCohortBtn">Cohort</button>
+            <button id="adminViolationsBtn">Policy violations</button>
+            <button id="adminDriftBtn">Timeline drift</button>
           </div>
           <div class="row">
             <label>Response</label>

@@ -141,7 +141,62 @@ document.querySelectorAll(".tab").forEach((btn) => {
   });
 });
 
-// Onboarding & Plan
+// Onboarding & Plan (diagnostic wizard state)
+let _obAttemptId = null;
+let _obQuestions = [];
+
+function renderObQuestions() {
+  const container = el("obQuestionsContainer");
+  if (!container) return;
+  if (!_obQuestions.length) {
+    container.innerHTML = "<p class=\"muted\">Start onboarding above to load questions.</p>";
+    if (el("obSubmitDiagnosticRow")) el("obSubmitDiagnosticRow").style.display = "none";
+    if (el("obSubmitDiagnosticActions")) el("obSubmitDiagnosticActions").style.display = "none";
+    return;
+  }
+  container.innerHTML = "";
+  _obQuestions.forEach((q, idx) => {
+    const block = document.createElement("div");
+    block.className = "q-block";
+    const lab = document.createElement("label");
+    lab.className = "q-prompt";
+    lab.textContent = (idx + 1) + ". " + (q.prompt || "Question");
+    block.appendChild(lab);
+    let input;
+    if (q.question_type === "mcq" && q.options && q.options.length) {
+      input = document.createElement("select");
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "-- choose --";
+      input.appendChild(empty);
+      q.options.forEach((opt) => {
+        const o = document.createElement("option");
+        o.value = opt;
+        o.textContent = opt;
+        input.appendChild(o);
+      });
+    } else if (q.question_type === "true_false") {
+      input = document.createElement("select");
+      ["", "true", "false"].forEach((v) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = v || "-- choose --";
+        input.appendChild(o);
+      });
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "Your answer";
+    }
+    input.setAttribute("data-question-id", q.question_id);
+    input.id = "ob-a-" + idx;
+    block.appendChild(input);
+    container.appendChild(block);
+  });
+  if (el("obSubmitDiagnosticRow")) el("obSubmitDiagnosticRow").style.display = "block";
+  if (el("obSubmitDiagnosticActions")) el("obSubmitDiagnosticActions").style.display = "block";
+}
+
 async function onboardingStart() {
   const name = (el("obName") && el("obName").value.trim()) || "Test Learner";
   const grade_level = (el("obGrade") && el("obGrade").value.trim()) || "10";
@@ -154,9 +209,47 @@ async function onboardingStart() {
       selected_timeline_weeks,
     });
     if (data.learner_id) el("obLearnerId").textContent = data.learner_id;
-    el("obResult").textContent = "Onboarding started. Learner ID: " + data.learner_id + "\nQuestions: " + (data.questions && data.questions.length) + " items.";
+    _obAttemptId = data.diagnostic_attempt_id || null;
+    _obQuestions = data.questions || [];
+    renderObQuestions();
+    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "none";
+    el("obResult").textContent = "Onboarding started. Learner ID: " + data.learner_id + "\nQuestions: " + (_obQuestions.length) + " items. Complete the diagnostic below and submit.";
   } catch (err) {
     el("obResult").textContent = "Error: " + err.message;
+  }
+}
+
+async function submitDiagnostic() {
+  const learnerId = getObLearnerId();
+  if (!_obAttemptId || !_obQuestions.length) {
+    el("obDiagnosticResultPre").textContent = "Start onboarding and load questions first.";
+    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "block";
+    return;
+  }
+  const time_spent_minutes = parseInt((el("obTimeSpent") && el("obTimeSpent").value) || "15", 10);
+  const answers = _obQuestions.map((q, idx) => {
+    const input = el("ob-a-" + idx);
+    return { question_id: q.question_id, answer: (input && input.value) ? input.value.trim() : "" };
+  });
+  try {
+    const data = await apiCallOb("/onboarding/submit", "POST", {
+      learner_id: learnerId,
+      diagnostic_attempt_id: _obAttemptId,
+      answers,
+      time_spent_minutes,
+    });
+    const summary = "Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-") +
+      "\nSelected timeline: " + (data.selected_timeline_weeks || "-") + " weeks" +
+      "\nRecommended: " + (data.recommended_timeline_weeks || "-") + " weeks" +
+      "\nCurrent forecast: " + (data.current_forecast_weeks || "-") + " weeks" +
+      "\nNote: " + (data.timeline_recommendation_note || "-") +
+      "\n\nFull response:\n" + JSON.stringify(data, null, 2);
+    el("obDiagnosticResultPre").textContent = summary;
+    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "block";
+    el("obResult").textContent = "Diagnostic submitted. Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-");
+  } catch (err) {
+    el("obDiagnosticResultPre").textContent = "Error: " + err.message;
+    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "block";
   }
 }
 
@@ -170,8 +263,25 @@ async function fetchPlan() {
   try {
     const data = await apiCallOb("/onboarding/plan/" + getObLearnerId());
     el("obResult").textContent = JSON.stringify(data, null, 2);
+    const sel = data.selected_timeline_weeks;
+    const fcast = data.current_forecast_weeks;
+    const delta = data.timeline_delta_weeks;
+    const row = el("obTimelineSummaryRow");
+    const summary = el("obTimelineSummary");
+    if (row && summary && (sel != null || fcast != null)) {
+      const d = delta != null ? delta : (fcast != null && sel != null ? fcast - sel : null);
+      let hint = "";
+      if (d != null) {
+        if (d < 0) hint = " (ahead of goal)";
+        else if (d > 0) hint = " (behind goal)";
+        else hint = " (on track)";
+      }
+      summary.textContent = "Selected: " + (sel != null ? sel : "-") + " weeks | Forecast: " + (fcast != null ? fcast : "-") + " weeks | Delta: " + (d != null ? d : "-") + " weeks" + hint;
+      row.style.display = "block";
+    }
   } catch (err) {
     el("obResult").textContent = "Error: " + err.message;
+    if (el("obTimelineSummaryRow")) el("obTimelineSummaryRow").style.display = "none";
   }
 }
 
@@ -193,10 +303,99 @@ async function fetchWhereIStand() {
   }
 }
 
+async function fetchStreakSummary() {
+  try {
+    const id = getObLearnerId();
+    const [metrics, engagement] = await Promise.all([
+      apiCallOb("/onboarding/learning-metrics/" + id).catch(() => ({})),
+      apiCallOb("/onboarding/engagement/summary/" + id).catch(() => ({})),
+    ]);
+    const parts = [];
+    if (metrics.login_streak_days != null) parts.push("Login streak: " + metrics.login_streak_days + " days");
+    if (engagement.login_streak_days != null && !parts.some(function(p) { return p.startsWith("Login streak"); })) parts.push("Login streak: " + engagement.login_streak_days + " days");
+    if (metrics.adherence_rate_week != null) parts.push("Adherence (week): " + (metrics.adherence_rate_week * 100).toFixed(0) + "%");
+    if (engagement.adherence_rate_week != null && !parts.some(p => p.startsWith("Adherence"))) parts.push("Adherence (week): " + (engagement.adherence_rate_week * 100).toFixed(0) + "%");
+    if (metrics.confidence_score != null) parts.push("Confidence: " + (metrics.confidence_score * 100).toFixed(0) + "%");
+    if (metrics.timeline_adherence_weeks != null) parts.push("Timeline adherence: " + metrics.timeline_adherence_weeks + " weeks");
+    if (metrics.forecast_drift_weeks != null) parts.push("Forecast drift: " + metrics.forecast_drift_weeks + " weeks");
+    if (engagement.engagement_minutes_week != null) parts.push("Minutes this week: " + engagement.engagement_minutes_week);
+    const text = parts.length ? parts.join(" · ") : (metrics.avg_mastery_score != null ? "Avg mastery: " + (metrics.avg_mastery_score * 100).toFixed(0) + "%" : "No data yet.");
+    el("obStreakSummary").textContent = text;
+    el("obStreakSummaryRow").style.display = "block";
+  } catch (err) {
+    el("obStreakSummary").textContent = "Error: " + err.message;
+    el("obStreakSummaryRow").style.display = "block";
+  }
+}
+
 if (el("obStartBtn")) el("obStartBtn").addEventListener("click", onboardingStart);
+if (el("obSubmitDiagnosticBtn")) el("obSubmitDiagnosticBtn").addEventListener("click", submitDiagnostic);
 if (el("obPlanBtn")) el("obPlanBtn").addEventListener("click", fetchPlan);
 if (el("obTasksBtn")) el("obTasksBtn").addEventListener("click", fetchTasks);
+function masteryLevel(score) {
+  if (score == null || typeof score !== "number") return "—";
+  if (score < 0.4) return "Beginner";
+  if (score < 0.6) return "Developing";
+  if (score < 0.8) return "Proficient";
+  return "Mastered";
+}
+
+async function fetchChapterTracker() {
+  try {
+    const data = await apiCallOb("/onboarding/where-i-stand/" + getObLearnerId());
+    const status = data.chapter_status || [];
+    const lines = status.map(function(s) {
+      const ch = s.chapter || s.name || "?";
+      const level = s.band || masteryLevel(s.score != null ? s.score : (s.mastery != null ? s.mastery : null));
+      return ch + ": " + level;
+    });
+    el("obChapterTrackerText").textContent = lines.length ? lines.join(" · ") : "No chapter data yet.";
+    el("obChapterTrackerRow").style.display = "block";
+  } catch (err) {
+    el("obChapterTrackerText").textContent = "Error: " + err.message;
+    el("obChapterTrackerRow").style.display = "block";
+  }
+}
+
+async function fetchConceptMap() {
+  try {
+    const data = await apiCallOb("/onboarding/where-i-stand/" + getObLearnerId());
+    const strengths = (data.concept_strengths || []).slice(0, 8);
+    const weaknesses = (data.concept_weaknesses || []).slice(0, 8);
+    const conf = data.confidence_score != null ? (data.confidence_score * 100).toFixed(0) + "%" : "—";
+    const parts = ["Confidence: " + conf];
+    if (strengths.length) parts.push("Strengths: " + strengths.join(", "));
+    if (weaknesses.length) parts.push("Weaknesses: " + weaknesses.join(", "));
+    el("obConceptMapText").textContent = parts.join(" · ");
+    el("obConceptMapRow").style.display = "block";
+  } catch (err) {
+    el("obConceptMapText").textContent = "Error: " + err.message;
+    el("obConceptMapRow").style.display = "block";
+  }
+}
+
+async function fetchNextWeek() {
+  try {
+    const data = await apiCallOb("/onboarding/plan/" + getObLearnerId());
+    const rough = data.rough_plan || [];
+    const next = rough[1] || rough[0];
+    if (next) {
+      el("obNextWeekText").textContent = "Week " + (next.week || "?") + ": " + (next.chapter || "—") + " — " + (next.focus || "");
+    } else {
+      el("obNextWeekText").textContent = "No next-week plan yet. Complete onboarding and get plan.";
+    }
+    el("obNextWeekRow").style.display = "block";
+  } catch (err) {
+    el("obNextWeekText").textContent = "Error: " + err.message;
+    el("obNextWeekRow").style.display = "block";
+  }
+}
+
 if (el("obStandBtn")) el("obStandBtn").addEventListener("click", fetchWhereIStand);
+if (el("obStreakBtn")) el("obStreakBtn").addEventListener("click", fetchStreakSummary);
+if (el("obChapterTrackerBtn")) el("obChapterTrackerBtn").addEventListener("click", fetchChapterTracker);
+if (el("obConceptMapBtn")) el("obConceptMapBtn").addEventListener("click", fetchConceptMap);
+if (el("obNextWeekBtn")) el("obNextWeekBtn").addEventListener("click", fetchNextWeek);
 
 // Admin
 async function adminHealth() {
@@ -226,9 +425,39 @@ async function adminGrounding() {
   }
 }
 
+async function adminCohort() {
+  try {
+    const data = await apiCallAdmin("/admin/cohort?include_list=true");
+    el("adminResult").textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    el("adminResult").textContent = "Error: " + err.message;
+  }
+}
+
+async function adminViolations() {
+  try {
+    const data = await apiCallAdmin("/admin/policy-violations");
+    el("adminResult").textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    el("adminResult").textContent = "Error: " + err.message;
+  }
+}
+
+async function adminDrift() {
+  try {
+    const data = await apiCallAdmin("/admin/timeline-drift");
+    el("adminResult").textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    el("adminResult").textContent = "Error: " + err.message;
+  }
+}
+
 if (el("adminHealthBtn")) el("adminHealthBtn").addEventListener("click", adminHealth);
 if (el("adminMetricsBtn")) el("adminMetricsBtn").addEventListener("click", adminMetrics);
 if (el("adminGroundingBtn")) el("adminGroundingBtn").addEventListener("click", adminGrounding);
+if (el("adminCohortBtn")) el("adminCohortBtn").addEventListener("click", adminCohort);
+if (el("adminViolationsBtn")) el("adminViolationsBtn").addEventListener("click", adminViolations);
+if (el("adminDriftBtn")) el("adminDriftBtn").addEventListener("click", adminDrift);
 
 if (!el("learnerId").value) {
   el("learnerId").value = newUuid();

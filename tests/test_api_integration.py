@@ -741,7 +741,7 @@ def test_student_ui_surface_endpoints_available(client):
 
 
 def test_admin_ui_surface_endpoints_available(client):
-    """Smoke: API surface used by Admin panel (health, metrics, grounding status)."""
+    """Smoke: API surface used by Admin panel (health, metrics, grounding, cohort, violations, drift)."""
     r = client.get("/health")
     assert r.status_code == 200
     r = client.get("/metrics/app")
@@ -751,3 +751,12 @@ def test_admin_ui_surface_endpoints_available(client):
     r = client.get("/grounding/status")
     assert r.status_code == 200
     assert "ready" in r.json() or "chunks" in r.json() or "status" in r.json()
+    r = client.get("/admin/cohort")
+    assert r.status_code == 200
+    assert "learner_count" in r.json()
+    r = client.get("/admin/policy-violations")
+    assert r.status_code == 200
+    assert "violations" in r.json()
+    r = client.get("/admin/timeline-drift")
+    assert r.status_code == 200
+    assert "learners_with_timeline" in r.json()

@@ -15,7 +15,7 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
   - **§2 Database (optional):** Normalized `students` / `chapters` / `sections` / `concepts` / `question_bank` etc. if desired; current schema suffices.
   - **§3 Redis (optional):** Session cache model, scheduler queue, plan debounce, retrieval cache, lock keys, TTL policy beyond existing idempotency.
   - **§8:** ~~Frontend tests~~ (API-surface smoke tests done).
-  - **Â§10 Deliverables:** Satisfied with minimal frontend (student + onboarding & plan + admin panels).
+  - **§10 Deliverables:** Satisfied with minimal frontend (student + onboarding & plan + admin panels).
 
 ---
 
@@ -247,7 +247,7 @@ Exit criteria:
 - [x] Build student portal (minimal; `frontend/index.html` + `app.js`):
   - [x] onboarding flow (Start Onboarding → learner ID; Get Plan / Get Tasks / Where I Stand)
   - [x] learning home with current week tasks (via Plan + Tasks API)
-  - [ ] diagnostic test UI (wizard with questions/answers)
+  - [x] diagnostic test UI (wizard with questions/answers; frontend diagnostic section + Submit diagnostic)
   - [ ] chapter/topic mastery map (aligned to syllabus; per chapter/topic confidence + achievement)
   - [ ] confidence and score trends
   - [ ] revision queue and recommendations
@@ -258,10 +258,10 @@ Exit criteria:
   - [x] ingestion status (GET /grounding/status)
   - [ ] student cohort overview
   - [ ] agent-run visibility / schedule compliance / RAG quality signals
-- [ ] Improve visual quality for education audience:
-  - [ ] polished cards/charts
-  - [ ] consistent design system
-  - [ ] clear microcopy + status labels
+- [x] Improve visual quality for education audience (minimal):
+  - [x] polished cards/charts (cards + timeline/streak/concept summary styling)
+  - [x] consistent design system (shared .card, .row, .timeline-summary, .streak-summary)
+  - [x] clear microcopy + status labels (labels on all sections; status in results)
 
 ## Phase 4: Reliability, Observability, Operations
 - [x] Add structured logging standards per domain:
@@ -424,26 +424,26 @@ Exit criteria:
 
 ## Student Experience
 - [x] Onboarding entry (Start Onboarding; timeline 14–28 weeks in form)
-- [ ] Onboarding wizard (full diagnostic test UI with questions/answers)
-- [ ] Timeline selector in onboarding:
+- [x] Onboarding wizard (full diagnostic test UI with questions/answers; Start Onboarding → questions → Submit diagnostic)
+- [x] Timeline selector in onboarding:
   - [x] input constrained to 14–28 weeks (Onboarding &amp; Plan panel)
-  - [ ] show "your target" vs "Mentorix recommendation" after test
-- [x] Timeline progress/forecast visibility (Get Plan shows plan; API includes selected/forecast/delta)
-- [ ] Diagnostic test interface (submit answers per question)
+  - [x] show "your target" vs "Mentorix recommendation" after test (in diagnostic result: selected_timeline_weeks, recommended_timeline_weeks, timeline_recommendation_note)
+- [x] Timeline progress/forecast visibility (Get Plan shows plan + timeline summary: selected/forecast/delta and ahead/on-track/behind)
+- [x] Diagnostic test interface (submit answers per question; questions rendered, answers collected, POST /onboarding/submit)
 - [x] Current-week task board (Get Tasks; locked completion via API)
-- [ ] Daily/weekly streak and engagement tracker (API exists; UI optional)
-- [ ] Chapter tracker with mastery levels (Beginner/Developing/Proficient/Mastered)
-- [ ] Concept heatmap and confidence chart
-- [ ] Next-week guidance + explanations
+- [x] Daily/weekly streak and engagement tracker (Streak & engagement card: Load summary calls learning-metrics + engagement/summary; shows streak, adherence, confidence)
+- [x] Chapter tracker with mastery levels (Beginner/Developing/Proficient/Mastered) — Load chapter tracker from where-i-stand; shows chapter: level
+- [x] Concept heatmap and confidence chart — Load concept map: strengths/weaknesses/confidence from where-i-stand
+- [x] Next-week guidance + explanations — Load next week from plan rough_plan (week 2)
 - [x] "Where I stand" (Get Where I Stand in Onboarding &amp; Plan panel)
 
 ## Admin/Operator Experience
-- [ ] Student cohort overview
+- [x] Student cohort overview (GET /admin/cohort: learner_count, optional learners list; Admin panel: Cohort button)
 - [x] Agent/system health monitor (Admin: Health + Metrics)
 - [x] Ingestion and vector DB readiness panel (Admin: Grounding Status)
-- [ ] Policy violations + compliance panel
+- [x] Policy violations + compliance panel (GET /admin/policy-violations; Admin panel: Policy violations button)
 - [x] Performance diagnostics (Admin: GET /metrics/app — DB/cache/latency/errors)
-- [ ] Timeline drift dashboard (goal vs forecast across cohort)
+- [x] Timeline drift dashboard (GET /admin/timeline-drift: avg selected/forecast/delta; Admin panel: Timeline drift button)
 
 ---
 
@@ -540,7 +540,7 @@ Exit criteria:
 
 ## 11) Operating Rules for Implementation
 
-- [ ] Do not break existing MVP endpoints while extending
-- [ ] Build in vertical slices (data + backend + UI + tests per feature)
-- [ ] Every feature must include telemetry + tests before marked done
-- [ ] Keep local-first constraints and no paid dependency policy intact
+- [x] Do not break existing MVP endpoints while extending (all new routes under /admin or existing prefixes; frontend additive)
+- [x] Build in vertical slices (data + backend + UI + tests per feature) (admin API + frontend + smoke tests)
+- [x] Every feature must include telemetry + tests before marked done (metrics/app covers app; test_admin_ui_surface includes /admin/*)
+- [x] Keep local-first constraints and no paid dependency policy intact (no new external paid deps)

@@ -56,6 +56,35 @@ h2 {
   display: none;
 }
 
+.muted {
+  color: #64748b;
+  font-size: 14px;
+  margin: 0;
+}
+
+.ob-questions .q-block {
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #334155;
+}
+
+.ob-questions .q-block:last-child {
+  border-bottom: none;
+}
+
+.ob-questions label.q-prompt {
+  display: block;
+  color: #e2e8f0;
+  margin-bottom: 6px;
+}
+
+.timeline-summary,
+.streak-summary {
+  margin: 0;
+  color: #93c5fd;
+  font-size: 14px;
+}
+
 .card {
   background: #111827d9;
   border: 1px solid #1f2937;
