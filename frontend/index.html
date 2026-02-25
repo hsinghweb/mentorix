@@ -163,6 +163,7 @@
             <button id="obPlanBtn">Get Plan</button>
             <button id="obTasksBtn">Get Tasks</button>
             <button id="obStandBtn">Where I Stand</button>
+            <button id="obRevisionQueueBtn">Revision queue</button>
           </div>
           <div class="row" id="obTimelineSummaryRow" style="display: none;">
             <label>Timeline</label>
@@ -206,6 +207,16 @@
           <div class="row" id="obNextWeekRow" style="display: none;">
             <label>Next week</label>
             <p id="obNextWeekText" class="timeline-summary"></p>
+          </div>
+        </section>
+        <section class="card">
+          <h2>Forecast trend</h2>
+          <div class="row actions">
+            <button id="obForecastTrendBtn">Load forecast trend</button>
+          </div>
+          <div class="row" id="obForecastTrendRow" style="display: none;">
+            <label>History (week → forecast weeks, delta)</label>
+            <pre id="obForecastTrendText" class="streak-summary"></pre>
           </div>
         </section>
       </div>

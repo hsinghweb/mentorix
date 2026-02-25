@@ -1,3 +1,5 @@
+import hashlib
+import json
 import re
 
 from sqlalchemy import Select, select
@@ -52,14 +54,39 @@ def _retrieval_confidence(scored: list[tuple[float, object]], top_k: int) -> flo
     return round(_clamp01((0.65 * avg_top) + (0.35 * margin)), 3)
 
 
+_RAG_CACHE_TTL = 300  # seconds
+
+
+def _rag_cache_key(concept: str, difficulty: int | None, top_k: int) -> str:
+    raw = f"{concept}|{difficulty}|{top_k}"
+    h = hashlib.sha256(raw.encode()).hexdigest()[:32]
+    return f"rag:{h}"
+
+
 async def retrieve_concept_chunks_with_meta(
     db: AsyncSession, concept: str, top_k: int = 5, difficulty: int | None = None
 ) -> dict:
     """
     Hybrid retrieval:
-    1) Vector-semantic retrieval (primary, concept-focused).
-    2) Keyword overlap re-scoring (secondary signal).
+    1) Redis cache for repeated concept queries (TTL 300s).
+    2) Vector-semantic retrieval (primary, concept-focused).
+    3) Keyword overlap re-scoring (secondary signal).
     """
+    cache_key = _rag_cache_key(concept, difficulty, top_k)
+    try:
+        from app.memory.cache import redis_client
+        raw = await redis_client.get(cache_key)
+        if raw:
+            data = json.loads(raw)
+            try:
+                from app.core.retrieval_metrics import record_retrieval
+                record_retrieval(float(data.get("retrieval_confidence", 0)))
+            except Exception:
+                pass
+            return data
+    except Exception:
+        pass
+
     query_text = concept.replace("_", " ").strip()
     query_vec = embed_text(query_text)
     query_tokens = _tokenize(query_text)
@@ -119,10 +146,16 @@ async def retrieve_concept_chunks_with_meta(
     else:
         message = "Grounded retrieval confidence is acceptable."
 
-    return {
+    result = {
         "chunks": chunks,
         "retrieval_confidence": confidence,
         "semantic_fallback_used": semantic_fallback_used,
         "message": message,
         "candidate_count": len(scored),
     }
+    try:
+        from app.memory.cache import redis_client
+        await redis_client.set(cache_key, json.dumps(result), ex=_RAG_CACHE_TTL)
+    except Exception:
+        pass
+    return result

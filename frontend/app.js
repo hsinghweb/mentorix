@@ -303,6 +303,15 @@ async function fetchWhereIStand() {
   }
 }
 
+async function fetchRevisionQueue() {
+  try {
+    const data = await apiCallOb("/onboarding/revision-queue/" + getObLearnerId());
+    el("obResult").textContent = JSON.stringify(data, null, 2);
+  } catch (err) {
+    el("obResult").textContent = "Error: " + err.message;
+  }
+}
+
 async function fetchStreakSummary() {
   try {
     const id = getObLearnerId();
@@ -391,11 +400,29 @@ async function fetchNextWeek() {
   }
 }
 
+async function fetchForecastTrend() {
+  try {
+    const data = await apiCallOb("/onboarding/forecast-history/" + getObLearnerId());
+    const history = data.history || [];
+    const lines = history.map(function(h) {
+      const d = h.generated_at ? new Date(h.generated_at).toLocaleDateString() : "";
+      return "Week " + (h.week_number || "?") + ": forecast " + (h.current_forecast_weeks != null ? h.current_forecast_weeks : "—") + " wks, delta " + (h.timeline_delta_weeks != null ? (h.timeline_delta_weeks >= 0 ? "+" : "") + h.timeline_delta_weeks : "—") + " · " + (h.pacing_status || "") + (d ? " (" + d + ")" : "");
+    });
+    el("obForecastTrendText").textContent = lines.length ? lines.join("\n") : "No forecast history yet.";
+    el("obForecastTrendRow").style.display = "block";
+  } catch (err) {
+    el("obForecastTrendText").textContent = "Error: " + err.message;
+    el("obForecastTrendRow").style.display = "block";
+  }
+}
+
 if (el("obStandBtn")) el("obStandBtn").addEventListener("click", fetchWhereIStand);
+if (el("obRevisionQueueBtn")) el("obRevisionQueueBtn").addEventListener("click", fetchRevisionQueue);
 if (el("obStreakBtn")) el("obStreakBtn").addEventListener("click", fetchStreakSummary);
 if (el("obChapterTrackerBtn")) el("obChapterTrackerBtn").addEventListener("click", fetchChapterTracker);
 if (el("obConceptMapBtn")) el("obConceptMapBtn").addEventListener("click", fetchConceptMap);
 if (el("obNextWeekBtn")) el("obNextWeekBtn").addEventListener("click", fetchNextWeek);
+if (el("obForecastTrendBtn")) el("obForecastTrendBtn").addEventListener("click", fetchForecastTrend);
 
 // Admin
 async function adminHealth() {
