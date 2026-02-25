@@ -6,11 +6,11 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 **Submission finish line:** See `docs/SUBMISSION_FINISH_LINE.md` for remaining unchecked items split into backend-critical vs frontend/demo-later.
 
 **Progress summary (as of review):**
-- **Done (backend):** Phase 0–1 complete. Phase 2: lifecycle APIs, timeline contract, progression rules, planning mode, adaptive pace (extend/compress). Phase 4: structured logging per domain, app metrics (latency/error rate + alerts), student-learning metrics endpoint. §6 Grounding, §7 Security/Reliability, §8 backend + data/embedding + reliability tests. Timeline drift fields in profile; idempotency on key writes.
+- **Done (backend):** Phase 0–1 complete. Phase 2: lifecycle APIs, timeline contract, progression rules, planning mode, adaptive pace (extend/compress). Phase 4: structured logging per domain, app metrics (latency/error rate + alerts + agent/fleet + cache + retrieval + engagement + disengagement_risk + scheduler_drift), student-learning metrics endpoint. §6 Grounding, §7 Security/Reliability, §8 backend + data/embedding + reliability tests. Timeline drift fields in profile; idempotency on key writes.
 - **Remaining (what’s next):**
-  - **Phase 1:** Extensibility — document or script for onboarding a new course (add `syllabus.txt` + PDFs to a new dir, run ingestion).
+  - **Phase 1:** ~~Extensibility~~ — done: `docs/ONBOARD_NEW_COURSE.md`, `API/scripts/onboard_course.py`.
   - **Phase 3:** Frontend — student portal (onboarding wizard, timeline selector, task board, where-I-stand, end view); admin panel (cohort, health, ingestion/RAG); visual polish.
-  - **Phase 4 (optional):** Agent duration/failure metrics, DB p95, Redis hit ratio, retrieval quality metrics; extended alerts (disengagement, scheduler drift).
+  - **Phase 4 (optional):** ~~Agent duration/failure metrics~~ (done). ~~Redis hit ratio~~ (done). ~~Retrieval quality metrics~~ (done). ~~Extended alerts (disengagement, scheduler drift)~~ (done: disengagement_risk when recent ≥ 3; scheduler_drift when max_run_duration_sec &gt; 600 or retry ratio &gt; 20%). Remaining: DB p95.
   - **§2 Database (optional):** Normalized `students` / `chapters` / `sections` / `concepts` / `question_bank` etc. if desired; current schema suffices.
   - **§3 Redis (optional):** Session cache model, scheduler queue, plan debounce, retrieval cache, lock keys, TTL policy beyond existing idempotency.
   - **§8:** Frontend tests (student journey smoke, admin panel).
@@ -205,7 +205,7 @@ Exit criteria:
 - [x] Store extracted chunks + metadata + embeddings in Postgres vector tables
 - [x] Add ingestion manifest tracking (what was embedded, when, hash/version)
 - [x] Add pre-start validation so app can fail-fast if mandatory embeddings missing
-- [ ] **Extensibility:** Document/script for onboarding a new course: add `syllabus.txt` (same format) + course PDFs to a new directory (e.g. `class-9-maths`, `class-10-science`), run ingestion; plan and profile model reuse unchanged
+- [x] **Extensibility:** Document/script for onboarding a new course: `docs/ONBOARD_NEW_COURSE.md` + `API/scripts/onboard_course.py` (validate course dir, print env vars and `POST /grounding/ingest`); add `syllabus.txt` + course PDFs to a new directory, set env, run ingestion; plan and profile model reuse unchanged
 
 ## Phase 2: Enterprise Backend Core
 - [x] Introduce full student lifecycle APIs:
@@ -271,10 +271,10 @@ Exit criteria:
   - [x] RAG retrieval
 - [x] Add app metrics:
   - [x] request latency and error rates (GET `/metrics/app`: p50/p95, error_rate)
-  - [ ] agent execution duration/failure counts
+  - [x] agent execution duration/failure counts (GET `/metrics/app` includes `agents`: total_runs, total_steps, failed_steps, step_success_rate, total_retries, top_agents from fleet telemetry)
   - [ ] DB query performance
-  - [ ] Redis cache hit/miss
-  - [ ] retrieval quality metrics
+  - [x] Redis cache hit/miss (GET `/metrics/app` includes `cache`: cache_hits, cache_misses, cache_sets, cache_hit_ratio; alert low_cache_hit_ratio when ratio &lt; 0.5 and get_total ≥ 10)
+  - [x] retrieval quality metrics (GET `/metrics/app` includes `retrieval`: retrieval_count, retrieval_avg_confidence, retrieval_low_confidence_ratio; alert low_retrieval_quality when avg &lt; 0.4 and count ≥ 5)
 - [x] Add student-learning metrics (GET `/onboarding/learning-metrics/{learner_id}`):
   - [x] mastery progression by chapter/concept
   - [x] confidence trend (confidence_score)
@@ -282,7 +282,12 @@ Exit criteria:
   - [x] completion and adherence rates (adherence_rate_week, login_streak_days, timeline fields)
 - [x] Add alerts and anomaly flags (in `/metrics/app` payload):
   - [x] high_error_rate, high_latency_p95
-  - [ ] repeated low scores / disengagement / scheduler drift / embedding failures (extend as needed)
+  - [x] high_agent_failure_rate (when step_success_rate &lt; 90% and total_steps &gt; 0)
+  - [x] low_cache_hit_ratio (when cache_hit_ratio &lt; 0.5 and cache_get_total ≥ 10)
+  - [x] low_retrieval_quality (when retrieval_avg_confidence &lt; 0.4 and retrieval_count ≥ 5)
+  - [x] disengagement_risk (when disengagement_recent_count ≥ 3; recorded on compliance disengagement_flag)
+  - [x] scheduler_drift (when max_run_duration_sec &gt; 600 or total_retries/total_steps &gt; 0.2 with ≥20 steps)
+  - [ ] repeated low scores / embedding failures (extend as needed)
 
 ---
 
@@ -517,10 +522,10 @@ Exit criteria:
 
 ## System KPIs
 - [x] p50/p95 API latency (`/metrics/app`)
-- [ ] agent failure/retry rate
+- [x] agent failure/retry rate (`/metrics/app` agents + fleet)
 - [ ] DB query p95
-- [ ] Redis cache hit ratio
-- [ ] RAG retrieval relevance score proxy
+- [x] Redis cache hit ratio (`/metrics/app` cache)
+- [x] RAG retrieval relevance score proxy (`/metrics/app` retrieval)
 
 ---
 

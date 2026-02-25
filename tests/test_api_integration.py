@@ -103,6 +103,32 @@ def test_app_metrics_endpoint_contract(client):
     assert "alerts" in body
     assert isinstance(body["alerts"], list)
     assert 0 <= body["error_rate"] <= 1
+    # Optional: agent/fleet summary (total_steps, failed_steps, step_success_rate, etc.)
+    if body.get("agents") is not None:
+        agents = body["agents"]
+        assert "total_steps" in agents
+        assert "failed_steps" in agents
+        assert "step_success_rate" in agents
+    # Cache (Redis) hit/miss metrics
+    assert "cache" in body
+    cache = body["cache"]
+    assert "cache_hits" in cache
+    assert "cache_misses" in cache
+    assert "cache_sets" in cache
+    assert "cache_get_total" in cache
+    assert "cache_hit_ratio" in cache
+    # RAG retrieval quality (relevance proxy)
+    assert "retrieval" in body
+    retrieval = body["retrieval"]
+    assert "retrieval_count" in retrieval
+    assert "retrieval_avg_confidence" in retrieval
+    assert "retrieval_low_confidence_count" in retrieval
+    assert "retrieval_low_confidence_ratio" in retrieval
+    # Engagement / disengagement (extended alerts)
+    assert "engagement" in body
+    engagement = body["engagement"]
+    assert "disengagement_recent_count" in engagement
+    assert "disengagement_total_count" in engagement
 
 
 def test_onboarding_start_endpoint_available(client):

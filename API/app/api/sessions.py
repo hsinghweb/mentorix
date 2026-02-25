@@ -528,6 +528,11 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         }
     )
     if compliance_status.get("disengagement_flag"):
+        try:
+            from app.core.engagement_metrics import record_disengagement
+            record_disengagement()
+        except Exception:
+            pass
         await notification_engine.notify(
             source="compliance",
             title="Intervention recommended",

@@ -106,6 +106,12 @@ async def retrieve_concept_chunks_with_meta(
     chunks = [item.content for _score, item in top_items]
     confidence = _retrieval_confidence(scored, top_k=top_k)
 
+    try:
+        from app.core.retrieval_metrics import record_retrieval
+        record_retrieval(confidence)
+    except Exception:
+        pass
+
     if not chunks:
         message = "No grounded chunks found for requested concept."
     elif confidence < 0.35:

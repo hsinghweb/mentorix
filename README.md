@@ -39,6 +39,8 @@ Grounding endpoints:
 - `GET /grounding/status` -> readiness check (missing files / missing embeddings)
 - `POST /grounding/ingest` -> run ingestion (`?force_rebuild=true` optional)
 
+To **onboard a new course** (another subject/class): see `docs/ONBOARD_NEW_COURSE.md` and `API/scripts/onboard_course.py` (validate dir, set env, run ingest).
+
 ## Runtime Memory Backend (MongoDB default)
 
 - Runtime learner/system memory now defaults to **MongoDB** via `MEMORY_STORE_BACKEND=mongo`.
