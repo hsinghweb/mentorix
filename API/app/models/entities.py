@@ -45,6 +45,8 @@ class LearnerProfile(Base):
     retention_decay: Mapped[float] = mapped_column(Float, nullable=False, default=0.1)
     cognitive_depth: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
     engagement_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.5)
+    math_9_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    onboarding_diagnostic_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     selected_timeline_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     recommended_timeline_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_forecast_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)

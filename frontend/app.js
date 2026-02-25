@@ -215,17 +215,22 @@ async function doSignup() {
   const password = (el("signupPassword") && el("signupPassword").value) || "";
   const name = (el("signupName") && el("signupName").value.trim()) || "";
   const date_of_birth = (el("signupDob") && el("signupDob").value) || "";
+  const math_9_percent = parseInt((el("signupMathPercent") && el("signupMathPercent").value) || "0", 10);
   const selected_timeline_weeks = parseInt((el("signupWeeks") && el("signupWeeks").value) || "28", 10);
   const base = getAuthBaseUrl();
   if (!username || !password || !name || !date_of_birth) {
     if (el("authSignupError")) { el("authSignupError").textContent = "All fields required."; el("authSignupError").classList.remove("hidden"); }
     return;
   }
+  if (Number.isNaN(math_9_percent) || math_9_percent < 0 || math_9_percent > 100) {
+    if (el("authSignupError")) { el("authSignupError").textContent = "Enter Class 9 Maths % between 0 and 100."; el("authSignupError").classList.remove("hidden"); }
+    return;
+  }
   try {
     const resp = await fetch(`${base}/auth/signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, name, date_of_birth, selected_timeline_weeks }),
+      body: JSON.stringify({ username, password, name, date_of_birth, selected_timeline_weeks, math_9_percent }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || resp.statusText);

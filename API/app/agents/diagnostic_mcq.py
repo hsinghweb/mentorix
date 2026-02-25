@@ -31,33 +31,51 @@ SYLLABUS_OUTLINE = """
 14. Probability
 """
 
-PROMPT = f"""You are a mathematics assessment designer for CBSE Class 10 (English medium).
-The student has passed Class 9 Mathematics and is starting Class 10. Generate exactly 25 multiple-choice questions (MCQs) to assess their baseline.
-Topics must be from Class 10 CBSE Mathematics syllabus only. Cover a mix of chapters 1-14 below. Keep difficulty appropriate for someone who just completed Class 9.
+def _build_diagnostic_prompt(math_9_percent: int | None) -> str:
+    pct = math_9_percent if math_9_percent is not None else 0
+    pct_line = f"The percentage of marks obtained by this student in Class 9 Mathematics is {pct}%."
+    return f"""You are a mathematics assessment designer for CBSE Class 10 (English medium).
+
+We are onboarding a student to prepare for Class 10 Mathematics. Generate the assessment test based on the student's Class 9 result in Mathematics. {pct_line}
+Generate exactly 25 multiple-choice questions to assess readiness for Class 10. We will compare the student's answers against the correct answers you provide and give them the correct result.
+
+STRICT requirements:
+- Give EXACTLY 25 questions. No more, no less.
+- All questions must be about MATHEMATICS only (no other subjects).
+- Each question must be a multiple-choice question (MCQ) with exactly four options: A, B, C, and D. Only one option is correct per question.
+- You must provide the correct answer for each question so we can score the paper: set "correct_index" to 0, 1, 2, or 3 (the index of the correct option in the "options" array). This is the answer_key we use to check the student's answers and compute the result.
+- Difficulty: appropriate for a student who has completed Class 9 (CBSE) and is starting Class 10. You may slightly adapt difficulty based on the Class 9 percentage given above.
+- Cover a mix of chapters 1–14 from the Class 10 CBSE Maths syllabus below.
 
 Syllabus chapters:
 {SYLLABUS_OUTLINE.strip()}
 
-Output ONLY a valid JSON array of exactly 25 objects. No markdown, no explanation. Each object must have:
+Output format (IMPORTANT):
+- Output ONLY a valid JSON array of EXACTLY 25 objects.
+- No markdown, no code fences, no explanation.
+
+Each object must have:
 - "question_id": "q_1", "q_2", ... "q_25"
 - "prompt": "Question text?"
-- "options": ["A", "B", "C", "D"]  (exactly 4 options)
-- "correct_index": 0  (0-3, index of correct option in options array)
-- "chapter_number": 1  (1-14, which chapter this relates to)
+- "options": ["option A text", "option B text", "option C text", "option D text"]  (exactly 4 strings)
+- "correct_index": 0  (0, 1, 2, or 3 — the index of the ONE correct option; this is the answer_key for scoring)
+- "chapter_number": 1  (integer 1–14)
 
-Example format:
-[{{"question_id":"q_1","prompt":"What is the HCF of 12 and 18?","options":["3","6","9","12"],"correct_index":1,"chapter_number":1}}, ...]
+Example (one item):
+{{"question_id":"q_1","prompt":"What is the HCF of 12 and 18?","options":["3","6","9","12"],"correct_index":1,"chapter_number":1}}
 
-Generate 25 such objects now."""
+Output the full JSON array of 25 questions now."""
 
 
-async def generate_diagnostic_mcq() -> tuple[list["DiagnosticQuestion"], dict[str, str]]:
-    """Generate 25 MCQs via LLM. Returns (questions, answer_key). answer_key maps question_id -> correct option text."""
+async def generate_diagnostic_mcq(math_9_percent: int | None = None) -> tuple[list["DiagnosticQuestion"], dict[str, str]]:
+    """Generate 25 MCQs via LLM. answer_key maps question_id -> correct option text (for checking answers).
+    math_9_percent: student's Class 9 Mathematics percentage (0-100), used in the prompt for context."""
     from app.schemas.onboarding import DiagnosticQuestion
 
+    prompt = _build_diagnostic_prompt(math_9_percent)
     provider = get_llm_provider(role="content_generator")
     try:
-        text, meta = await provider.generate(PROMPT)
+        text, meta = await provider.generate(prompt)
     except Exception as exc:
         logger.warning("Diagnostic MCQ LLM call failed: %s", exc)
         return [], {}
@@ -76,13 +94,13 @@ async def generate_diagnostic_mcq() -> tuple[list["DiagnosticQuestion"], dict[st
 
     questions: list[DiagnosticQuestion] = []
     answer_key: dict[str, str] = {}
-    for i, item in enumerate(parsed[:25]):
+    for i, item in enumerate(parsed):
         if not isinstance(item, dict):
             continue
         qid = item.get("question_id") or f"q_{i+1}"
         prompt_text = (item.get("prompt") or "").strip()
         opts = item.get("options")
-        if not isinstance(opts, list) or len(opts) < 2:
+        if not isinstance(opts, list) or len(opts) != 4:
             continue
         options = [str(o).strip() for o in opts[:4]]
         correct_idx = int(item.get("correct_index", 0))
@@ -103,4 +121,28 @@ async def generate_diagnostic_mcq() -> tuple[list["DiagnosticQuestion"], dict[st
         )
         answer_key[qid] = options[correct_idx].lower()
 
+    # Ensure exactly 25 questions: if the LLM returned more, trim; if fewer, pad by reusing earlier ones.
+    if not questions:
+        return [], {}
+    if len(questions) > 25:
+        questions = questions[:25]
+        answer_key = {q.question_id: answer_key[q.question_id] for q in questions if q.question_id in answer_key}
+    elif len(questions) < 25:
+        base = list(questions)
+        idx = 0
+        while len(questions) < 25 and base:
+            src = base[idx % len(base)]
+            idx += 1
+            dup_id = f"{src.question_id}_copy{len(questions)+1}"
+            questions.append(
+                DiagnosticQuestion(
+                    question_id=dup_id,
+                    question_type="mcq",
+                    chapter_number=src.chapter_number,
+                    prompt=src.prompt,
+                    options=list(src.options or []),
+                )
+            )
+            if src.question_id in answer_key and src.options:
+                answer_key[dup_id] = answer_key[src.question_id]
     return questions, answer_key

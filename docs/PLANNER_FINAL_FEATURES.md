@@ -52,12 +52,12 @@ We collect only what we need for onboarding and planning:
 ## 4. 25 MCQ mathematics test (LLM-generated)
 
 - **When:** Right after sign-up (before any plan or schedule).
-- **Count:** 25 multiple-choice questions.
-- **Generation:** Use the LLM to generate MCQs. Constraints:
-  - Student has **passed Class 9 Mathematics, CBSE, English medium**.
-  - Student is **focusing on completing Class 10 Mathematics** as per `syllabus.txt`.
-  - Questions should be appropriate for this level and syllabus (no out-of-syllabus or inappropriate difficulty).
-- **Delivery:** Student answers all 25; we collect responses and **calculate the result** (score).
+- **Count:** Exactly 25 multiple-choice questions.
+- **Generation:** The assessment test is generated **based on the student’s Class 9 result in Mathematics** and the **percentage of marks obtained in Class 9** (entered at signup). The prompt includes:
+  - We are onboarding a student to prepare for **Class 10 Mathematics** (CBSE, English medium).
+  - The **percentage of marks obtained in Class 9 Mathematics** is &lt;value&gt;%. The LLM may adapt difficulty slightly based on this.
+  - **Strict format:** Exactly 25 questions; each question is a **multiple-choice question with four options A, B, C, D**; **only one option is correct** per question. The LLM must provide the **correct answer** for each question (as `correct_index` 0–3) so we can build the **answer_key**, compare the student’s answers against it, and give the correct result.
+- **Delivery:** Student answers all 25; we compare answers to the answer_key and **calculate the result**.
 
 ---
 
@@ -72,9 +72,7 @@ We collect only what we need for onboarding and planning:
 
 ## 6. Initial student profile and chapter status
 
-- **Profile:** Create an **initial student profile** that includes:
-  - **Ability** (from test performance).
-  - **Logical / mathematical** indicators (from the same test).
+- **Global profile:** Create the student’s **global profile** during onboarding from the assessment result. The global profile includes: **student’s name**, **Class 9 marks** (math_9_percent), **class and course** (e.g. Class 10 Mathematics), and **onboarding assessment result** (diagnostic score). Ability is combined as: `ability = 0.5 * diagnostic_score + 0.5 * (math_9_percent/100)`; this drives `cognitive_depth` and the initial plan. We store `onboarding_diagnostic_score` on the profile and in snapshots. The same profile is **updated over time** (e.g. after study sessions, weekly replan, task completion) so we keep refining the student’s profile for future use.
 - **Chapter status:** Start a **status structure for all 14 chapters** (as in syllabus.txt). We do not mark any chapter complete yet; we only initialize the tracking (e.g. not started / in progress / completed) so we can update it as the student progresses.
 - This profile and status are used for:
   - Deciding the rough plan (and later, weekly schedules).

@@ -290,6 +290,8 @@ def _profile_snapshot_payload(profile: LearnerProfile) -> dict:
         "retention_decay": float(profile.retention_decay or 0.0),
         "cognitive_depth": float(profile.cognitive_depth or 0.0),
         "engagement_score": float(profile.engagement_score or 0.0),
+        "math_9_percent": profile.math_9_percent,
+        "onboarding_diagnostic_score": profile.onboarding_diagnostic_score,
         "selected_timeline_weeks": profile.selected_timeline_weeks,
         "recommended_timeline_weeks": profile.recommended_timeline_weeks,
         "current_forecast_weeks": profile.current_forecast_weeks,
@@ -753,8 +755,9 @@ async def get_diagnostic_questions(payload: DiagnosticQuestionsRequest, db: Asyn
     if existing_plan:
         raise HTTPException(status_code=400, detail="Onboarding already completed; plan exists.")
 
-    # Try LLM-based MCQs first.
-    questions, answer_key = await generate_diagnostic_mcq()
+    # Try LLM-based MCQs first; pass Class 9 maths % so the prompt can tailor the test.
+    math_9_percent = profile.math_9_percent if profile.math_9_percent is not None else 0
+    questions, answer_key = await generate_diagnostic_mcq(math_9_percent=math_9_percent)
     if len(questions) < 10:
         # Fallback: use existing grounding-based diagnostic questions if LLM is unavailable or misconfigured.
         chunks = await _get_diagnostic_chunks(db)
@@ -843,7 +846,11 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     if learner is None or profile is None:
         raise HTTPException(status_code=404, detail="Learner profile not found.")
 
-    profile.cognitive_depth = max(0.1, min(1.0, 0.35 + (0.65 * score)))
+    # Combine diagnostic score with Class 9 maths percentage to shape initial profile (global profile).
+    math_9 = float(profile.math_9_percent or 0) / 100.0
+    ability = 0.5 * score + 0.5 * math_9
+    profile.cognitive_depth = max(0.1, min(1.0, 0.3 + (0.7 * ability)))
+    profile.onboarding_diagnostic_score = round(score, 4)
     _log_engagement_event(
         db=db,
         learner_id=payload.learner_id,
@@ -869,7 +876,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         reason="onboarding_submit",
         mastery_update=chapter_scores,
         engagement_minutes=payload.time_spent_minutes,
-        extra={"diagnostic_score": score},
+        extra={"diagnostic_score": score, "math_9_percent": profile.math_9_percent},
     )
 
     plan = WeeklyPlan(
@@ -935,8 +942,17 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         timeline_recommendation_note=recommendation_note,
         chapter_scores=chapter_scores,
         profile_snapshot={
+            "global_profile": {
+                "student_name": learner.name,
+                "class_and_course": "Class 10 Mathematics",
+                "math_9_percent": profile.math_9_percent,
+                "onboarding_assessment_result": score,
+            },
             "cognitive_depth": profile.cognitive_depth,
             "engagement_score": profile.engagement_score,
+            "math_9_percent": profile.math_9_percent,
+            "diagnostic_score": score,
+            "onboarding_diagnostic_score": profile.onboarding_diagnostic_score,
             "chapter_mastery": chapter_scores,
             "selected_timeline_weeks": selected_timeline_weeks,
             "recommended_timeline_weeks": recommended_timeline_weeks,

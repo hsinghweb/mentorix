@@ -28,6 +28,7 @@ class SignupRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     date_of_birth: date
     selected_timeline_weeks: int = Field(ge=14, le=28)
+    math_9_percent: int = Field(ge=0, le=100)
 
 
 class LoginRequest(BaseModel):
@@ -71,6 +72,7 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
         recommended_timeline_weeks=None,
         current_forecast_weeks=None,
         timeline_delta_weeks=None,
+        math_9_percent=payload.math_9_percent,
     )
     db.add(profile)
 
