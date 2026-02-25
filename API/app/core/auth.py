@@ -9,6 +9,7 @@ EXEMPT_PATH_PREFIXES = (
     "/docs",
     "/openapi.json",
     "/redoc",
+    "/auth",
 )
 
 

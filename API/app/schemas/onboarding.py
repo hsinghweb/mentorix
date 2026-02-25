@@ -17,6 +17,11 @@ class OnboardingStartRequest(BaseModel):
     selected_timeline_weeks: int = Field(default=14, ge=14, le=28)
 
 
+class DiagnosticQuestionsRequest(BaseModel):
+    """Request 25 LLM-generated MCQs for a learner who already signed up (auth flow)."""
+    learner_id: UUID
+
+
 class DiagnosticQuestion(BaseModel):
     question_id: str
     question_type: QuestionType

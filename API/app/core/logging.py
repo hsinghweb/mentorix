@@ -48,6 +48,16 @@ class SecretRedactionFilter(logging.Filter):
         return True
 
 
+class SuppressHealthCheckFilter(logging.Filter):
+    """Drop uvicorn access log lines for GET /health to reduce noise from Docker healthchecks."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage() if hasattr(record, "getMessage") else str(record.msg)
+        if "/health" in msg and "200" in msg:
+            return False
+        return True
+
+
 def configure_logging(level: str = "INFO") -> None:
     redaction_filter = SecretRedactionFilter()
     domain_filter = DomainDefaultFilter()
@@ -63,3 +73,6 @@ def configure_logging(level: str = "INFO") -> None:
     # Avoid verbose request URL logging from http clients.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    # Suppress access log for GET /health (Docker healthcheck) to reduce console noise.
+    uv_access = logging.getLogger("uvicorn.access")
+    uv_access.addFilter(SuppressHealthCheckFilter())

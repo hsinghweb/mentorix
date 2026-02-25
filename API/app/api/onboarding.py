@@ -30,11 +30,13 @@ from app.models.entities import (
     WeeklyPlan,
     WeeklyPlanVersion,
 )
+from app.agents.diagnostic_mcq import generate_diagnostic_mcq
 from app.schemas.onboarding import (
     ChapterPlan,
     ChapterAdvanceRequest,
     ChapterAdvanceResponse,
     DiagnosticQuestion,
+    DiagnosticQuestionsRequest,
     RevisionPolicyStateResponse,
     OnboardingStartRequest,
     OnboardingStartResponse,
@@ -734,6 +736,52 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
     )
 
 
+@router.post("/diagnostic-questions", response_model=OnboardingStartResponse)
+async def get_diagnostic_questions(payload: DiagnosticQuestionsRequest, db: AsyncSession = Depends(get_db)):
+    """Return 25 LLM-generated MCQs for a learner who signed up (auth flow). PLANNER_FINAL_FEATURES."""
+    learner = (await db.execute(select(Learner).where(Learner.id == payload.learner_id))).scalar_one_or_none()
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == payload.learner_id))
+    ).scalar_one_or_none()
+    if not learner or not profile:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    existing_plan = (
+        await db.execute(
+            select(WeeklyPlan).where(WeeklyPlan.learner_id == payload.learner_id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if existing_plan:
+        raise HTTPException(status_code=400, detail="Onboarding already completed; plan exists.")
+
+    # Try LLM-based MCQs first.
+    questions, answer_key = await generate_diagnostic_mcq()
+    if len(questions) < 10:
+        # Fallback: use existing grounding-based diagnostic questions if LLM is unavailable or misconfigured.
+        chunks = await _get_diagnostic_chunks(db)
+        if not chunks:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not generate diagnostic questions (LLM + grounding both unavailable). "
+                "Ensure LLM API key and /grounding/ingest are configured.",
+            )
+        questions, answer_key = _build_questions(chunks)
+
+    attempt_id = str(uuid4())
+    redis_key = f"onboarding:attempt:{attempt_id}"
+    selected = _clamp_weeks(profile.selected_timeline_weeks or TIMELINE_MIN_WEEKS)
+    await redis_client.set(
+        redis_key,
+        json.dumps({"answer_key": answer_key, "selected_timeline_weeks": selected}),
+        ex=7200,
+    )
+    return OnboardingStartResponse(
+        learner_id=payload.learner_id,
+        diagnostic_attempt_id=attempt_id,
+        generated_at=datetime.now(timezone.utc),
+        questions=questions,
+    )
+
+
 @router.post("/submit", response_model=OnboardingSubmitResponse)
 async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession = Depends(get_db)):
     idempotency_cache_key = None
@@ -845,6 +893,24 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     week_tasks = _default_week_tasks(learner_id=payload.learner_id, chapter=week_1.chapter, week_number=1)
     for task in week_tasks:
         db.add(task)
+    for ch_num in range(1, 15):
+        ch_name = f"Chapter {ch_num}"
+        existing = (
+            await db.execute(
+                select(ChapterProgression).where(
+                    ChapterProgression.learner_id == payload.learner_id,
+                    ChapterProgression.chapter == ch_name,
+                )
+            )
+        ).scalar_one_or_none()
+        if not existing:
+            db.add(
+                ChapterProgression(
+                    learner_id=payload.learner_id,
+                    chapter=ch_name,
+                    status="not_started" if ch_num > 1 else "in_progress",
+                )
+            )
     db.add(
         WeeklyForecast(
             learner_id=payload.learner_id,

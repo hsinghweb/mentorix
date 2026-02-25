@@ -1,5 +1,47 @@
+const AUTH_TOKEN_KEY = "mentorix_token";
+const LEARNER_ID_KEY = "mentorix_learner_id";
+const API_BASE_KEY = "mentorix_api_base";
+
 function el(id) {
   return document.getElementById(id);
+}
+function getAuthToken() {
+  return localStorage.getItem(AUTH_TOKEN_KEY) || "";
+}
+function getStoredLearnerId() {
+  return localStorage.getItem(LEARNER_ID_KEY) || "";
+}
+function setAuth(token, learnerId, apiBase) {
+  if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+  if (learnerId) localStorage.setItem(LEARNER_ID_KEY, learnerId);
+  if (apiBase) localStorage.setItem(API_BASE_KEY, apiBase);
+}
+function clearAuth() {
+  localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(LEARNER_ID_KEY);
+}
+function getAuthBaseUrl() {
+  return (el("authApiBase") && el("authApiBase").value.trim().replace(/\/+$/, "")) || localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
+}
+function showAuthGate() {
+  if (el("auth-gate")) el("auth-gate").classList.remove("hidden");
+  if (el("app-main")) el("app-main").classList.add("hidden");
+}
+function showApp() {
+  if (el("auth-gate")) el("auth-gate").classList.add("hidden");
+  if (el("app-main")) el("app-main").classList.remove("hidden");
+  const lid = getStoredLearnerId();
+  const base = localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
+  if (el("learnerId")) el("learnerId").value = lid;
+  if (el("obLearnerId")) el("obLearnerId").textContent = lid;
+  if (el("apiBase")) el("apiBase").value = base;
+  if (el("obApiBase")) el("obApiBase").value = base;
+}
+function showAuthPanel(name) {
+  ["auth-login", "auth-signup", "auth-diagnostic", "auth-result"].forEach((id) => {
+    const p = el(id);
+    if (p) p.classList.toggle("hidden", id !== "auth-" + name);
+  });
 }
 
 function logStatus(message, data) {
@@ -129,12 +171,176 @@ el("startBtn").addEventListener("click", startSession);
 el("submitBtn").addEventListener("click", submitAnswer);
 el("dashboardBtn").addEventListener("click", refreshDashboard);
 
-// Tabs
-document.querySelectorAll(".tab").forEach((btn) => {
+// Auth gate: login / signup / diagnostic flow (PLANNER_FINAL_FEATURES)
+let _authDiagnosticAttemptId = null;
+let _authDiagnosticQuestions = [];
+
+document.querySelectorAll("#auth-tabs .tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const auth = btn.getAttribute("data-auth");
+    if (!auth) return;
+    document.querySelectorAll("#auth-tabs .tab").forEach((t) => t.classList.remove("active"));
+    btn.classList.add("active");
+    showAuthPanel(auth);
+    if (el("authLoginError")) el("authLoginError").classList.add("hidden");
+    if (el("authSignupError")) el("authSignupError").classList.add("hidden");
+  });
+});
+
+async function doLogin() {
+  const username = (el("loginUsername") && el("loginUsername").value.trim()) || "";
+  const password = (el("loginPassword") && el("loginPassword").value) || "";
+  const base = getAuthBaseUrl();
+  if (!username || !password) {
+    if (el("authLoginError")) { el("authLoginError").textContent = "Username and password required."; el("authLoginError").classList.remove("hidden"); }
+    return;
+  }
+  try {
+    const resp = await fetch(`${base}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || resp.statusText);
+    setAuth(data.token, data.learner_id, base);
+    showApp();
+  } catch (err) {
+    if (el("authLoginError")) { el("authLoginError").textContent = err.message || "Login failed."; el("authLoginError").classList.remove("hidden"); }
+  }
+}
+
+async function doSignup() {
+  const username = (el("signupUsername") && el("signupUsername").value.trim()) || "";
+  const password = (el("signupPassword") && el("signupPassword").value) || "";
+  const name = (el("signupName") && el("signupName").value.trim()) || "";
+  const date_of_birth = (el("signupDob") && el("signupDob").value) || "";
+  const selected_timeline_weeks = parseInt((el("signupWeeks") && el("signupWeeks").value) || "28", 10);
+  const base = getAuthBaseUrl();
+  if (!username || !password || !name || !date_of_birth) {
+    if (el("authSignupError")) { el("authSignupError").textContent = "All fields required."; el("authSignupError").classList.remove("hidden"); }
+    return;
+  }
+  try {
+    const resp = await fetch(`${base}/auth/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, name, date_of_birth, selected_timeline_weeks }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || resp.statusText);
+    setAuth(data.token, data.learner_id, base);
+    _authDiagnosticAttemptId = null;
+    _authDiagnosticQuestions = [];
+    const qResp = await fetch(`${base}/onboarding/diagnostic-questions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ learner_id: data.learner_id }),
+    });
+    const qData = await qResp.json();
+    if (!qResp.ok) throw new Error(qData.detail || "Could not load diagnostic questions.");
+    _authDiagnosticAttemptId = qData.diagnostic_attempt_id;
+    _authDiagnosticQuestions = qData.questions || [];
+    renderAuthDiagnosticQuestions();
+    showAuthPanel("diagnostic");
+    if (el("authDiagnosticError")) el("authDiagnosticError").classList.add("hidden");
+  } catch (err) {
+    if (el("authSignupError")) { el("authSignupError").textContent = err.message || "Signup failed."; el("authSignupError").classList.remove("hidden"); }
+  }
+}
+
+function renderAuthDiagnosticQuestions() {
+  const container = el("authQuestionsContainer");
+  if (!container || !_authDiagnosticQuestions.length) return;
+  container.innerHTML = "";
+  _authDiagnosticQuestions.forEach((q, idx) => {
+    const block = document.createElement("div");
+    block.className = "q-block";
+    const lab = document.createElement("label");
+    lab.className = "q-prompt";
+    lab.textContent = (idx + 1) + ". " + (q.prompt || "Question");
+    block.appendChild(lab);
+    const sel = document.createElement("select");
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "-- choose --";
+    sel.appendChild(empty);
+    (q.options || []).forEach((opt) => {
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = opt;
+      sel.appendChild(o);
+    });
+    sel.setAttribute("data-question-id", q.question_id);
+    sel.id = "auth-q-" + idx;
+    block.appendChild(sel);
+    container.appendChild(block);
+  });
+}
+
+async function submitAuthDiagnostic() {
+  const learnerId = getStoredLearnerId();
+  const base = getAuthBaseUrl();
+  if (!_authDiagnosticAttemptId || !_authDiagnosticQuestions.length || !learnerId) {
+    if (el("authDiagnosticError")) { el("authDiagnosticError").textContent = "Complete the test first."; el("authDiagnosticError").classList.remove("hidden"); }
+    return;
+  }
+  const answers = _authDiagnosticQuestions.map((q, idx) => {
+    const sel = el("auth-q-" + idx);
+    return { question_id: q.question_id, answer: (sel && sel.value) ? sel.value.trim() : "" };
+  });
+  try {
+    const resp = await fetch(`${base}/onboarding/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        learner_id: learnerId,
+        diagnostic_attempt_id: _authDiagnosticAttemptId,
+        answers,
+        time_spent_minutes: 15,
+      }),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || resp.statusText);
+    const lines = [
+      "Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-"),
+      "You asked for: " + (data.selected_timeline_weeks || "-") + " weeks",
+      "We suggest: " + (data.recommended_timeline_weeks || "-") + " weeks",
+      (data.timeline_recommendation_note || ""),
+      "",
+      "Week 1 schedule:",
+      (data.current_week_schedule && data.current_week_schedule.chapter) ? data.current_week_schedule.chapter + " – " + (data.current_week_schedule.focus || "") : "-",
+      "",
+      "Tasks this week:",
+      ...(data.current_week_tasks || []).map((t) => "  • " + (t.title || t.chapter)),
+    ];
+    if (el("authResultPre")) el("authResultPre").textContent = lines.join("\n");
+    showAuthPanel("result");
+    if (el("authDiagnosticError")) el("authDiagnosticError").classList.add("hidden");
+  } catch (err) {
+    if (el("authDiagnosticError")) { el("authDiagnosticError").textContent = err.message || "Submit failed."; el("authDiagnosticError").classList.remove("hidden"); }
+  }
+}
+
+if (el("loginBtn")) el("loginBtn").addEventListener("click", doLogin);
+if (el("signupBtn")) el("signupBtn").addEventListener("click", doSignup);
+if (el("authSubmitDiagnosticBtn")) el("authSubmitDiagnosticBtn").addEventListener("click", submitAuthDiagnostic);
+if (el("authGoDashboardBtn")) el("authGoDashboardBtn").addEventListener("click", () => { showApp(); });
+if (el("logoutBtn")) el("logoutBtn").addEventListener("click", () => { clearAuth(); showAuthGate(); });
+
+if (getAuthToken() && getStoredLearnerId()) {
+  showApp();
+} else {
+  showAuthGate();
+}
+
+// Tabs (main app only)
+document.querySelectorAll("#app-main nav.tabs .tab[data-tab]").forEach((btn) => {
   btn.addEventListener("click", () => {
     const tab = btn.getAttribute("data-tab");
-    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll(".panel").forEach((p) => p.classList.add("hidden"));
+    if (!tab) return;
+    document.querySelectorAll("#app-main nav.tabs .tab[data-tab]").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll("#app-main .panel").forEach((p) => p.classList.add("hidden"));
     btn.classList.add("active");
     const panel = document.getElementById("panel-" + tab);
     if (panel) panel.classList.remove("hidden");

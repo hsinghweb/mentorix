@@ -29,6 +29,8 @@ This guide ensures **database** (PostgreSQL relational + pgvector, MongoDB NoSQL
 docker compose up --build -d
 ```
 
+**Data persistence:** PostgreSQL and MongoDB use **named Docker volumes** (`postgres_data`, `mongo_data`). When you run `docker compose down` and later `docker compose up -d`, Postgres and Mongo data **persists**. Redis also uses a named volume (`redis_data`); its cache can be recreated but is kept across restarts unless you remove volumes. To **delete all data** (including Postgres and Mongo), run `docker compose down -v` (the `-v` flag removes volumes).
+
 **The frontend is part of this stack.** You do not need to build or start it separately. One command brings up all five services; the frontend container (`mentorix-frontend`) uses the pre-built `nginx:alpine` image and mounts the `frontend/` folder. It starts after the API is healthy and is available at **http://localhost:5500**.
 
 Services:
@@ -70,6 +72,67 @@ Confirm each data layer is reachable and the API reports healthy.
 curl -s http://localhost:8000/health | jq .
 curl -s http://localhost:8000/grounding/status | jq .
 curl -s http://localhost:8000/memory/status | jq .
+```
+
+### 2.1a View PostgreSQL from outside (SQL / GUI)
+
+PostgreSQL is exposed on **port 5432** on the host. Use these details to connect from any SQL client (psql, pgAdmin, DBeaver, etc.) and inspect grounding data.
+
+| Setting  | Value        |
+|----------|--------------|
+| **Host** | `localhost`  |
+| **Port** | `5432`       |
+| **Database** | `mentorix` |
+| **User** | `mentorix`   |
+| **Password** | `mentorix` |
+
+**Connection string (for GUI tools):**
+```
+postgresql://mentorix:mentorix@localhost:5432/mentorix
+```
+
+**Option 1 – psql (command line)**  
+If you have PostgreSQL client tools installed (or use the container):
+
+```powershell
+# From host if psql is installed:
+psql -h localhost -p 5432 -U mentorix -d mentorix
+
+# Or run psql inside the Postgres container:
+docker exec -it mentorix-postgres psql -U mentorix -d mentorix
+```
+
+**Option 2 – GUI (pgAdmin, DBeaver, etc.)**  
+Create a new connection with the table above. Database: `mentorix`.
+
+**Grounding tables and useful queries:**
+
+| Table | Description |
+|-------|-------------|
+| `curriculum_documents` | One row per ingested file (syllabus + chapters); `doc_type`, `source_path`, `title`, `chapter_number`. |
+| `embedding_chunks` | One row per text chunk with vector `embedding` (pgvector); links to `curriculum_documents` via `document_id`. |
+| `syllabus_hierarchy` | Chapter/section/concept tree; links to `curriculum_documents` via `document_id`. |
+
+**Example SQL (run in your SQL client or psql):**
+
+```sql
+-- List ingested documents (syllabus + chapters)
+SELECT id, doc_type, title, chapter_number, source_path, embedded_at
+FROM curriculum_documents
+ORDER BY doc_type, chapter_number NULLS LAST;
+
+-- Count chunks per document
+SELECT c.doc_type, c.title, c.chapter_number, count(e.id) AS chunk_count
+FROM curriculum_documents c
+LEFT JOIN embedding_chunks e ON e.document_id = c.id
+GROUP BY c.id, c.doc_type, c.title, c.chapter_number
+ORDER BY c.doc_type, c.chapter_number NULLS LAST;
+
+-- Syllabus hierarchy (chapters and sections)
+SELECT type, title, chapter_number, sort_order
+FROM syllabus_hierarchy
+WHERE document_id = (SELECT id FROM curriculum_documents WHERE doc_type = 'syllabus' LIMIT 1)
+ORDER BY sort_order;
 ```
 
 ### 2.2 Automated backend test suite

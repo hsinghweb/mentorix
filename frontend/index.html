@@ -7,10 +7,48 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="container">
+    <div id="auth-gate" class="auth-gate">
+      <div class="auth-card">
+        <h1>Mentorix</h1>
+        <p class="sub">Class 10 Mathematics · Login or Sign up</p>
+        <div id="auth-tabs" class="tabs">
+          <button type="button" class="tab active" data-auth="login">Login</button>
+          <button type="button" class="tab" data-auth="signup">Sign up</button>
+        </div>
+        <div id="auth-login" class="auth-panel">
+          <div class="row"><label for="loginUsername">Username</label><input id="loginUsername" type="text" autocomplete="username" /></div>
+          <div class="row"><label for="loginPassword">Password</label><input id="loginPassword" type="password" autocomplete="current-password" /></div>
+          <div class="row"><label for="authApiBase">API URL</label><input id="authApiBase" type="text" value="http://localhost:8000" /></div>
+          <div class="row actions"><button id="loginBtn" class="primary">Login</button></div>
+          <p id="authLoginError" class="auth-error hidden"></p>
+        </div>
+        <div id="auth-signup" class="auth-panel hidden">
+          <div class="row"><label for="signupUsername">Username</label><input id="signupUsername" type="text" autocomplete="username" /></div>
+          <div class="row"><label for="signupPassword">Password</label><input id="signupPassword" type="password" autocomplete="new-password" /></div>
+          <div class="row"><label for="signupName">Full name</label><input id="signupName" type="text" placeholder="Your name" /></div>
+          <div class="row"><label for="signupDob">Date of birth</label><input id="signupDob" type="date" /></div>
+          <div class="row"><label for="signupWeeks">Weeks to complete course (14–28)</label><select id="signupWeeks"><option value="14">14 weeks</option><option value="16">16 weeks</option><option value="18">18 weeks</option><option value="20">20 weeks</option><option value="22">22 weeks</option><option value="24">24 weeks</option><option value="26">26 weeks</option><option value="28" selected>28 weeks</option></select></div>
+          <div class="row actions"><button id="signupBtn" class="primary">Create account</button></div>
+          <p id="authSignupError" class="auth-error hidden"></p>
+        </div>
+        <div id="auth-diagnostic" class="auth-panel hidden">
+          <h2>Diagnostic test (25 MCQs)</h2>
+          <p class="muted">Answer the questions below, then submit.</p>
+          <div id="authQuestionsContainer" class="ob-questions"></div>
+          <div class="row actions"><button id="authSubmitDiagnosticBtn" class="primary">Submit test</button></div>
+          <p id="authDiagnosticError" class="auth-error hidden"></p>
+        </div>
+        <div id="auth-result" class="auth-panel hidden">
+          <h2>Your rough plan &amp; Week 1</h2>
+          <pre id="authResultPre"></pre>
+          <div class="row actions"><button id="authGoDashboardBtn" class="primary">Go to my dashboard</button></div>
+        </div>
+      </div>
+    </div>
+    <main id="app-main" class="container hidden">
       <header>
         <h1>Mentorix</h1>
-        <p class="sub">Student portal · Onboarding &amp; Plan · Admin</p>
+        <p class="sub">Student portal · Onboarding &amp; Plan · Admin <button type="button" id="logoutBtn" class="logout-btn">Logout</button></p>
         <nav class="tabs">
           <button type="button" class="tab active" data-tab="student">Student</button>
           <button type="button" class="tab" data-tab="onboarding">Onboarding &amp; Plan</button>
