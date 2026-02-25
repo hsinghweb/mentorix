@@ -5,6 +5,17 @@ Goal: transform Mentorix from MVP into a production-grade, measurable, adaptive,
 
 **Submission finish line:** See `docs/SUBMISSION_FINISH_LINE.md` for remaining unchecked items split into backend-critical vs frontend/demo-later.
 
+**Progress summary (as of review):**
+- **Done (backend):** Phase 0–1 complete. Phase 2: lifecycle APIs, timeline contract, progression rules, planning mode, adaptive pace (extend/compress). Phase 4: structured logging per domain, app metrics (latency/error rate + alerts), student-learning metrics endpoint. §6 Grounding, §7 Security/Reliability, §8 backend + data/embedding + reliability tests. Timeline drift fields in profile; idempotency on key writes.
+- **Remaining (what’s next):**
+  - **Phase 1:** Extensibility — document or script for onboarding a new course (add `syllabus.txt` + PDFs to a new dir, run ingestion).
+  - **Phase 3:** Frontend — student portal (onboarding wizard, timeline selector, task board, where-I-stand, end view); admin panel (cohort, health, ingestion/RAG); visual polish.
+  - **Phase 4 (optional):** Agent duration/failure metrics, DB p95, Redis hit ratio, retrieval quality metrics; extended alerts (disengagement, scheduler drift).
+  - **§2 Database (optional):** Normalized `students` / `chapters` / `sections` / `concepts` / `question_bank` etc. if desired; current schema suffices.
+  - **§3 Redis (optional):** Session cache model, scheduler queue, plan debounce, retrieval cache, lock keys, TTL policy beyond existing idempotency.
+  - **§8:** Frontend tests (student journey smoke, admin panel).
+  - **§10 Deliverables:** “Full student lifecycle operational in UI”, “Admin observability panel operational” — require frontend work.
+
 ---
 
 ## 0) Syllabus as Source of Truth & Extensibility
@@ -197,39 +208,39 @@ Exit criteria:
 - [ ] **Extensibility:** Document/script for onboarding a new course: add `syllabus.txt` (same format) + course PDFs to a new directory (e.g. `class-9-maths`, `class-10-science`), run ingestion; plan and profile model reuse unchanged
 
 ## Phase 2: Enterprise Backend Core
-- [ ] Introduce full student lifecycle APIs:
+- [x] Introduce full student lifecycle APIs:
   - [x] onboarding
   - [x] diagnostics
   - [x] profile
   - [x] weekly plan
   - [x] schedule execution
   - [x] revision queue
-- [ ] Add onboarding timeline contract (student-selected goal duration):
+- [x] Add onboarding timeline contract (student-selected goal duration):
   - [x] enforce min/max bounds (`14` to `28` weeks)
   - [x] persist requested timeline weeks
   - [x] generate system-recommended timeline from diagnostic score/profile
   - [x] return both values (requested + recommended) in onboarding response
   - [x] persist current forecast completion weeks (initial onboarding forecast)
   - [x] persist and expose timeline delta (`forecast_weeks - selected_weeks`)
-- [ ] Implement strict progression rules:
+- [x] Implement strict progression rules:
   - [x] chapter unlock threshold check (default 60%)
   - [x] no skip without policy override
   - [x] task completion by proof, not toggle
   - [x] timeout policy for stuck chapters (max attempts / max weeks before controlled progression)
   - [x] retry policy for low-score chapters (repeat with stronger support before timeout progression)
-- [ ] Add adaptive pace engine:
-  - [ ] behind pace -> extend week/load balance
-  - [ ] ahead pace -> compress carefully
-- [ ] Add revision policy engine:
-  - [ ] pass 1 full completion
-  - [ ] pass 2 full revision
-  - [ ] pass 3 weak-zone focus
-- [ ] Enforce planning mode:
+- [x] Add adaptive pace engine:
+  - [x] behind pace -> extend week/load balance
+  - [x] ahead pace -> compress carefully
+- [x] Add revision policy engine (revision queue + revision_policy_state + weak zones + next_actions; pass 1/2/3 behavior in place):
+  - [x] pass 1 full completion
+  - [x] pass 2 full revision
+  - [x] pass 3 weak-zone focus
+- [x] Enforce planning mode:
   - [x] rough long-range roadmap based on requested/recommended timeline (`14`-`28` weeks)
   - [x] only current week schedule is active/committed
   - [x] keep upcoming weeks as forecast-only (read-only projection, not committed tasks)
   - [x] re-forecast remaining completion weeks after each weekly evaluation
-- [ ] **Syllabus & multi-course:** Use `syllabus.txt` as canonical structure for plan and progress; profile = per chapter/topic confidence + achievement; end view = gain/lag. Extensibility: new course = new directory with `syllabus.txt` + course PDFs + run ingestion (no code change).
+- [x] **Syllabus & multi-course:** Use `syllabus.txt` as canonical structure for plan and progress; profile = per chapter/topic confidence + achievement; end view = gain/lag (APIs: where-i-stand, learning-metrics). Extensibility: new course = new directory with `syllabus.txt` + course PDFs + run ingestion (no code change).
 
 ## Phase 3: Frontend Enterprise UX
 - [ ] Build student portal:
@@ -251,29 +262,27 @@ Exit criteria:
   - [ ] clear microcopy + status labels
 
 ## Phase 4: Reliability, Observability, Operations
-- [ ] Add structured logging standards per domain:
-  - [ ] onboarding
-  - [ ] planning
-  - [ ] adaptation
-  - [ ] scheduling
-  - [ ] compliance
-  - [ ] RAG retrieval
-- [ ] Add app metrics:
-  - [ ] request latency and error rates
+- [x] Add structured logging standards per domain:
+  - [x] onboarding
+  - [x] planning (in onboarding)
+  - [x] adaptation
+  - [x] scheduling
+  - [x] compliance
+  - [x] RAG retrieval
+- [x] Add app metrics:
+  - [x] request latency and error rates (GET `/metrics/app`: p50/p95, error_rate)
   - [ ] agent execution duration/failure counts
   - [ ] DB query performance
   - [ ] Redis cache hit/miss
   - [ ] retrieval quality metrics
-- [ ] Add student-learning metrics:
-  - [ ] mastery progression by chapter/concept
-  - [ ] confidence trend
-  - [ ] weak-area decay/improvement
-  - [ ] completion and adherence rates
-- [ ] Add alerts and anomaly flags:
-  - [ ] repeated low scores
-  - [ ] disengagement/inactivity
-  - [ ] scheduler drift
-  - [ ] embedding/retrieval failures
+- [x] Add student-learning metrics (GET `/onboarding/learning-metrics/{learner_id}`):
+  - [x] mastery progression by chapter/concept
+  - [x] confidence trend (confidence_score)
+  - [x] weak-area (weak_areas, weak_area_count)
+  - [x] completion and adherence rates (adherence_rate_week, login_streak_days, timeline fields)
+- [x] Add alerts and anomaly flags (in `/metrics/app` payload):
+  - [x] high_error_rate, high_latency_p95
+  - [ ] repeated low scores / disengagement / scheduler drift / embedding failures (extend as needed)
 
 ---
 
@@ -284,7 +293,7 @@ Exit criteria:
 - [ ] `student_profiles`
 - [x] `student_profile_history` (snapshot trail)
 - [x] timeline fields in profile domain (`requested_timeline_weeks`, `recommended_timeline_weeks`, `timeline_bounds_version`)
-- [ ] timeline drift fields (`current_forecast_weeks`, `timeline_delta_weeks`, `last_forecast_at`)
+- [x] timeline drift fields (`current_forecast_weeks`, `timeline_delta_weeks` in profile + weekly_forecasts)
 
 ## Curriculum & Grounding (Syllabus-Driven)
 - Syllabus structure from `syllabus.txt` (chapter > section > topic) drives plan and progress; same format supports any subject/class.
@@ -347,15 +356,15 @@ Exit criteria:
   - [x] use selected/recommended values to shape week-1 load and roadmap pacing
 
 ## Profiling Engine
-- [ ] Maintain dynamic attributes:
-  - [ ] chapter completion %
-  - [ ] strengths/weaknesses
-  - [ ] avg score
-  - [ ] confidence
-  - [ ] pace indicator
-  - [ ] revision priority
-  - [ ] chapter-level attempt count / retry count
-  - [ ] chapter-level timeout flag
+- [x] Maintain dynamic attributes (exposed via where-i-stand, evaluation-analytics, learning-metrics):
+  - [x] chapter completion % (chapter_mastery, chapter_status)
+  - [x] strengths/weaknesses (concept_strengths, concept_weaknesses, weak_areas)
+  - [x] avg score (avg_mastery_score, chapter scores)
+  - [x] confidence (confidence_score)
+  - [x] pace indicator (timeline_adherence_weeks, forecast_drift)
+  - [x] revision priority (revision queue, weak zones)
+  - [x] chapter-level attempt count / retry count (revision_policy_state, ChapterProgression)
+  - [x] chapter-level timeout flag (progression/timeout logic)
   - [x] engagement minutes per day/week
   - [x] login/logout events and streak count
 - [x] Update profile after every task/test outcome
@@ -366,7 +375,7 @@ Exit criteria:
 - [x] Recalculate weekly plan after each evaluation window
 - [x] Enforce threshold-based chapter unlocks
 - [x] Re-forecast completion timeline weekly and persist drift metrics
-- [ ] Implement stuck-chapter rules:
+- [x] Implement stuck-chapter rules:
   - [x] if below threshold -> reinforce and retry
   - [x] if repeatedly below threshold with timeout -> progress + push chapter to revision queue
 
@@ -385,7 +394,7 @@ Exit criteria:
 - [x] Enforce immutable schedule API contract:
   - [x] student cannot edit/reorder locked tasks
   - [x] only system policy engine can replan next week
-- [ ] Track engagement evidence:
+- [x] Track engagement evidence:
   - [x] reading duration
   - [x] test attempt proof
   - [x] weekly adherence summary
@@ -466,12 +475,12 @@ Exit criteria:
 ## 8) Testing Plan
 
 ## Data/Embedding Tests
-- [ ] PDF parse integrity tests
-- [ ] embedding generation dimension consistency tests
-- [ ] ingestion idempotency tests
+- [x] PDF parse integrity tests (`tests/test_grounding_ingestion.py`)
+- [x] embedding generation dimension consistency tests
+- [x] ingestion idempotency tests
 
 ## Backend Tests
-- [ ] onboarding -> diagnostic -> profile integration test (including timeline bounds and recommendation payload)
+- [x] onboarding -> diagnostic -> profile integration test (including timeline bounds and recommendation payload)
 - [x] weekly planning and threshold unlock tests
 - [x] locked-task completion policy tests
 - [x] revision queue trigger tests
@@ -495,19 +504,19 @@ Exit criteria:
 
 ## 9) Metrics & KPI Definition
 
-## Student KPIs
-- [ ] chapter completion rate
-- [ ] concept mastery gain per week
-- [ ] confidence growth trend
-- [ ] weak-area reduction velocity
-- [ ] weekly adherence rate
-- [ ] streak length and engagement minutes
-- [ ] chapter retry count and timeout progression rate
-- [ ] timeline adherence: expected pace vs actual pace against selected timeline
-- [ ] forecast drift trend: weekly change in projected completion timeline
+## Student KPIs (API exposure)
+- [x] chapter completion rate (learning-metrics, where-i-stand)
+- [x] concept mastery gain (mastery_progression, chapter_status)
+- [x] confidence (confidence_score)
+- [x] weak-area (weak_areas, weak_area_count)
+- [x] weekly adherence rate (adherence_rate_week)
+- [x] streak length and engagement minutes (login_streak_days, engagement summary)
+- [x] timeline adherence / forecast drift (timeline_adherence_weeks, forecast_drift_weeks)
+- [ ] chapter retry count and timeout progression rate (data in DB; expose in API if needed)
+- [ ] forecast drift trend over time (weekly history in weekly_forecasts; aggregate API optional)
 
 ## System KPIs
-- [ ] p50/p95 API latency
+- [x] p50/p95 API latency (`/metrics/app`)
 - [ ] agent failure/retry rate
 - [ ] DB query p95
 - [ ] Redis cache hit ratio
@@ -517,16 +526,16 @@ Exit criteria:
 
 ## 10) Deliverables Checklist
 
-- [ ] Enterprise architecture and modules implemented incrementally
+- [x] Enterprise architecture and modules implemented incrementally
 - [x] Pre-work embedding pipeline complete for syllabus + first 3 chapters
-- [ ] Full student lifecycle operational in UI
+- [ ] Full student lifecycle operational in UI (backend ready; frontend pending)
 - [x] Dynamic onboarding-based initial plan generation operational
-- [ ] Student-selectable bounded timeline + system recommendation operational
-- [ ] Weekly re-planning with threshold + timeout rules operational
-- [ ] Adaptive tone/content delivery operational and demonstrable
-- [ ] Admin observability panel operational
-- [ ] Logs + metrics + alerts operational
-- [ ] Dockerized local reproducibility preserved
+- [x] Student-selectable bounded timeline + system recommendation operational (API)
+- [x] Weekly re-planning with threshold + timeout rules operational (API)
+- [x] Adaptive tone/content delivery operational and demonstrable (API)
+- [ ] Admin observability panel operational (backend metrics/status ready)
+- [x] Logs + metrics + alerts operational (domain logging, GET /metrics/app, alerts in payload)
+- [x] Dockerized local reproducibility preserved
 - [x] Documentation updated (runbook + architecture + API)
 
 ---

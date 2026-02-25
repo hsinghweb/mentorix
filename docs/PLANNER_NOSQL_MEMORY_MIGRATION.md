@@ -3,6 +3,8 @@
 Status date: 2026-02-21  
 Goal: move learner/system memory from JSON files into a NoSQL database so runtime data is scalable, queryable, and decoupled from the code repository.
 
+**Status: complete.** All checklist items below have been verified in the codebase (Mongo in Docker, store abstraction, backfill script, tests, gitignore, README).
+
 ---
 
 ## 0) Why this change
@@ -97,10 +99,10 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
 - [x] Switch reads to Mongo (`MEMORY_STORE_BACKEND=mongo`).
 
 ### Phase C command
-- Backfill + parity report:
+- Backfill + parity report (run from `API/`):
   - `cd API`
   - `uv run python scripts/backfill_memory_to_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix`
-  - Report output: `API/data/system/reports/memory_backfill_report.json`
+  - Report output: `data/system/reports/memory_backfill_report.json` (relative to `API/`)
 
 ## Phase D: Cleanup
 - [x] Disable dual-write.
@@ -184,11 +186,17 @@ Goal: move learner/system memory from JSON files into a NoSQL database so runtim
 - [x] Dockerized setup includes Mongo and passes integration checks.
 - [x] Demo/runbook updated with memory backend architecture.
 
-### Verification evidence (latest pass)
-- `GET /memory/status` returns `configured_backend=mongo`, `active_mode=mongo`, `mongo.connected=true`.
-- Backfill report confirms parity (`hubs_match=true`, `snapshot_match=true`, `episodes_match=true`).
-- `pytest tests/test_memory_migration.py` passes.
-- Focused API checks for memory endpoints pass.
+### Verification evidence (all verified in codebase)
+- **Docker:** `docker-compose.yml` includes `mongo` service (image mongo:7, volume `mongo_data`, healthcheck).
+- **Settings:** `app/core/settings.py` has `mongodb_url`, `mongodb_db_name`, `memory_store_backend` (default `mongo`), `memory_dual_write`, `mongodb_snapshots_ttl_days`, `mongodb_episodes_ttl_days`.
+- **Store:** `app/memory/store.py` — `MemoryStore` interface, `FileMemoryStore`, `MongoMemoryStore`, `get_memory_runtime_status()`; URL sanitized via `_sanitize_mongo_error`.
+- **Usage:** `hubs.py`, `runtime/persistence.py`, `memory/episodic.py` use `memory_store` (no direct file IO).
+- **API:** `GET /memory/status` returns `configured_backend`, `active_mode`, `dual_write_enabled`, `mongo.connected`; `GET /memory/context/{learner_id}` and `GET /memory/hubs` exist.
+- **Backfill:** `API/scripts/backfill_memory_to_mongo.py` — reads JSON under data dir, upserts to Mongo, emits parity report.
+- **Export:** `API/scripts/export_memory_from_mongo.py` exists (debug backup).
+- **Tests:** `tests/test_memory_migration.py` — repository parity file vs mongo, index idempotency, backfill idempotency/parity, `test_memory_status_handles_mongo_unavailable`; `tests/test_api_integration.py` — `test_memory_status_endpoint_shape`, `test_memory_write_flow_for_active_backend`.
+- **Git:** `.gitignore` contains `API/data/system/`.
+- **Docs:** `README.md` documents memory backend, backfill and export commands, `/memory/status`.
 
 ---
 
