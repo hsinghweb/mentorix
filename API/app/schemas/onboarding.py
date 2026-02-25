@@ -241,3 +241,17 @@ class StudentLearningMetricsResponse(BaseModel):
     forecast_drift_weeks: int | None  # same as timeline_adherence_weeks for "drift from goal"
     selected_timeline_weeks: int | None
     current_forecast_weeks: int | None
+    chapter_retry_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class ForecastHistoryItem(BaseModel):
+    week_number: int
+    current_forecast_weeks: int
+    timeline_delta_weeks: int
+    pacing_status: str
+    generated_at: datetime
+
+
+class ForecastHistoryResponse(BaseModel):
+    learner_id: UUID
+    history: list[ForecastHistoryItem]

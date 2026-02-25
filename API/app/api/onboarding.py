@@ -53,6 +53,8 @@ from app.schemas.onboarding import (
     LearnerStandResponse,
     EvaluationAnalyticsResponse,
     DailyPlanResponse,
+    ForecastHistoryItem,
+    ForecastHistoryResponse,
     StudentLearningMetricsResponse,
 )
 
@@ -1582,6 +1584,15 @@ async def get_student_learning_metrics(learner_id: UUID, db: AsyncSession = Depe
     forecast_weeks = int(profile.current_forecast_weeks or 0) or None
     delta = (forecast_weeks - selected_weeks) if (selected_weeks and forecast_weeks is not None) else None
 
+    progress_rows = (
+        await db.execute(
+            select(ChapterProgression.chapter, ChapterProgression.attempt_count).where(
+                ChapterProgression.learner_id == learner_id
+            )
+        )
+    ).all()
+    chapter_retry_counts = {row.chapter: int(row.attempt_count) for row in progress_rows}
+
     return StudentLearningMetricsResponse(
         learner_id=learner_id,
         mastery_progression=mastery_map,
@@ -1595,7 +1606,39 @@ async def get_student_learning_metrics(learner_id: UUID, db: AsyncSession = Depe
         forecast_drift_weeks=delta,
         selected_timeline_weeks=selected_weeks,
         current_forecast_weeks=forecast_weeks,
+        chapter_retry_counts=chapter_retry_counts,
     )
+
+
+@router.get("/forecast-history/{learner_id}", response_model=ForecastHistoryResponse)
+async def get_forecast_history(
+    learner_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    limit: int = 20,
+):
+    """Return weekly forecast history (drift trend over time) for the learner."""
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    rows = (
+        await db.execute(
+            select(WeeklyForecast)
+            .where(WeeklyForecast.learner_id == learner_id)
+            .order_by(WeeklyForecast.generated_at.desc())
+            .limit(min(limit, 50))
+        )
+    ).scalars().all()
+    history = [
+        ForecastHistoryItem(
+            week_number=r.week_number,
+            current_forecast_weeks=r.current_forecast_weeks,
+            timeline_delta_weeks=r.timeline_delta_weeks,
+            pacing_status=r.pacing_status or "on_track",
+            generated_at=r.generated_at,
+        )
+        for r in rows
+    ]
+    return ForecastHistoryResponse(learner_id=learner_id, history=history)
 
 
 @router.get("/daily-plan/{learner_id}", response_model=DailyPlanResponse)

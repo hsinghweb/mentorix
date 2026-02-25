@@ -87,8 +87,22 @@ def test_student_learning_metrics_endpoint_contract(client):
     assert "forecast_drift_weeks" in body
     assert "selected_timeline_weeks" in body
     assert "current_forecast_weeks" in body
+    assert "chapter_retry_counts" in body
+    assert isinstance(body["chapter_retry_counts"], dict)
     assert 0 <= body["confidence_score"] <= 1
     assert body["login_streak_days"] >= 0
+
+
+def test_forecast_history_endpoint_contract(client):
+    """GET /onboarding/forecast-history/{learner_id} returns history list."""
+    learner_id = str(uuid.uuid4())
+    client.post("/start-session", json={"learner_id": learner_id})
+    resp = client.get(f"/onboarding/forecast-history/{learner_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["learner_id"] == learner_id
+    assert "history" in body
+    assert isinstance(body["history"], list)
 
 
 def test_app_metrics_endpoint_contract(client):

@@ -510,8 +510,8 @@ Exit criteria:
 - [x] weekly adherence rate (adherence_rate_week)
 - [x] streak length and engagement minutes (login_streak_days, engagement summary)
 - [x] timeline adherence / forecast drift (timeline_adherence_weeks, forecast_drift_weeks)
-- [ ] chapter retry count and timeout progression rate (data in DB; expose in API if needed)
-- [ ] forecast drift trend over time (weekly history in weekly_forecasts; aggregate API optional)
+- [x] chapter retry count and timeout progression rate (GET /onboarding/learning-metrics includes chapter_retry_counts: chapter → attempt_count from ChapterProgression)
+- [x] forecast drift trend over time (GET /onboarding/forecast-history/{learner_id} returns history of weekly_forecasts: week_number, current_forecast_weeks, timeline_delta_weeks, pacing_status, generated_at)
 
 ## System KPIs
 - [x] p50/p95 API latency (`/metrics/app`)
