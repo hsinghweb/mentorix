@@ -13,7 +13,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mentorix -d mentorix"]
-      interval: 10s
+      interval: 5m
       timeout: 5s
       retries: 10
 
@@ -28,7 +28,7 @@ services:
       - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5m
       timeout: 5s
       retries: 10
 
@@ -42,7 +42,7 @@ services:
       - mongo_data:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 10s
+      interval: 5m
       timeout: 5s
       retries: 10
 
@@ -56,10 +56,13 @@ services:
       - ./CONFIG/local.env
     ports:
       - "8000:8000"
+    volumes:
+      - .:/workspace
     environment:
       APP_ENV: docker
       APP_HOST: 0.0.0.0
       APP_PORT: 8000
+      GROUNDING_WORKSPACE_ROOT: /workspace
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,7 +72,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 15s
+      interval: 5m
       timeout: 5s
       retries: 10
 
@@ -86,7 +89,7 @@ services:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/ || exit 1"]
-      interval: 15s
+      interval: 5m
       timeout: 5s
       retries: 10
 

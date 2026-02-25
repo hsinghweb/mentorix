@@ -33,10 +33,11 @@ class Settings(BaseSettings):
     include_generated_artifacts_in_retrieval: bool = True
     generated_artifacts_top_k: int = 2
     web_search_provider: str = "duckduckgo"
+    grounding_workspace_root: str = ""  # If set (e.g. /workspace in Docker), base path for grounding_data_dir
     grounding_data_dir: str = "class-10-maths"
     grounding_syllabus_relative_path: str = "syllabus/syllabus.pdf"
     grounding_chapters_dir: str = "chapters"
-    grounding_chapter_count: int = 3
+    grounding_chapter_count: int = 5
     grounding_chunk_size: int = 900
     grounding_chunk_overlap: int = 120
     grounding_prepare_on_start: bool = False

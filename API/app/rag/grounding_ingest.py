@@ -27,6 +27,9 @@ class GroundingDoc:
 
 
 def _workspace_root() -> Path:
+    """Root for grounding data: env GROUNDING_WORKSPACE_ROOT if set, else repo root (parents[3] from API/app/rag/)."""
+    if getattr(settings, "grounding_workspace_root", None) and str(settings.grounding_workspace_root).strip():
+        return Path(settings.grounding_workspace_root.strip()).resolve()
     return Path(__file__).resolve().parents[3]
 
 
@@ -209,6 +212,7 @@ async def ensure_grounding_ready(db: AsyncSession) -> tuple[bool, dict]:
 
 async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False) -> dict:
     docs = get_required_grounding_docs()
+    logger.info("Grounding ingest started: force_rebuild=%s, documents=%d", force_rebuild, len(docs))
     ingestion_run = IngestionRun(status="started", total_documents=0, total_chunks=0, details={})
     db.add(ingestion_run)
     await db.flush()
@@ -220,7 +224,9 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
     try:
         for doc in docs:
             doc_key = str(doc.path)
+            logger.info("Processing document: %s (type=%s)", doc.path.name, doc.doc_type)
             if not doc.path.exists():
+                logger.warning("Missing file: %s", doc_key)
                 details[doc_key] = {"status": "missing_file"}
                 continue
 
@@ -263,11 +269,13 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
                 ).scalar_one()
             )
             if existing_chunk_count > 0 and not force_rebuild and existing_doc.content_hash == text_hash:
+                logger.info("Skipped unchanged: %s (%d chunks)", doc.path.name, existing_chunk_count)
                 details[doc_key] = {"status": "skipped_unchanged", "chunks": existing_chunk_count}
                 total_documents += 1
                 total_chunks += existing_chunk_count
                 continue
 
+            logger.info("Embedding document: %s (%d chunks)", doc.path.name, len(chunks))
             await db.execute(delete(SyllabusHierarchy).where(SyllabusHierarchy.document_id == existing_doc.id))
             hierarchy_items = _parse_syllabus_hierarchy(raw_text, doc.doc_type, doc.chapter_number)
             last_chapter_id: uuid.UUID | None = None
@@ -342,7 +350,13 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
         ingestion_run.details = details
         ingestion_run.completed_at = datetime.now(timezone.utc)
         await db.commit()
-    except Exception:
+        logger.info(
+            "Grounding ingest completed: status=completed, documents=%d, chunks=%d",
+            total_documents,
+            total_chunks,
+        )
+    except Exception as exc:
+        logger.exception("Grounding ingest failed: %s", exc)
         await db.rollback()
         ingestion_run.status = "failed"
         ingestion_run.details = details | {"error": "ingestion_failed"}
