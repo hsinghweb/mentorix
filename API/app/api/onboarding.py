@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.jwt_auth import create_token
 from app.core.logging import DOMAIN_ONBOARDING, get_domain_logger
 from app.memory.cache import redis_client
 from app.memory.database import get_db
@@ -24,6 +25,7 @@ from app.models.entities import (
     RevisionPolicyState,
     RevisionQueueItem,
     AssessmentResult,
+    StudentAuth,
     Task,
     TaskAttempt,
     WeeklyForecast,
@@ -716,6 +718,10 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
         raise HTTPException(status_code=400, detail="Grounding chunks unavailable. Run /grounding/ingest first.")
 
     questions, answer_key = _build_questions(chunks)
+    # For the generic onboarding diagnostic, cap the number of questions at 25 so the UI and scoring stay aligned.
+    if len(questions) > 25:
+        questions = questions[:25]
+        answer_key = {q.question_id: answer_key.get(q.question_id, "") for q in questions}
     attempt_id = str(uuid4())
     redis_key = f"onboarding:attempt:{attempt_id}"
     await redis_client.set(
@@ -740,45 +746,72 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
 
 @router.post("/diagnostic-questions", response_model=OnboardingStartResponse)
 async def get_diagnostic_questions(payload: DiagnosticQuestionsRequest, db: AsyncSession = Depends(get_db)):
-    """Return 25 LLM-generated MCQs for a learner who signed up (auth flow). PLANNER_FINAL_FEATURES."""
-    learner = (await db.execute(select(Learner).where(Learner.id == payload.learner_id))).scalar_one_or_none()
-    profile = (
-        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == payload.learner_id))
-    ).scalar_one_or_none()
-    if not learner or not profile:
-        raise HTTPException(status_code=404, detail="Learner not found.")
-    existing_plan = (
-        await db.execute(
-            select(WeeklyPlan).where(WeeklyPlan.learner_id == payload.learner_id).limit(1)
-        )
-    ).scalar_one_or_none()
-    if existing_plan:
-        raise HTTPException(status_code=400, detail="Onboarding already completed; plan exists.")
+    """Return 25 MCQs: either for existing learner_id or for signup_draft_id (account created after test)."""
+    use_draft = (payload.signup_draft_id or "").strip()
+    use_learner = payload.learner_id
+    if use_draft and use_learner:
+        raise HTTPException(status_code=400, detail="Provide either learner_id or signup_draft_id, not both.")
+    if not use_draft and not use_learner:
+        raise HTTPException(status_code=400, detail="Provide learner_id or signup_draft_id.")
 
-    # Try LLM-based MCQs first; pass Class 9 maths % so the prompt can tailor the test.
-    math_9_percent = profile.math_9_percent if profile.math_9_percent is not None else 0
-    questions, answer_key = await generate_diagnostic_mcq(math_9_percent=math_9_percent)
-    if len(questions) < 10:
-        # Fallback: use existing grounding-based diagnostic questions if LLM is unavailable or misconfigured.
-        chunks = await _get_diagnostic_chunks(db)
-        if not chunks:
-            raise HTTPException(
-                status_code=503,
-                detail="Could not generate diagnostic questions (LLM + grounding both unavailable). "
-                "Ensure LLM API key and /grounding/ingest are configured.",
+    selected_timeline_weeks = TIMELINE_MIN_WEEKS
+    if use_learner:
+        learner = (await db.execute(select(Learner).where(Learner.id == use_learner))).scalar_one_or_none()
+        profile = (
+            await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == use_learner))
+        ).scalar_one_or_none()
+        if not learner or not profile:
+            raise HTTPException(status_code=404, detail="Learner not found.")
+        existing_plan = (
+            await db.execute(
+                select(WeeklyPlan).where(WeeklyPlan.learner_id == use_learner).limit(1)
             )
-        questions, answer_key = _build_questions(chunks)
+        ).scalar_one_or_none()
+        if existing_plan:
+            raise HTTPException(status_code=400, detail="Onboarding already completed; plan exists.")
+        selected_timeline_weeks = _clamp_weeks(profile.selected_timeline_weeks or TIMELINE_MIN_WEEKS)
+    else:
+        draft_raw = await redis_client.get(f"signup:draft:{use_draft}")
+        if not draft_raw:
+            raise HTTPException(status_code=404, detail="Signup session expired. Please start signup again.")
+        draft = json.loads(draft_raw)
+        selected_timeline_weeks = _clamp_weeks(int(draft.get("selected_timeline_weeks", TIMELINE_MIN_WEEKS)))
+
+    from app.data.diagnostic_question_sets import get_random_diagnostic_set
+
+    questions, answer_key = get_random_diagnostic_set()
+    if len(questions) < 25:
+        if use_learner:
+            profile = (await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == use_learner))).scalar_one_or_none()
+            math_9_percent = (profile.math_9_percent if profile else None) or 0
+        else:
+            math_9_percent = int(draft.get("math_9_percent", 0))
+        questions, answer_key = await generate_diagnostic_mcq(math_9_percent=math_9_percent)
+        if len(questions) < 10:
+            chunks = await _get_diagnostic_chunks(db)
+            if not chunks:
+                raise HTTPException(status_code=503, detail="Could not generate diagnostic questions.")
+            questions, answer_key = _build_questions(chunks)
+    if len(questions) > 25:
+        questions = questions[:25]
+        answer_key = {q.question_id: answer_key.get(q.question_id, "") for q in questions}
+
+    chapter_map = {q.question_id: f"Chapter {q.chapter_number or 1}" for q in questions}
 
     attempt_id = str(uuid4())
     redis_key = f"onboarding:attempt:{attempt_id}"
-    selected = _clamp_weeks(profile.selected_timeline_weeks or TIMELINE_MIN_WEEKS)
-    await redis_client.set(
-        redis_key,
-        json.dumps({"answer_key": answer_key, "selected_timeline_weeks": selected}),
-        ex=7200,
-    )
+    attempt_payload = {
+        "answer_key": answer_key,
+        "selected_timeline_weeks": selected_timeline_weeks,
+        "chapter_map": chapter_map,
+    }
+    if use_draft:
+        attempt_payload["signup_draft_id"] = use_draft
+    await redis_client.set(redis_key, json.dumps(attempt_payload), ex=7200)
+
     return OnboardingStartResponse(
-        learner_id=payload.learner_id,
+        learner_id=use_learner,
+        signup_draft_id=use_draft if use_draft else None,
         diagnostic_attempt_id=attempt_id,
         generated_at=datetime.now(timezone.utc),
         questions=questions,
@@ -787,10 +820,17 @@ async def get_diagnostic_questions(payload: DiagnosticQuestionsRequest, db: Asyn
 
 @router.post("/submit", response_model=OnboardingSubmitResponse)
 async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession = Depends(get_db)):
+    use_draft = (payload.signup_draft_id or "").strip()
+    use_learner_id = payload.learner_id
+    if use_draft and use_learner_id:
+        raise HTTPException(status_code=400, detail="Provide either learner_id or signup_draft_id, not both.")
+    if not use_draft and not use_learner_id:
+        raise HTTPException(status_code=400, detail="Provide learner_id or signup_draft_id.")
+
     idempotency_cache_key = None
     if (payload.idempotency_key or "").strip():
         idempotency_cache_key = (
-            f"idempotency:onboarding-submit:{payload.learner_id}:{payload.diagnostic_attempt_id}:{payload.idempotency_key.strip()}"
+            f"idempotency:onboarding-submit:{use_learner_id or use_draft}:{payload.diagnostic_attempt_id}:{payload.idempotency_key.strip()}"
         )
         cached = await _get_idempotent_response(idempotency_cache_key)
         if isinstance(cached, dict):
@@ -804,6 +844,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     attempt = json.loads(attempt_raw)
     answer_key: dict[str, str] = attempt.get("answer_key", {})
     selected_timeline_weeks = _clamp_weeks(int(attempt.get("selected_timeline_weeks", TIMELINE_MIN_WEEKS)))
+    chapter_map: dict[str, str] = attempt.get("chapter_map") or {}
 
     if not answer_key:
         raise HTTPException(status_code=400, detail="Diagnostic answer key is unavailable.")
@@ -822,29 +863,71 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         if is_correct:
             correct += 1
 
-        chapter_match = re.search(r"_(\d+)$", item.question_id)
-        chapter_key = "Chapter 1"
-        if chapter_match:
-            # Diagnostics are chunk-indexed; map index to nearby chapter bucket.
-            idx = int(chapter_match.group(1))
-            chapter_key = f"Chapter {min(14, (idx // 3) + 1)}"
-
+        chapter_key = chapter_map.get(item.question_id)
+        if not chapter_key:
+            chapter_match = re.search(r"_(\d+)$", item.question_id)
+            if chapter_match:
+                idx = int(chapter_match.group(1))
+                chapter_key = f"Chapter {min(14, (idx // 3) + 1)}"
+            else:
+                chapter_key = "Chapter 1"
         chapter_total[chapter_key] = chapter_total.get(chapter_key, 0) + 1
         if is_correct:
             chapter_correct[chapter_key] = chapter_correct.get(chapter_key, 0) + 1
 
     score = float(correct / max(1, total))
     chapter_scores = {
-        chapter: float(chapter_correct.get(chapter, 0) / max(1, q_count))
-        for chapter, q_count in chapter_total.items()
+        ch: float(chapter_correct.get(ch, 0) / max(1, q_count))
+        for ch, q_count in chapter_total.items()
     }
+    correct_out_of_total = f"{correct} / {total}"
 
-    learner = (await db.execute(select(Learner).where(Learner.id == payload.learner_id))).scalar_one_or_none()
-    profile = (
-        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == payload.learner_id))
-    ).scalar_one_or_none()
-    if learner is None or profile is None:
-        raise HTTPException(status_code=404, detail="Learner profile not found.")
+    if use_draft:
+        draft_raw = await redis_client.get(f"signup:draft:{use_draft}")
+        if not draft_raw:
+            raise HTTPException(status_code=404, detail="Signup session expired. Please start signup again.")
+        draft = json.loads(draft_raw)
+        from datetime import date
+
+        learner = Learner(name=draft["name"], grade_level="10")
+        db.add(learner)
+        await db.flush()
+        profile = LearnerProfile(
+            learner_id=learner.id,
+            concept_mastery={},
+            retention_decay=0.1,
+            cognitive_depth=0.5,
+            engagement_score=0.5,
+            selected_timeline_weeks=selected_timeline_weeks,
+            recommended_timeline_weeks=None,
+            current_forecast_weeks=None,
+            timeline_delta_weeks=None,
+            math_9_percent=int(draft.get("math_9_percent", 0)),
+        )
+        db.add(profile)
+        auth = StudentAuth(
+            username=draft["username"],
+            password_hash=draft["password_hash"],
+            name=draft["name"],
+            date_of_birth=date.fromisoformat(draft["date_of_birth"]),
+            learner_id=learner.id,
+        )
+        db.add(auth)
+        await db.flush()
+        use_learner_id = learner.id
+        _auth_for_token = auth
+        try:
+            await redis_client.delete(f"signup:draft:{use_draft}")
+        except Exception:
+            pass
+    else:
+        learner = (await db.execute(select(Learner).where(Learner.id == use_learner_id))).scalar_one_or_none()
+        profile = (
+            await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == use_learner_id))
+        ).scalar_one_or_none()
+        if learner is None or profile is None:
+            raise HTTPException(status_code=404, detail="Learner profile not found.")
+        _auth_for_token = None
 
     # Combine diagnostic score with Class 9 maths percentage to shape initial profile (global profile).
     math_9 = float(profile.math_9_percent or 0) / 100.0
@@ -853,7 +936,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     profile.onboarding_diagnostic_score = round(score, 4)
     _log_engagement_event(
         db=db,
-        learner_id=payload.learner_id,
+        learner_id=use_learner_id,
         event_type="test_submission",
         duration_minutes=payload.time_spent_minutes,
         details={"source": "onboarding_submit", "score": score},
@@ -871,7 +954,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     profile.timeline_delta_weeks = timeline_delta_weeks
     await _update_profile_after_outcome(
         db=db,
-        learner_id=payload.learner_id,
+        learner_id=use_learner_id,
         profile=profile,
         reason="onboarding_submit",
         mastery_update=chapter_scores,
@@ -880,7 +963,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     )
 
     plan = WeeklyPlan(
-        learner_id=payload.learner_id,
+        learner_id=use_learner_id,
         status="active",
         current_week=1,
         total_weeks=len(rough_plan),
@@ -897,7 +980,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     db.add(plan)
     await db.flush()
     await _create_plan_version(db=db, plan=plan, reason="onboarding_initial_plan")
-    week_tasks = _default_week_tasks(learner_id=payload.learner_id, chapter=week_1.chapter, week_number=1)
+    week_tasks = _default_week_tasks(learner_id=use_learner_id, chapter=week_1.chapter, week_number=1)
     for task in week_tasks:
         db.add(task)
     for ch_num in range(1, 15):
@@ -905,7 +988,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         existing = (
             await db.execute(
                 select(ChapterProgression).where(
-                    ChapterProgression.learner_id == payload.learner_id,
+                    ChapterProgression.learner_id == use_learner_id,
                     ChapterProgression.chapter == ch_name,
                 )
             )
@@ -913,14 +996,14 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         if not existing:
             db.add(
                 ChapterProgression(
-                    learner_id=payload.learner_id,
+                    learner_id=use_learner_id,
                     chapter=ch_name,
                     status="not_started" if ch_num > 1 else "in_progress",
                 )
             )
     db.add(
         WeeklyForecast(
-            learner_id=payload.learner_id,
+            learner_id=use_learner_id,
             week_number=1,
             selected_timeline_weeks=selected_timeline_weeks,
             recommended_timeline_weeks=recommended_timeline_weeks,
@@ -932,9 +1015,13 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     )
     await db.commit()
 
+    token = create_token(use_learner_id, _auth_for_token.username) if _auth_for_token else None
+
     response = OnboardingSubmitResponse(
-        learner_id=payload.learner_id,
+        learner_id=use_learner_id,
         score=score,
+        correct_out_of_total=correct_out_of_total,
+        token=token,
         selected_timeline_weeks=selected_timeline_weeks,
         recommended_timeline_weeks=recommended_timeline_weeks,
         current_forecast_weeks=current_forecast_weeks,

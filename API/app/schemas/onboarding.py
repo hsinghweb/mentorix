@@ -18,8 +18,9 @@ class OnboardingStartRequest(BaseModel):
 
 
 class DiagnosticQuestionsRequest(BaseModel):
-    """Request 25 LLM-generated MCQs for a learner who already signed up (auth flow)."""
-    learner_id: UUID
+    """Request 25 MCQs: either learner_id (existing user) or signup_draft_id (new user, account created after test)."""
+    learner_id: UUID | None = None
+    signup_draft_id: str | None = None
 
 
 class DiagnosticQuestion(BaseModel):
@@ -31,7 +32,8 @@ class DiagnosticQuestion(BaseModel):
 
 
 class OnboardingStartResponse(BaseModel):
-    learner_id: UUID
+    learner_id: UUID | None = None
+    signup_draft_id: str | None = None
     diagnostic_attempt_id: str
     generated_at: datetime
     questions: list[DiagnosticQuestion]
@@ -43,7 +45,8 @@ class DiagnosticAnswer(BaseModel):
 
 
 class OnboardingSubmitRequest(BaseModel):
-    learner_id: UUID
+    learner_id: UUID | None = None
+    signup_draft_id: str | None = None
     diagnostic_attempt_id: str
     answers: list[DiagnosticAnswer]
     time_spent_minutes: int = Field(default=15, ge=1, le=240)
@@ -71,6 +74,8 @@ class TaskItem(BaseModel):
 class OnboardingSubmitResponse(BaseModel):
     learner_id: UUID
     score: float
+    correct_out_of_total: str | None = None  # e.g. "18 / 25"
+    token: str | None = None  # Set when account was created from signup_draft (so frontend can log in)
     selected_timeline_weeks: int
     recommended_timeline_weeks: int
     current_forecast_weeks: int

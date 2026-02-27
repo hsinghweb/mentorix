@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.password import hash_password, verify_password
 from app.core.jwt_auth import create_token
+from app.memory.cache import redis_client
 from app.memory.database import get_db
 from app.models.entities import Learner, LearnerProfile, StudentAuth
 
@@ -15,10 +16,26 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 TIMELINE_MIN_WEEKS = 14
 TIMELINE_MAX_WEEKS = 28
+SIGNUP_DRAFT_TTL = 3600  # 1 hour
 
 
 def _clamp_weeks(w: int) -> int:
     return max(TIMELINE_MIN_WEEKS, min(TIMELINE_MAX_WEEKS, w))
+
+
+class StartSignupRequest(BaseModel):
+    """Start signup: collect details and get a draft id. Account is created only after diagnostic is completed."""
+    username: str = Field(min_length=2, max_length=128)
+    password: str = Field(min_length=1, max_length=72)
+    name: str = Field(min_length=1, max_length=255)
+    date_of_birth: date
+    selected_timeline_weeks: int = Field(ge=14, le=28)
+    math_9_percent: int = Field(ge=0, le=100)
+
+
+class StartSignupResponse(BaseModel):
+    signup_draft_id: str
+    expires_in_seconds: int = SIGNUP_DRAFT_TTL
 
 
 class SignupRequest(BaseModel):
@@ -41,6 +58,41 @@ class AuthResponse(BaseModel):
     learner_id: str
     username: str
     name: str
+
+
+@router.post("/start-signup", response_model=StartSignupResponse)
+async def start_signup(payload: StartSignupRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Start signup without creating an account. Returns a draft id; the user must complete
+    the 25-question diagnostic. The account is created only when they submit the test.
+    If username already exists, returns 400 so they can login or choose another username.
+    """
+    username = payload.username.strip().lower()
+    existing = (await db.execute(select(StudentAuth).where(StudentAuth.username == username))).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail="Username already exists. Please login or choose another username.")
+
+    import json
+    from uuid import uuid4
+
+    draft_id = str(uuid4())
+    draft = {
+        "username": username,
+        "password_hash": hash_password(payload.password),
+        "name": payload.name.strip(),
+        "date_of_birth": payload.date_of_birth.isoformat(),
+        "selected_timeline_weeks": _clamp_weeks(payload.selected_timeline_weeks),
+        "math_9_percent": payload.math_9_percent,
+    }
+    try:
+        await redis_client.set(
+            f"signup:draft:{draft_id}",
+            json.dumps(draft),
+            ex=SIGNUP_DRAFT_TTL,
+        )
+    except Exception:
+        raise HTTPException(status_code=503, detail="Service temporarily unavailable. Try again.")
+    return StartSignupResponse(signup_draft_id=draft_id, expires_in_seconds=SIGNUP_DRAFT_TTL)
 
 
 @router.post("/signup", response_model=AuthResponse)

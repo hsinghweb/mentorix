@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mentorix MVP</title>
     <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" crossorigin="anonymous" />
   </head>
   <body>
     <div id="auth-gate" class="auth-gate">
@@ -29,12 +30,13 @@
           <div class="row"><label for="signupDob">Date of birth</label><input id="signupDob" type="date" /></div>
           <div class="row"><label for="signupMathPercent">Class 9 Maths % (0–100)</label><input id="signupMathPercent" type="number" min="0" max="100" value="75" /></div>
           <div class="row"><label for="signupWeeks">Weeks to complete course (14–28)</label><select id="signupWeeks"><option value="14">14 weeks</option><option value="16">16 weeks</option><option value="18">18 weeks</option><option value="20">20 weeks</option><option value="22">22 weeks</option><option value="24">24 weeks</option><option value="26">26 weeks</option><option value="28" selected>28 weeks</option></select></div>
-          <div class="row actions"><button id="signupBtn" class="primary">Create account</button></div>
+          <div class="row actions"><button id="signupBtn" class="primary">Continue to test</button></div>
           <p id="authSignupError" class="auth-error hidden"></p>
         </div>
         <div id="auth-diagnostic" class="auth-panel hidden">
           <h2>Diagnostic test (25 MCQs)</h2>
-          <p class="muted">Answer the questions below, then submit.</p>
+          <p class="muted">You have 30 minutes. Answer all questions, then submit. Your account will be created after you submit.</p>
+          <p id="authDiagnosticTimer" class="auth-timer">Time left: 30:00</p>
           <div id="authQuestionsContainer" class="ob-questions"></div>
           <div class="row actions"><button id="authSubmitDiagnosticBtn" class="primary">Submit test</button></div>
           <p id="authDiagnosticError" class="auth-error hidden"></p>
@@ -285,6 +287,8 @@
       </div>
     </main>
 
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js" crossorigin="anonymous"></script>
     <script src="./app.js"></script>
   </body>
 </html>

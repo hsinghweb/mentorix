@@ -172,8 +172,13 @@ el("submitBtn").addEventListener("click", submitAnswer);
 el("dashboardBtn").addEventListener("click", refreshDashboard);
 
 // Auth gate: login / signup / diagnostic flow (PLANNER_FINAL_FEATURES)
+// Account is created only after the user completes the 25-question diagnostic.
+const DIAGNOSTIC_TIME_LIMIT_MINUTES = 30;
 let _authDiagnosticAttemptId = null;
 let _authDiagnosticQuestions = [];
+let _authSignupDraftId = null;
+let _authDiagnosticStartTime = null;
+let _authTimerInterval = null;
 
 document.querySelectorAll("#auth-tabs .tab").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -210,6 +215,35 @@ async function doLogin() {
   }
 }
 
+function stopAuthTimer() {
+  if (_authTimerInterval) {
+    clearInterval(_authTimerInterval);
+    _authTimerInterval = null;
+  }
+}
+
+function startAuthTimer() {
+  stopAuthTimer();
+  _authDiagnosticStartTime = Date.now();
+  const timerEl = el("authDiagnosticTimer");
+  if (!timerEl) return;
+  function tick() {
+    const elapsedMs = Date.now() - _authDiagnosticStartTime;
+    const limitMs = DIAGNOSTIC_TIME_LIMIT_MINUTES * 60 * 1000;
+    const leftMs = Math.max(0, limitMs - elapsedMs);
+    const leftMin = Math.floor(leftMs / 60000);
+    const leftSec = Math.floor((leftMs % 60000) / 1000);
+    timerEl.textContent = "Time left: " + leftMin + ":" + (leftSec < 10 ? "0" : "") + leftSec;
+    if (leftMs <= 0) {
+      stopAuthTimer();
+      timerEl.textContent = "Time's up! Submitting...";
+      submitAuthDiagnostic();
+    }
+  }
+  tick();
+  _authTimerInterval = setInterval(tick, 1000);
+}
+
 async function doSignup() {
   const username = (el("signupUsername") && el("signupUsername").value.trim()) || "";
   const password = (el("signupPassword") && el("signupPassword").value) || "";
@@ -227,26 +261,27 @@ async function doSignup() {
     return;
   }
   try {
-    const resp = await fetch(`${base}/auth/signup`, {
+    const resp = await fetch(`${base}/auth/start-signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, name, date_of_birth, selected_timeline_weeks, math_9_percent }),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || resp.statusText);
-    setAuth(data.token, data.learner_id, base);
+    _authSignupDraftId = data.signup_draft_id;
     _authDiagnosticAttemptId = null;
     _authDiagnosticQuestions = [];
     const qResp = await fetch(`${base}/onboarding/diagnostic-questions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ learner_id: data.learner_id }),
+      body: JSON.stringify({ signup_draft_id: _authSignupDraftId }),
     });
     const qData = await qResp.json();
     if (!qResp.ok) throw new Error(qData.detail || "Could not load diagnostic questions.");
     _authDiagnosticAttemptId = qData.diagnostic_attempt_id;
     _authDiagnosticQuestions = qData.questions || [];
     renderAuthDiagnosticQuestions();
+    startAuthTimer();
     showAuthPanel("diagnostic");
     if (el("authDiagnosticError")) el("authDiagnosticError").classList.add("hidden");
   } catch (err) {
@@ -258,57 +293,90 @@ function renderAuthDiagnosticQuestions() {
   const container = el("authQuestionsContainer");
   if (!container || !_authDiagnosticQuestions.length) return;
   container.innerHTML = "";
-  _authDiagnosticQuestions.forEach((q, idx) => {
+  const questions = _authDiagnosticQuestions.slice(0, 25);
+  questions.forEach((q, idx) => {
     const block = document.createElement("div");
     block.className = "q-block";
-    const lab = document.createElement("label");
+
+    const lab = document.createElement("p");
     lab.className = "q-prompt";
-    lab.textContent = (idx + 1) + ". " + (q.prompt || "Question");
+    lab.innerHTML = (idx + 1) + ". " + (q.prompt || "Question");
     block.appendChild(lab);
-    const sel = document.createElement("select");
-    const empty = document.createElement("option");
-    empty.value = "";
-    empty.textContent = "-- choose --";
-    sel.appendChild(empty);
-    (q.options || []).forEach((opt) => {
-      const o = document.createElement("option");
-      o.value = opt;
-      o.textContent = opt;
-      sel.appendChild(o);
+
+    const opts = (q.options || []).slice(0, 4);
+    const labels = ["A", "B", "C", "D"];
+    opts.forEach((opt, optIdx) => {
+      const optId = "auth-q-" + idx + "-opt-" + optIdx;
+      const wrapper = document.createElement("label");
+      wrapper.className = "q-option";
+
+      const input = document.createElement("input");
+      input.type = "radio";
+      input.name = "auth-q-" + idx;
+      input.id = optId;
+      input.value = opt;
+
+      const span = document.createElement("span");
+      span.className = "q-option-text";
+      span.innerHTML = labels[optIdx] + ". " + opt;
+
+      wrapper.appendChild(input);
+      wrapper.appendChild(span);
+      block.appendChild(wrapper);
     });
-    sel.setAttribute("data-question-id", q.question_id);
-    sel.id = "auth-q-" + idx;
-    block.appendChild(sel);
+
     container.appendChild(block);
   });
+  if (typeof renderMathInElement === "function") {
+    renderMathInElement(container, {
+      delimiters: [{ left: "\\(", right: "\\)" }, { left: "\\[", right: "\\]" }],
+      throwOnError: false,
+    });
+  }
 }
 
 async function submitAuthDiagnostic() {
-  const learnerId = getStoredLearnerId();
+  stopAuthTimer();
   const base = getAuthBaseUrl();
-  if (!_authDiagnosticAttemptId || !_authDiagnosticQuestions.length || !learnerId) {
+  const useDraft = _authSignupDraftId;
+  const learnerId = getStoredLearnerId();
+  if (!_authDiagnosticAttemptId || !_authDiagnosticQuestions.length) {
     if (el("authDiagnosticError")) { el("authDiagnosticError").textContent = "Complete the test first."; el("authDiagnosticError").classList.remove("hidden"); }
     return;
   }
-  const answers = _authDiagnosticQuestions.map((q, idx) => {
-    const sel = el("auth-q-" + idx);
-    return { question_id: q.question_id, answer: (sel && sel.value) ? sel.value.trim() : "" };
+  if (!useDraft && !learnerId) {
+    if (el("authDiagnosticError")) { el("authDiagnosticError").textContent = "Session expired. Please sign up again."; el("authDiagnosticError").classList.remove("hidden"); }
+    return;
+  }
+  const elapsedMs = _authDiagnosticStartTime ? Date.now() - _authDiagnosticStartTime : DIAGNOSTIC_TIME_LIMIT_MINUTES * 60 * 1000;
+  const timeSpentMinutes = Math.min(DIAGNOSTIC_TIME_LIMIT_MINUTES, Math.max(1, Math.floor(elapsedMs / 60000)));
+  const answers = _authDiagnosticQuestions.slice(0, 25).map((q, idx) => {
+    const selected = document.querySelector('input[name="auth-q-' + idx + '"]:checked');
+    return { question_id: q.question_id, answer: (selected && selected.value) ? selected.value.trim() : "" };
   });
+  const body = {
+    diagnostic_attempt_id: _authDiagnosticAttemptId,
+    answers,
+    time_spent_minutes: timeSpentMinutes,
+  };
+  if (useDraft) body.signup_draft_id = useDraft;
+  else body.learner_id = learnerId;
   try {
     const resp = await fetch(`${base}/onboarding/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        learner_id: learnerId,
-        diagnostic_attempt_id: _authDiagnosticAttemptId,
-        answers,
-        time_spent_minutes: 15,
-      }),
+      body: JSON.stringify(body),
     });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || resp.statusText);
+    if (data.token && data.learner_id) {
+      setAuth(data.token, data.learner_id, base);
+      _authSignupDraftId = null;
+    }
+    const scoreLine = data.correct_out_of_total ? "You got " + data.correct_out_of_total + " correct." : "Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-");
     const lines = [
-      "Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-"),
+      scoreLine,
+      "",
       "You asked for: " + (data.selected_timeline_weeks || "-") + " weeks",
       "We suggest: " + (data.recommended_timeline_weeks || "-") + " weeks",
       (data.timeline_recommendation_note || ""),
@@ -366,42 +434,45 @@ function renderObQuestions() {
     return;
   }
   container.innerHTML = "";
-  _obQuestions.forEach((q, idx) => {
+  const questions = _obQuestions.slice(0, 25);
+  questions.forEach((q, idx) => {
     const block = document.createElement("div");
     block.className = "q-block";
-    const lab = document.createElement("label");
+    const lab = document.createElement("p");
     lab.className = "q-prompt";
     lab.textContent = (idx + 1) + ". " + (q.prompt || "Question");
     block.appendChild(lab);
-    let input;
-    if (q.question_type === "mcq" && q.options && q.options.length) {
-      input = document.createElement("select");
-      const empty = document.createElement("option");
-      empty.value = "";
-      empty.textContent = "-- choose --";
-      input.appendChild(empty);
-      q.options.forEach((opt) => {
-        const o = document.createElement("option");
-        o.value = opt;
-        o.textContent = opt;
-        input.appendChild(o);
-      });
-    } else if (q.question_type === "true_false") {
-      input = document.createElement("select");
-      ["", "true", "false"].forEach((v) => {
-        const o = document.createElement("option");
-        o.value = v;
-        o.textContent = v || "-- choose --";
-        input.appendChild(o);
+
+    if ((q.question_type === "mcq" || q.question_type === "true_false") && q.options && q.options.length) {
+      const opts = q.options.slice(0, q.question_type === "true_false" ? 2 : 4);
+      const labels = ["A", "B", "C", "D"];
+      opts.forEach((opt, optIdx) => {
+        const optId = "ob-q-" + idx + "-opt-" + optIdx;
+        const wrapper = document.createElement("label");
+        wrapper.className = "q-option";
+
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = "ob-q-" + idx;
+        input.id = optId;
+        input.value = opt;
+
+        const span = document.createElement("span");
+        const letter = labels[optIdx] || "";
+        span.textContent = (letter ? letter + ". " : "") + opt;
+
+        wrapper.appendChild(input);
+        wrapper.appendChild(span);
+        block.appendChild(wrapper);
       });
     } else {
-      input = document.createElement("input");
+      const input = document.createElement("input");
       input.type = "text";
       input.placeholder = "Your answer";
+      input.id = "ob-a-" + idx;
+      block.appendChild(input);
     }
-    input.setAttribute("data-question-id", q.question_id);
-    input.id = "ob-a-" + idx;
-    block.appendChild(input);
+
     container.appendChild(block);
   });
   if (el("obSubmitDiagnosticRow")) el("obSubmitDiagnosticRow").style.display = "block";
@@ -421,7 +492,7 @@ async function onboardingStart() {
     });
     if (data.learner_id) el("obLearnerId").textContent = data.learner_id;
     _obAttemptId = data.diagnostic_attempt_id || null;
-    _obQuestions = data.questions || [];
+    _obQuestions = (data.questions || []).slice(0, 25);
     renderObQuestions();
     if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "none";
     el("obResult").textContent = "Onboarding started. Learner ID: " + data.learner_id + "\nQuestions: " + (_obQuestions.length) + " items. Complete the diagnostic below and submit.";
@@ -438,9 +509,16 @@ async function submitDiagnostic() {
     return;
   }
   const time_spent_minutes = parseInt((el("obTimeSpent") && el("obTimeSpent").value) || "15", 10);
-  const answers = _obQuestions.map((q, idx) => {
-    const input = el("ob-a-" + idx);
-    return { question_id: q.question_id, answer: (input && input.value) ? input.value.trim() : "" };
+  const answers = _obQuestions.slice(0, 25).map((q, idx) => {
+    let value = "";
+    if (q.question_type === "mcq" || q.question_type === "true_false") {
+      const selected = document.querySelector('input[name="ob-q-' + idx + '"]:checked');
+      value = (selected && selected.value) ? selected.value.trim() : "";
+    } else {
+      const input = el("ob-a-" + idx);
+      value = (input && input.value) ? input.value.trim() : "";
+    }
+    return { question_id: q.question_id, answer: value };
   });
   try {
     const data = await apiCallOb("/onboarding/submit", "POST", {
