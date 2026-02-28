@@ -956,9 +956,9 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     mastery = {}
     for ch_data in SYLLABUS_CHAPTERS:
         ch_key = chapter_display_name(ch_data["number"])
-        # Initial mastery from diagnostic if possible, else 0.0
-        ch_score = chapter_scores.get(ch_key, 0.0)
-        mastery[ch_key] = ch_score
+        # All chapters start at 0.0 — diagnostic score is used only for
+        # cognitive_depth and plan pacing, NOT for chapter mastery.
+        mastery[ch_key] = 0.0
     
     profile.onboarding_diagnostic_score = score
     profile.math_9_percent = int(math_9_percent)

@@ -1,18 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Mentorix — AI Math Tutor</title>
-    <meta name="description" content="Mentorix: Your personal AI tutor for Class 10 CBSE Mathematics. Adaptive learning, dynamic pacing, NCERT-grounded content.">
+    <meta name="description"
+        content="Mentorix: Your personal AI tutor for Class 10 CBSE Mathematics. Adaptive learning, dynamic pacing, NCERT-grounded content.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <link rel="stylesheet" href="./styles.css">
 </head>
+
 <body>
 
     <!-- AUTH GATE -->
@@ -38,7 +43,8 @@
                     </div>
                     <div class="form-group form-group--muted">
                         <label for="api-base-url">API URL <span class="label-optional">(optional)</span></label>
-                        <input type="text" id="api-base-url" placeholder="http://localhost:8000" value="http://localhost:8000">
+                        <input type="text" id="api-base-url" placeholder="http://localhost:8000"
+                            value="http://localhost:8000">
                     </div>
                     <button type="submit" class="btn btn-primary btn-full">Log In</button>
                 </form>
@@ -84,7 +90,8 @@
                     </div>
                     <div class="form-group form-group--muted">
                         <label for="api-base-url-signup">API URL <span class="label-optional">(optional)</span></label>
-                        <input type="text" id="api-base-url-signup" placeholder="http://localhost:8000" value="http://localhost:8000">
+                        <input type="text" id="api-base-url-signup" placeholder="http://localhost:8000"
+                            value="http://localhost:8000">
                     </div>
                     <button type="submit" class="btn btn-primary btn-full">Sign Up & Take Test</button>
                 </form>
@@ -153,7 +160,17 @@
             <!-- Accuracy & Confidence -->
             <section class="section" id="section-confidence">
                 <h2 class="section-title">🎯 Accuracy & Mastery</h2>
+                <div
+                    style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
+                    <canvas id="confidence-chart" height="200"></canvas>
+                </div>
                 <div id="confidence-grid" class="confidence-grid"></div>
+            </section>
+
+            <!-- Daily Plan -->
+            <section class="section" id="section-daily-plan">
+                <h2 class="section-title">📅 Today's Plan</h2>
+                <div id="daily-plan-content" class="tasks-grid"></div>
             </section>
 
             <!-- Rough Plan -->
@@ -191,8 +208,23 @@
             <button id="btn-submit-chapter-test" class="btn btn-primary btn-full" disabled>Submit Test</button>
             <div id="test-result-feedback" class="test-feedback hidden"></div>
         </div>
+
+        <!-- PRACTICE SCREEN -->
+        <div id="screen-practice" class="screen hidden">
+            <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-practice">← Back to Dashboard</button>
+            <div class="reading-header">
+                <h2 id="practice-title">📝 Practice Questions</h2>
+            </div>
+            <div id="practice-questions" class="test-questions"></div>
+            <div style="display:flex;gap:12px;margin-top:16px">
+                <button id="btn-check-practice" class="btn btn-primary" disabled>Check Answers</button>
+                <button id="btn-new-practice" class="btn btn-outline">🔄 New Questions</button>
+            </div>
+            <div id="practice-feedback" class="test-feedback hidden"></div>
+        </div>
     </main>
 
     <script src="./app.js"></script>
 </body>
+
 </html>

@@ -24,6 +24,7 @@ from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name
 from app.memory.cache import redis_client
 from app.memory.database import get_db
 from app.models.entities import (
+    AgentDecision,
     AssessmentResult,
     ChapterProgression,
     EmbeddingChunk,
@@ -112,6 +113,7 @@ class SubsectionContentRequest(BaseModel):
     learner_id: UUID
     chapter_number: int = Field(ge=1, le=14)
     section_id: str  # e.g. "1.2", "3.3.1"
+    regenerate: bool = False  # True = force LLM call, ignore cache
 
 
 class CompleteReadingResponse(BaseModel):
@@ -679,6 +681,8 @@ async def get_chapter_sections(chapter_number: int, learner_id: UUID, db: AsyncS
 @router.post("/content/section")
 async def get_section_content(payload: SubsectionContentRequest, db: AsyncSession = Depends(get_db)):
     """Generate reading content for a specific subsection, grounded on section-level chunk."""
+    from app.memory.content_cache import get_cached_content, save_content_cache
+
     profile = await _get_profile(db, payload.learner_id)
     ch_info = _chapter_info(payload.chapter_number)
     chapter_name = ch_info["title"]
@@ -689,6 +693,35 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
         if s["id"] == payload.section_id:
             section_title = s["title"]
             break
+
+    # Check cache first (unless regenerate requested)
+    if not payload.regenerate:
+        cached = get_cached_content(str(payload.learner_id), payload.chapter_number, payload.section_id)
+        if cached:
+            logger.info("Serving cached content for %s section %s", payload.chapter_number, payload.section_id)
+            # Still mark reading done
+            chapter_key = chapter_display_name(payload.chapter_number)
+            await _ensure_subsection_rows(db, payload.learner_id, payload.chapter_number)
+            sp = (await db.execute(
+                select(SubsectionProgression).where(
+                    SubsectionProgression.learner_id == payload.learner_id,
+                    SubsectionProgression.chapter == chapter_key,
+                    SubsectionProgression.section_id == payload.section_id,
+                )
+            )).scalar_one_or_none()
+            if sp and not sp.reading_completed:
+                sp.reading_completed = True
+                if sp.status == "not_started":
+                    sp.status = "reading_done"
+                await db.commit()
+            return {
+                "chapter_number": payload.chapter_number,
+                "section_id": payload.section_id,
+                "section_title": cached.get("section_title", section_title),
+                "content": cached["content"],
+                "source": "cached",
+                "tone": cached.get("tone", "normal"),
+            }
 
     # Determine ability and tone
     ability = profile.cognitive_depth or 0.5
@@ -756,11 +789,17 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                     sp.status = "reading_done"
                 await db.commit()
 
+            generated_content = llm_text.strip()
+            # Save to cache
+            save_content_cache(
+                str(payload.learner_id), payload.chapter_number, payload.section_id,
+                section_title, generated_content, tone_config["tone"],
+            )
             return {
                 "chapter_number": payload.chapter_number,
                 "section_id": payload.section_id,
                 "section_title": section_title,
-                "content": llm_text.strip(),
+                "content": generated_content,
                 "source": "llm",
                 "tone": tone_config["tone"],
             }
@@ -780,6 +819,8 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
 @router.post("/test/section/generate")
 async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSession = Depends(get_db)):
     """Generate MCQ test for a specific subsection."""
+    from app.memory.content_cache import get_cached_test, save_test_cache
+
     ch_info = _chapter_info(payload.chapter_number)
     chapter_name = ch_info["title"]
     chapter_key = chapter_display_name(payload.chapter_number)
@@ -789,6 +830,31 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         if s["id"] == payload.section_id:
             section_title = s["title"]
             break
+
+    # Check cache first (unless regenerate requested)
+    if not payload.regenerate:
+        cached = get_cached_test(str(payload.learner_id), payload.chapter_number, payload.section_id)
+        if cached:
+            logger.info("Serving cached test for %s section %s", payload.chapter_number, payload.section_id)
+            # Re-register in _test_store for scoring
+            _test_store[cached["test_id"]] = {
+                "learner_id": str(payload.learner_id),
+                "chapter_number": payload.chapter_number,
+                "chapter": chapter_key,
+                "section_id": payload.section_id,
+                "answer_key": cached["answer_key"],
+                "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
+            }
+            return {
+                "learner_id": str(payload.learner_id),
+                "chapter": chapter_key,
+                "section_id": payload.section_id,
+                "section_title": cached.get("section_title", section_title),
+                "test_id": cached["test_id"],
+                "questions": cached["questions"],
+                "time_limit_minutes": 10,
+                "source": "cached",
+            }
 
     # Retrieve section-scoped chunks
     chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5, section_id=payload.section_id)
@@ -869,14 +935,22 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
+    # Save to MongoDB cache
+    questions_dicts = [q.model_dump() for q in questions]
+    save_test_cache(
+        str(payload.learner_id), payload.chapter_number, payload.section_id,
+        section_title, test_id, questions_dicts, answer_key,
+    )
+
     return {
         "learner_id": str(payload.learner_id),
         "chapter": chapter_key,
         "section_id": payload.section_id,
         "section_title": section_title,
         "test_id": test_id,
-        "questions": [q.model_dump() for q in questions],
+        "questions": questions_dicts,
         "time_limit_minutes": 10,
+        "source": "llm",
     }
 
 # 5. Check if week is complete and advance
@@ -991,29 +1065,49 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             )
         )).scalars().all()
         if not existing_tasks:
-            # Reading task
-            db.add(Task(
-                learner_id=learner_id,
-                week_number=new_week,
-                chapter=next_ch_key,
-                task_type="read",
-                title=f"Read: {next_ch_info['title']}",
-                sort_order=1,
-                status="pending",
-                is_locked=False,
-                proof_policy={"type": "reading_time", "min_seconds": 180},
-            ))
-            # Test task
+            subtopics = next_ch_info.get("subtopics", [])
+            sort = 0
+            for st in subtopics:
+                sort += 1
+                is_summary = st["title"].lower().strip() == "summary"
+                # Reading task for every subsection
+                db.add(Task(
+                    learner_id=learner_id,
+                    week_number=new_week,
+                    chapter=next_ch_key,
+                    task_type="read",
+                    title=f"Read: {st['id']} {st['title']}",
+                    sort_order=sort,
+                    status="pending",
+                    is_locked=False,
+                    proof_policy={"type": "reading_time", "min_seconds": 120, "section_id": st["id"]},
+                ))
+                # Test task for every subsection EXCEPT Summary
+                if not is_summary:
+                    sort += 1
+                    db.add(Task(
+                        learner_id=learner_id,
+                        week_number=new_week,
+                        chapter=next_ch_key,
+                        task_type="test",
+                        title=f"Test: {st['id']} {st['title']}",
+                        sort_order=sort,
+                        status="pending",
+                        is_locked=False,
+                        proof_policy={"type": "section_test", "threshold": COMPLETION_THRESHOLD, "section_id": st["id"]},
+                    ))
+            # Final chapter-level test (unlocked after all subsections done)
+            sort += 1
             db.add(Task(
                 learner_id=learner_id,
                 week_number=new_week,
                 chapter=next_ch_key,
                 task_type="test",
-                title=f"Test: {next_ch_info['title']}",
-                sort_order=2,
+                title=f"📋 Chapter Test: {next_ch_info['title']}",
+                sort_order=sort,
                 status="pending",
                 is_locked=False,
-                proof_policy={"type": "test_score", "threshold": COMPLETION_THRESHOLD},
+                proof_policy={"type": "test_score", "threshold": COMPLETION_THRESHOLD, "chapter_level": True},
             ))
 
     # Create plan version
@@ -1162,6 +1256,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
 
     current_tasks = []
     for t in tasks:
+        policy = t.proof_policy or {}
         current_tasks.append({
             "task_id": str(t.id),
             "chapter": t.chapter,
@@ -1169,6 +1264,8 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             "title": t.title,
             "status": t.status,
             "is_locked": t.is_locked,
+            "section_id": policy.get("section_id"),
+            "chapter_level": policy.get("chapter_level", False),
         })
 
     # Revision queue
@@ -1202,3 +1299,61 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     except Exception:
         pass
     return response
+
+
+# 7. Plan history
+@router.get("/plan/history/{learner_id}")
+async def get_plan_history(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Return all plan versions for a learner, newest first."""
+    versions = (await db.execute(
+        select(WeeklyPlanVersion).where(
+            WeeklyPlanVersion.learner_id == learner_id
+        ).order_by(desc(WeeklyPlanVersion.created_at))
+    )).scalars().all()
+
+    return {
+        "learner_id": str(learner_id),
+        "total_versions": len(versions),
+        "versions": [
+            {
+                "version_number": v.version_number,
+                "current_week": v.current_week,
+                "reason": v.reason,
+                "plan_payload": v.plan_payload,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+            for v in versions
+        ],
+    }
+
+
+# 8. Agent decision history
+@router.get("/decisions/{learner_id}")
+async def get_agent_decisions(learner_id: UUID, limit: int = 50, db: AsyncSession = Depends(get_db)):
+    """Return recent agent decisions for observability."""
+    decisions = (await db.execute(
+        select(AgentDecision).where(
+            AgentDecision.learner_id == learner_id
+        ).order_by(desc(AgentDecision.created_at)).limit(limit)
+    )).scalars().all()
+
+    return {
+        "learner_id": str(learner_id),
+        "total": len(decisions),
+        "decisions": [
+            {
+                "id": str(d.id),
+                "agent_name": d.agent_name,
+                "decision_type": d.decision_type,
+                "chapter": d.chapter,
+                "section_id": d.section_id,
+                "confidence": d.confidence,
+                "reasoning": d.reasoning,
+                "input_snapshot": d.input_snapshot,
+                "output_payload": d.output_payload,
+                "created_at": d.created_at.isoformat() if d.created_at else None,
+            }
+            for d in decisions
+        ],
+    }
+

@@ -370,6 +370,7 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
     is_locked: Mapped[bool] = mapped_column(nullable=False, default=True)
     proof_policy: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    scheduled_day: Mapped[date | None] = mapped_column(Date, nullable=True)  # optional daily scheduling
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -452,3 +453,51 @@ class RevisionPolicyState(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class QuestionBank(Base):
+    """Persisted question bank — LLM-generated or curated MCQs for reuse."""
+    __tablename__ = "question_bank"
+    __table_args__ = (
+        Index("idx_question_bank_chapter_section", "chapter_number", "section_id"),
+        Index("idx_question_bank_difficulty", "difficulty"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    chapter_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    section_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    difficulty: Mapped[int] = mapped_column(Integer, nullable=False, default=1)  # 1-5
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    options: Mapped[dict] = mapped_column(JSONB, nullable=False)  # list of option strings
+    correct_index: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    explanation: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="llm")  # llm | curated
+    tags: Mapped[dict] = mapped_column(JSONB, nullable=False, default=list)
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgentDecision(Base):
+    """Logs every autonomous agent decision for observability and debugging."""
+    __tablename__ = "agent_decisions"
+    __table_args__ = (
+        Index("idx_agent_decisions_learner", "learner_id"),
+        Index("idx_agent_decisions_type", "decision_type"),
+        Index("idx_agent_decisions_agent", "agent_name"),
+        Index("idx_agent_decisions_created", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("learners.id", ondelete="CASCADE"), nullable=False
+    )
+    agent_name: Mapped[str] = mapped_column(String(64), nullable=False)  # planner, profiling, content, pace, revision
+    decision_type: Mapped[str] = mapped_column(String(64), nullable=False)  # plan_generated, mastery_updated, pace_adjusted, content_generated, revision_scheduled
+    chapter: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    section_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    input_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # what the agent saw
+    output_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)  # what it decided
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)  # LLM reasoning trace
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+

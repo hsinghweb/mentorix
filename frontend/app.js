@@ -152,6 +152,10 @@ function bindEvents() {
   $("btn-back-from-reading").addEventListener("click", backToDashboard);
   $("btn-back-from-test").addEventListener("click", backToDashboard);
   $("btn-submit-chapter-test").addEventListener("click", handleSubmitChapterTest);
+
+  // Practice screen
+  if ($("btn-back-from-practice")) $("btn-back-from-practice").addEventListener("click", backToDashboard);
+  if ($("btn-check-practice")) $("btn-check-practice").addEventListener("click", checkPractice);
 }
 
 function checkAuthState() {
@@ -464,6 +468,9 @@ function renderDashboard(data) {
     hide($("section-revision"));
   }
 
+  // Daily Plan
+  renderDailyPlan(data.current_week_tasks);
+
   // Check if week is complete (all tasks done) → show advance button
   checkWeekComplete(data.current_week_tasks, data.learner_id);
 }
@@ -491,33 +498,45 @@ function renderTasks(tasks, weekNumber) {
   }
 
   container.innerHTML = tasks.map(t => {
-    const icon = t.task_type === "read" ? "📖" : (t.task_type === "test" ? "📝" : "✍️");
+    const isChapterLevel = t.chapter_level;
+    const icon = t.task_type === "read" ? "📖" : (isChapterLevel ? "📋" : "📝");
     const statusCls = t.status;
     const statusLabel = t.status.replace(/_/g, " ");
+    const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+    const chapterLevelAttr = isChapterLevel ? 'data-chapter-level="true"' : "";
     return `
-            <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" style="cursor:pointer">
+            <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} ${chapterLevelAttr} style="cursor:pointer">
                 <div class="task-icon">${icon}</div>
                 <div class="task-info">
                     <div class="task-title">${t.title}</div>
-                    <div class="task-meta">${t.chapter} • ${t.task_type.toUpperCase()}</div>
+                    <div class="task-meta">${t.chapter} • ${t.task_type.toUpperCase()}${t.section_id ? " • §" + t.section_id : isChapterLevel ? " • FINAL" : ""}</div>
                 </div>
                 <div class="task-status-badge ${statusCls}">${statusLabel}</div>
             </div>
         `;
   }).join("");
 
-  // Bind task clicks — always allow access (no blocking on completed)
+  // Bind task clicks — route section tasks to section functions
   container.querySelectorAll(".task-card").forEach(card => {
     card.addEventListener("click", () => {
       const type = card.dataset.type;
       const chapter = card.dataset.chapter;
       const taskId = card.dataset.taskId;
+      const sectionId = card.dataset.sectionId;
+      const isChapterLevel = card.dataset.chapterLevel === "true";
 
       // Extract chapter number from "Chapter N"
       const match = chapter.match(/Chapter (\d+)/);
       const chNum = match ? parseInt(match[1]) : 1;
 
-      if (type === "read") {
+      if (sectionId) {
+        // Section-level task
+        if (type === "read") {
+          openSectionReading(chNum, sectionId);
+        } else if (type === "test") {
+          openSectionTest(chNum, sectionId);
+        }
+      } else if (type === "read") {
         openReading(chNum, taskId);
       } else if (type === "test") {
         openTest(chNum);
@@ -574,7 +593,49 @@ function renderChapters(chapters) {
   });
 }
 
+let confidenceChart = null;
 function renderConfidence(confData) {
+  // Render Chart.js bar chart
+  try {
+    const ctx = $("confidence-chart");
+    if (ctx && typeof Chart !== "undefined") {
+      if (confidenceChart) confidenceChart.destroy();
+      const labels = confData.map(c => `Ch ${c.chapter_number}`);
+      const scores = confData.map(c => (c.mastery_score * 100));
+      const colors = confData.map(c =>
+        c.mastery_band === "mastered" ? "#22c55e" :
+          c.mastery_band === "proficient" ? "#3b82f6" :
+            c.mastery_band === "developing" ? "#f59e0b" : "#ef4444"
+      );
+      confidenceChart = new Chart(ctx, {
+        type: "bar",
+        data: {
+          labels,
+          datasets: [{
+            label: "Mastery %",
+            data: scores,
+            backgroundColor: colors.map(c => c + "cc"),
+            borderColor: colors,
+            borderWidth: 1,
+            borderRadius: 4,
+          }],
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: false },
+            title: { display: true, text: "Chapter Mastery Overview", color: "#94a3b8", font: { size: 14 } }
+          },
+          scales: {
+            y: { beginAtZero: true, max: 100, ticks: { color: "#64748b" }, grid: { color: "#1e293b55" } },
+            x: { ticks: { color: "#94a3b8", font: { size: 10 } }, grid: { display: false } },
+          },
+        },
+      });
+    }
+  } catch (e) { console.warn("Chart rendering skipped:", e); }
+
+  // Render confidence cards grid
   $("confidence-grid").innerHTML = confData.map(ch => {
     const pct = (ch.mastery_score * 100).toFixed(0);
     const barColor = ch.mastery_band === "mastered" ? "var(--success)" :
@@ -846,38 +907,39 @@ async function openChapterDetail(chapterNumber) {
 
     const overlay = document.createElement("div");
     overlay.id = "chapter-detail-overlay";
-    overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;";
+    overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.75);z-index:1000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);";
 
     const bandColor = (band) => band === "mastered" ? "var(--success)" : band === "proficient" ? "var(--info)" : band === "developing" ? "var(--warning)" : "var(--danger)";
 
     const sectionsHtml = sections.map(s => {
       const pct = (s.best_score * 100).toFixed(0);
+      const readIcon = s.reading_completed ? "✅" : "⬜";
       return `
-        <div style="background:var(--surface);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:4px solid ${bandColor(s.mastery_band)}">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <strong>${s.section_id} ${s.section_title}</strong>
-            <span class="mastery-badge ${s.mastery_band}" style="font-size:0.75rem">${s.mastery_band}</span>
+        <div style="background:var(--bg-elevated);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:10px;border-left:4px solid ${bandColor(s.mastery_band)};border:1px solid var(--border);border-left:4px solid ${bandColor(s.mastery_band)}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+            <strong style="color:var(--text-primary);font-size:0.95rem">${s.section_id} ${s.section_title}</strong>
+            <span class="mastery-badge ${s.mastery_band}">${s.mastery_band}</span>
           </div>
-          <div style="display:flex;gap:8px;align-items:center;font-size:0.85rem;color:var(--text-muted)">
-            <span>${s.reading_completed ? "📖 Read" : "📖 Not read"}</span>
-            <span>•</span>
-            <span>Score: ${pct}%</span>
-            <span>•</span>
+          <div style="display:flex;gap:10px;align-items:center;font-size:0.83rem;color:var(--text-secondary);margin-bottom:8px">
+            <span>${readIcon} ${s.reading_completed ? "Read" : "Not read"}</span>
+            <span style="color:var(--text-muted)">•</span>
+            <span>Score: <strong style="color:var(--accent-light)">${pct}%</strong></span>
+            <span style="color:var(--text-muted)">•</span>
             <span>Attempts: ${s.attempt_count}</span>
           </div>
-          <div style="display:flex;gap:8px;margin-top:8px">
-            <button class="btn btn-sm" onclick="openSectionReading(${chapterNumber}, '${s.section_id}')" style="padding:4px 12px;font-size:0.8rem;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer">📖 Read</button>
-            <button class="btn btn-sm" onclick="openSectionTest(${chapterNumber}, '${s.section_id}')" style="padding:4px 12px;font-size:0.8rem;background:var(--info);color:white;border:none;border-radius:4px;cursor:pointer">📝 Test</button>
+          <div style="display:flex;gap:8px">
+            <button onclick="openSectionReading(${chapterNumber}, '${s.section_id}')" style="padding:6px 14px;font-size:0.8rem;font-weight:600;background:linear-gradient(135deg,var(--accent),#5a4bd1);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-family:var(--font)">📖 Read</button>
+            <button onclick="openSectionTest(${chapterNumber}, '${s.section_id}')" style="padding:6px 14px;font-size:0.8rem;font-weight:600;background:var(--info);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-family:var(--font)">📝 Test</button>
           </div>
         </div>
       `;
     }).join("");
 
     overlay.innerHTML = `
-      <div style="background:var(--bg);border-radius:12px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;padding:24px;position:relative;">
-        <button onclick="document.getElementById('chapter-detail-overlay').remove()" style="position:absolute;top:12px;right:16px;background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--text-muted)">&times;</button>
-        <h3 style="margin-bottom:16px">📚 Ch ${chapterNumber}: ${data.chapter_title}</h3>
-        <p style="color:var(--text-muted);margin-bottom:16px;font-size:0.9rem">${sections.length} subsections • Click Read or Test for each section</p>
+      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);max-width:620px;width:92%;max-height:82vh;overflow-y:auto;padding:28px;position:relative;box-shadow:var(--shadow);">
+        <button onclick="document.getElementById('chapter-detail-overlay').remove()" style="position:absolute;top:14px;right:18px;background:var(--bg-elevated);border:1px solid var(--border);width:32px;height:32px;border-radius:50%;font-size:1.1rem;cursor:pointer;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;font-family:var(--font)">&times;</button>
+        <h3 style="margin-bottom:6px;color:var(--text-primary);font-size:1.25rem">📚 Ch ${chapterNumber}: ${data.chapter_title}</h3>
+        <p style="color:var(--text-muted);margin-bottom:20px;font-size:0.85rem">${sections.length} subsections • Click Read or Test for each</p>
         ${sectionsHtml}
       </div>
     `;
@@ -889,7 +951,7 @@ async function openChapterDetail(chapterNumber) {
   }
 }
 
-async function openSectionReading(chapterNumber, sectionId) {
+async function openSectionReading(chapterNumber, sectionId, regenerate = false) {
   // Close detail overlay
   const overlay = document.getElementById("chapter-detail-overlay");
   if (overlay) overlay.remove();
@@ -897,10 +959,10 @@ async function openSectionReading(chapterNumber, sectionId) {
   showScreen("reading");
   readingChapterNumber = chapterNumber;
   readingSeconds = 0;
-  readingTaskId = null;  // No task for section-level reading
+  readingTaskId = null;
 
-  $("reading-chapter-title").textContent = "Loading section content...";
-  $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating section reading material from NCERT...</p></div>`;
+  $("reading-chapter-title").textContent = regenerate ? "Regenerating section content..." : "Loading section content...";
+  $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>${regenerate ? "Regenerating fresh content from NCERT..." : "Loading section reading material..."}</p></div>`;
   $("reading-status").className = "reading-status in-progress";
   $("reading-status").textContent = "📖 Reading section content...";
 
@@ -913,34 +975,46 @@ async function openSectionReading(chapterNumber, sectionId) {
   try {
     const content = await api("/learning/content/section", {
       method: "POST",
-      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId },
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId, regenerate },
     });
 
-    $("reading-chapter-title").textContent = `📖 ${content.section_id} - ${content.section_title}`;
+    const sourceBadge = content.source === "cached"
+      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
+      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
+
+    $("reading-chapter-title").innerHTML = `📖 ${content.section_id} - ${content.section_title} ${sourceBadge}`;
     $("reading-content").innerHTML = mdToHtml(content.content);
     renderKaTeX($("reading-content"));
+
+    // Add Regenerate button
+    $("reading-status").className = "reading-status complete";
+    $("reading-status").innerHTML = `
+      📖 Reading complete
+      <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true)" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
+      <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
+    `;
   } catch (err) {
     $("reading-content").innerHTML = `<p style="color:var(--danger)">Error loading section content: ${err.message}</p>`;
   }
 }
 
-async function openSectionTest(chapterNumber, sectionId) {
+async function openSectionTest(chapterNumber, sectionId, regenerate = false) {
   // Close detail overlay
   const overlay = document.getElementById("chapter-detail-overlay");
   if (overlay) overlay.remove();
 
   showScreen("test");
-  testSeconds = 600; // 10 minutes for section test
+  testSeconds = 600;
 
-  $("test-chapter-title").textContent = "Loading section test...";
-  $("chapter-test-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating section test questions...</p></div>`;
+  $("test-chapter-title").textContent = regenerate ? "Regenerating section test..." : "Loading section test...";
+  $("chapter-test-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>${regenerate ? "Generating new test questions..." : "Loading section test..."}</p></div>`;
   $("btn-submit-chapter-test").disabled = true;
   hide($("test-result-feedback"));
 
   try {
     const testResp = await api("/learning/test/section/generate", {
       method: "POST",
-      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId },
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId, regenerate },
     });
 
     currentTestData = {
@@ -951,7 +1025,11 @@ async function openSectionTest(chapterNumber, sectionId) {
       section_id: sectionId,
     };
 
-    $("test-chapter-title").textContent = `📝 ${testResp.section_id} - ${testResp.section_title}`;
+    const sourceBadge = testResp.source === "cached"
+      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
+      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
+
+    $("test-chapter-title").innerHTML = `📝 ${testResp.section_id} - ${testResp.section_title} ${sourceBadge}`;
     renderChapterTestQuestions(testResp.questions);
     startChapterTestTimer();
   } catch (err) {
@@ -960,9 +1038,125 @@ async function openSectionTest(chapterNumber, sectionId) {
 }
 
 
-// ── SCREEN MANAGEMENT ───────────────────────────────────────────────────────
+// ── SCREEN MANAGEMENT ───────────────────────────────────────────────────────────────────
 function showScreen(screenName) {
   document.querySelectorAll(".screen").forEach(s => s.classList.add("hidden"));
   const screen = $(`screen-${screenName}`);
   if (screen) screen.classList.remove("hidden");
+}
+
+
+// ── DAILY PLAN ────────────────────────────────────────────────────────────────────────
+function renderDailyPlan(tasks) {
+  const container = $("daily-plan-content");
+  if (!container) return;
+
+  const pending = (tasks || []).filter(t => t.status === "pending" || t.status === "in_progress");
+  const todayTasks = pending.slice(0, 4);
+
+  if (todayTasks.length === 0) {
+    container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted)">✨ All caught up! No pending tasks for today.</div>`;
+    return;
+  }
+
+  container.innerHTML = todayTasks.map((t, i) => {
+    const icon = t.task_type === "read" ? "📖" : (t.chapter_level ? "📋" : "📝");
+    const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+    return `
+      <div class="task-card pending" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} style="cursor:pointer;border-left:3px solid var(--accent)">
+        <div class="task-icon">${icon}</div>
+        <div class="task-info">
+          <div class="task-title" style="font-size:0.85rem">${i + 1}. ${t.title}</div>
+          <div class="task-meta">${t.chapter}${t.section_id ? " • §" + t.section_id : ""}</div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  container.querySelectorAll(".task-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const type = card.dataset.type;
+      const chapter = card.dataset.chapter;
+      const sectionId = card.dataset.sectionId;
+      const match = chapter.match(/Chapter (\d+)/);
+      const chNum = match ? parseInt(match[1]) : 1;
+      if (sectionId) {
+        if (type === "read") openSectionReading(chNum, sectionId);
+        else if (type === "test") openSectionTest(chNum, sectionId);
+      } else if (type === "read") openReading(chNum, card.dataset.taskId);
+      else if (type === "test") openTest(chNum);
+    });
+  });
+}
+
+
+// ── PRACTICE QUESTIONS ────────────────────────────────────────────────────────────────
+let practiceData = null;
+
+async function openPractice(chapterNumber, sectionId) {
+  showScreen("practice");
+  $("practice-title").textContent = `📝 Practice: §${sectionId}`;
+  $("practice-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating practice questions...</p></div>`;
+  $("btn-check-practice").disabled = true;
+  hide($("practice-feedback"));
+
+  try {
+    const resp = await api("/learning/test/section/generate", {
+      method: "POST",
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId },
+    });
+    practiceData = { test_id: resp.test_id, questions: resp.questions, chapter_number: chapterNumber, section_id: sectionId };
+    renderPracticeQuestions(resp.questions);
+    $("btn-check-practice").disabled = false;
+    $("btn-new-practice").onclick = () => openPractice(chapterNumber, sectionId);
+  } catch (err) {
+    $("practice-questions").innerHTML = `<p style="color:var(--danger)">Error: ${err.message}</p>`;
+  }
+}
+
+function renderPracticeQuestions(questions) {
+  $("practice-questions").innerHTML = questions.map((q, i) => {
+    const optionsHtml = (q.options || []).map((opt, j) => `
+      <label style="display:block;padding:8px 12px;margin:4px 0;background:var(--bg-elevated);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">
+        <input type="radio" name="practice_q${i}" value="${j}" style="margin-right:8px"> ${opt}
+      </label>
+    `).join("");
+    return `
+      <div class="test-question" style="margin-bottom:16px;padding:16px;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius)">
+        <p style="font-weight:600;margin-bottom:8px">Q${i + 1}. ${q.prompt || q.question_text || "Question"}</p>
+        ${optionsHtml}
+        <div class="practice-result" style="display:none;margin-top:8px;padding:8px;border-radius:var(--radius-sm)"></div>
+      </div>
+    `;
+  }).join("");
+  renderKaTeX($("practice-questions"));
+}
+
+function checkPractice() {
+  if (!practiceData) return;
+  let correct = 0;
+  practiceData.questions.forEach((q, i) => {
+    const selected = document.querySelector(`input[name="practice_q${i}"]:checked`);
+    const resultDiv = document.querySelectorAll(".practice-result")[i];
+    const correctIdx = q.correct_index !== undefined ? q.correct_index : (q.correct !== undefined ? q.correct : 0);
+    if (resultDiv) {
+      resultDiv.style.display = "block";
+      if (selected && parseInt(selected.value) === correctIdx) {
+        correct++;
+        resultDiv.style.background = "var(--success-light)";
+        resultDiv.style.color = "var(--success)";
+        resultDiv.textContent = "✅ Correct!";
+      } else {
+        resultDiv.style.background = "var(--danger-light)";
+        resultDiv.style.color = "var(--danger)";
+        resultDiv.textContent = `❌ Incorrect. Answer: ${(q.options || [])[correctIdx] || "N/A"}`;
+      }
+    }
+  });
+  const total = practiceData.questions.length;
+  const pct = ((correct / total) * 100).toFixed(0);
+  const fb = $("practice-feedback");
+  show(fb);
+  fb.innerHTML = `<div style="text-align:center;padding:16px"><h3>🎯 ${correct}/${total} (${pct}%)</h3><p>${correct === total ? "🌟 Perfect!" : correct >= total * 0.6 ? "👍 Good job!" : "💪 Keep practicing!"}</p></div>`;
+  $("btn-check-practice").disabled = true;
 }

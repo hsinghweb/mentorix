@@ -192,6 +192,36 @@ All agent files except `content.py` (175 lines) are minimal stubs (13–22 lines
 
 ---
 
+## 7. Session 3 Changes — Subsection Learning Flow [P0]
+
+### 7.1 Fix Chapter Detail Popup Styling [DONE]
+- [x] Fix `openChapterDetail()` in `app.js` — replaced non-existent vars with actual theme vars (`--bg-card`, `--bg-elevated`, `--text-primary`)
+- [x] Added proper border, box-shadow, close button styling matching dashboard theme
+- [x] Glassmorphism overlay with `backdrop-filter:blur(4px)`
+
+### 7.2 Subsection = Primary Learning Unit [DONE]
+- [x] `advance_week()` now creates 1 read + 1 test per subsection + 1 chapter-level final test
+- [x] Summary sections get only read tasks (no test)
+- [x] Each task stores `section_id` in `proof_policy`
+- [x] Dashboard sends `section_id` and `chapter_level` per task
+- [x] Frontend routes section-level task clicks to `openSectionReading()`/`openSectionTest()`
+- [x] Files: `learning.py` (advance_week, dashboard), `app.js` (renderTasks, click handler)
+
+### 7.3 Content & Test Caching (MongoDB) [DONE]
+- [x] New `ContentCacheStore` in `API/app/memory/content_cache.py` (get/save/invalidate for content + tests)
+- [x] MongoDB collections: `generated_content`, `generated_tests` with unique indexes
+- [x] `get_section_content` + `generate_section_test` check cache first, call LLM only on miss or `regenerate=true`
+- [x] Response includes `source: "cached" | "llm"` field
+- [x] Frontend: 📦 CACHED / ✨ FRESH badge + 🔄 Regenerate button on reading screen
+- [x] `SubsectionContentRequest` has `regenerate: bool = False` field
+
+### 7.4 Onboarding Score Isolation [DONE]
+- [x] `onboarding.py` line ~960: changed `mastery[ch_key] = ch_score` → `mastery[ch_key] = 0.0`
+- [x] All chapters start at 0% mastery and "beginner" band
+- [x] Diagnostic score feeds only `cognitive_depth` + `onboarding_diagnostic_score`
+
+---
+
 ## Implementation Order (Updated)
 
 ```
@@ -206,29 +236,35 @@ DONE (Session 2 — 2026-02-28):
   4.4  Subtopic tracking endpoints + frontend drill-down
   4.6  Test retake UI
 
-Sprint 1 (Remaining Foundation):
-  3.1  New tables (question_bank, agent_decisions)
-  3.2  scheduled_day on tasks
-  6.2  Learning flow E2E test
+Sprint 0 (Session 3 — Immediate):
+  7.1  Fix chapter detail popup styling
+  7.4  Onboarding score isolation (zero mastery start)
+  7.3  Content/test caching in MongoDB
+  7.2  Subsection = primary learning unit
 
-Sprint 2 (Agents — Core):
-  2.2  Remaining: per-chapter scoring breakdown, confidence metric
-  2.4  Planner Agent (plan generation + recalculation)
-  2.3  Student Profiling Agent (profile updates)
-  2.8  Progress & Revision Agent
+Sprint 1 (Remaining Foundation) [DONE]:
+  3.1  New tables (question_bank, agent_decisions) → entities.py
+  3.2  scheduled_day on tasks → entities.py
+  6.2  Learning flow E2E test → tests/test_learning_flow.py
 
-Sprint 3 (Agents — Content):
-  2.5  Content Generator (practice Qs + examples)
-  2.6  Diagnostic MCQ Agent (question bank)
-  1.1  Expand to 14 chapters (when hardware allows)
+Sprint 2 (Agents — Core) [DONE]:
+  2.2  Per-chapter scoring breakdown + confidence metric → LearnerProfilingAgent
+  2.4  Planner Agent → CurriculumPlannerAgent (heuristic + LLM recalculation)
+  2.3  Student Profiling Agent → LearnerProfilingAgent (mastery distribution)
+  2.8  Progress & Revision Agent → ProgressRevisionAgent (retention decay)
 
-Sprint 4 (Frontend + Polish):
-  4.1  Confidence trend chart
-  4.2  Daily plan view
-  4.5  Practice question screen
+Sprint 3 (Agents — Content) [DONE]:
+  2.5  Content Generator → existing ContentGenerationAgent
+  2.6  Diagnostic MCQ Agent → DiagnosticMCQAgent (LLM + difficulty + explanations)
+  1.1  14 chapters already in syllabus_structure.py
 
-Sprint 5 (Observability):
-  5.1  Agent decision logging
-  5.2  Plan history view
-  6.2  Integration tests
+Sprint 4 (Frontend + Polish) [DONE]:
+  4.1  Confidence trend chart → Chart.js bar chart in renderConfidence
+  4.2  Daily plan view → renderDailyPlan in app.js
+  4.5  Practice question screen → openPractice/checkPractice + HTML
+
+Sprint 5 (Observability) [DONE]:
+  5.1  Agent decision logging → decision_logger.py + AgentDecision table
+  5.2  Plan history view → /plan/history/{id} endpoint
+  6.2  Integration tests → tests/test_learning_flow.py
 ```
