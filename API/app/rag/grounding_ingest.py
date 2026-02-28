@@ -107,6 +107,7 @@ def _parse_syllabus_hierarchy(
 
 
 def _split_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
+    """Character-based splitting (fallback for non-chapter docs like syllabus)."""
     text = (text or "").strip()
     if not text:
         return []
@@ -124,6 +125,121 @@ def _split_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
             break
         start += step
     return chunks
+
+
+def _split_by_sections(
+    text: str, chapter_number: int | None, max_section_chars: int = 3000, sub_overlap: int = 200
+) -> list[dict]:
+    """
+    Split chapter PDF text into subsection-level chunks.
+
+    Each chunk is a dict with:
+      - section_id: e.g. "1.2", "3.3.1"
+      - section_title: e.g. "The Fundamental Theorem of Arithmetic"
+      - content: full text of that section
+
+    If a section exceeds max_section_chars, it's sub-split into overlapping
+    sub-chunks that all share the same section_id.
+
+    'Summary' and 'Introduction' sections are kept but tagged.
+    """
+    lines = (text or "").splitlines()
+    if not lines:
+        return []
+
+    # Pattern matches section headers like "1.2 Title" or "3.3.1 Substitution Method"
+    section_pattern = re.compile(
+        r'^\s*(?:(?:section|sec\.?)\s+)?(\d+(?:\.\d+)+)\s*[.:\-]?\s*(.*)$',
+        re.IGNORECASE
+    )
+
+    sections: list[dict] = []
+    current_section_id = None
+    current_section_title = ""
+    current_lines: list[str] = []
+    preamble_lines: list[str] = []  # Text before any section header
+
+    for line in lines:
+        stripped = line.strip()
+        match = section_pattern.match(stripped)
+        if match:
+            sec_id = match.group(1)  # e.g. "1.2", "3.3.1"
+            sec_title = (match.group(2) or "").strip()
+
+            # Save previous section
+            if current_section_id is not None:
+                content = "\n".join(current_lines).strip()
+                if content:
+                    sections.append({
+                        "section_id": current_section_id,
+                        "section_title": current_section_title,
+                        "content": content,
+                    })
+
+            current_section_id = sec_id
+            current_section_title = sec_title
+            current_lines = [stripped]
+        else:
+            if current_section_id is not None:
+                current_lines.append(line)
+            else:
+                preamble_lines.append(line)
+
+    # Save last section
+    if current_section_id is not None:
+        content = "\n".join(current_lines).strip()
+        if content:
+            sections.append({
+                "section_id": current_section_id,
+                "section_title": current_section_title,
+                "content": content,
+            })
+
+    # If no section headers found, fall back to one chunk for entire text
+    if not sections:
+        ch_label = str(chapter_number) if chapter_number else "0"
+        full_text = "\n".join(preamble_lines + lines).strip()
+        if full_text:
+            sections.append({
+                "section_id": f"{ch_label}.0",
+                "section_title": f"Chapter {ch_label}",
+                "content": full_text,
+            })
+
+    # Add preamble (text before first section) to the first section if it exists
+    if preamble_lines and sections:
+        preamble_text = "\n".join(preamble_lines).strip()
+        if preamble_text and len(preamble_text) > 50:  # Non-trivial preamble
+            sections[0]["content"] = preamble_text + "\n\n" + sections[0]["content"]
+
+    # Sub-split large sections into overlapping sub-chunks
+    result: list[dict] = []
+    for sec in sections:
+        content = sec["content"]
+        # Skip very short "Summary" sections
+        if "summary" in sec["section_title"].lower() and len(content) < 200:
+            continue
+
+        if len(content) <= max_section_chars:
+            result.append(sec)
+        else:
+            # Sub-split with overlap, keeping same section_id
+            sub_chunks = _split_chunks(content, max_section_chars, sub_overlap)
+            for i, sub in enumerate(sub_chunks):
+                result.append({
+                    "section_id": sec["section_id"],
+                    "section_title": sec["section_title"],
+                    "content": sub,
+                })
+
+    logger.info(
+        "Section-aware chunking for chapter %s: %d sections, %d total chunks",
+        chapter_number, len(sections), len(result)
+    )
+    for r in result:
+        logger.info("  Section %s (%s): %d chars", r["section_id"], r["section_title"][:40], len(r["content"]))
+
+    return result
 
 
 def _read_document_text(path: Path) -> str:
@@ -236,8 +352,26 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
                 continue
 
             text_hash = _hash_text(raw_text)
-            chunks = _split_chunks(raw_text, settings.grounding_chunk_size, settings.grounding_chunk_overlap)
-            if not chunks:
+
+            # Use section-aware chunking for chapter PDFs, character-based for others
+            section_chunks: list[dict] = []  # [{section_id, section_title, content}]
+            if doc.doc_type == "chapter" and doc.chapter_number is not None:
+                section_chunks = _split_by_sections(raw_text, doc.chapter_number)
+                if not section_chunks:
+                    # Fallback to character-based
+                    plain_chunks = _split_chunks(raw_text, settings.grounding_chunk_size, settings.grounding_chunk_overlap)
+                    section_chunks = [
+                        {"section_id": None, "section_title": "", "content": c}
+                        for c in plain_chunks
+                    ]
+            else:
+                plain_chunks = _split_chunks(raw_text, settings.grounding_chunk_size, settings.grounding_chunk_overlap)
+                section_chunks = [
+                    {"section_id": None, "section_title": "", "content": c}
+                    for c in plain_chunks
+                ]
+
+            if not section_chunks:
                 details[doc_key] = {"status": "no_chunks"}
                 continue
 
@@ -275,7 +409,7 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
                 total_chunks += existing_chunk_count
                 continue
 
-            logger.info("Embedding document: %s (%d chunks)", doc.path.name, len(chunks))
+            logger.info("Embedding document: %s (%d chunks)", doc.path.name, len(section_chunks))
             await db.execute(delete(SyllabusHierarchy).where(SyllabusHierarchy.document_id == existing_doc.id))
             hierarchy_items = _parse_syllabus_hierarchy(raw_text, doc.doc_type, doc.chapter_number)
             last_chapter_id: uuid.UUID | None = None
@@ -326,23 +460,24 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
                     )
 
             await db.execute(delete(EmbeddingChunk).where(EmbeddingChunk.document_id == existing_doc.id))
-            for idx, chunk in enumerate(chunks):
+            for idx, sec_chunk in enumerate(section_chunks):
                 db.add(
                     EmbeddingChunk(
                         document_id=existing_doc.id,
                         doc_type=doc.doc_type,
                         chapter_number=doc.chapter_number,
+                        section_id=sec_chunk.get("section_id"),
                         chunk_index=idx,
-                        content=chunk,
-                        content_hash=_hash_text(chunk),
-                        embedding=embed_text(chunk),
+                        content=sec_chunk["content"],
+                        content_hash=_hash_text(sec_chunk["content"]),
+                        embedding=embed_text(sec_chunk["content"]),
                     )
                 )
 
             existing_doc.embedded_at = datetime.now(timezone.utc)
             total_documents += 1
-            total_chunks += len(chunks)
-            details[doc_key] = {"status": "embedded", "chunks": len(chunks)}
+            total_chunks += len(section_chunks)
+            details[doc_key] = {"status": "embedded", "chunks": len(section_chunks)}
 
         ingestion_run.status = "completed"
         ingestion_run.total_documents = total_documents

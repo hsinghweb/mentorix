@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -180,6 +180,7 @@ class EmbeddingChunk(Base):
         Index("idx_embedding_chunks_doc_id", "document_id"),
         Index("idx_embedding_chunks_doc_type_chapter", "doc_type", "chapter_number"),
         Index("idx_embedding_chunks_chunk_index", "chunk_index"),
+        Index("idx_embedding_chunks_section_id", "section_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -190,6 +191,7 @@ class EmbeddingChunk(Base):
     )
     doc_type: Mapped[str] = mapped_column(String(32), nullable=False)
     chapter_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section_id: Mapped[str | None] = mapped_column(String(16), nullable=True)  # e.g. "1.2", "3.3.1"
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -296,6 +298,33 @@ class ChapterProgression(Base):
     last_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="in_progress")
     revision_queued: Mapped[bool] = mapped_column(nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SubsectionProgression(Base):
+    """Per-subsection tracking: status, scores, and mastery for each learner."""
+    __tablename__ = "subsection_progression"
+    __table_args__ = (
+        Index("idx_subsection_prog_learner_chapter", "learner_id", "chapter"),
+        Index("idx_subsection_prog_learner_section", "learner_id", "section_id"),
+        Index("idx_subsection_prog_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("learners.id", ondelete="CASCADE"), nullable=False
+    )
+    chapter: Mapped[str] = mapped_column(String(128), nullable=False)  # e.g. "Chapter 1"
+    section_id: Mapped[str] = mapped_column(String(16), nullable=False)  # e.g. "1.2"
+    section_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_started")
+    # status values: not_started, reading_done, test_done, completed
+    best_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_score: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reading_completed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

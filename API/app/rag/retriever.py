@@ -64,15 +64,17 @@ def _rag_cache_key(concept: str, difficulty: int | None, top_k: int) -> str:
 
 
 async def retrieve_concept_chunks_with_meta(
-    db: AsyncSession, concept: str, top_k: int = 5, difficulty: int | None = None
+    db: AsyncSession, concept: str, top_k: int = 5, difficulty: int | None = None,
+    chapter_number: int | None = None, section_id: str | None = None,
 ) -> dict:
     """
     Hybrid retrieval:
     1) Redis cache for repeated concept queries (TTL 300s).
-    2) Vector-semantic retrieval (primary, concept-focused).
-    3) Keyword overlap re-scoring (secondary signal).
+    2) If chapter_number/section_id given, use EmbeddingChunk table (section-aware).
+    3) Otherwise fall back to ConceptChunk (legacy).
+    4) Keyword overlap re-scoring (secondary signal).
     """
-    cache_key = _rag_cache_key(concept, difficulty, top_k)
+    cache_key = _rag_cache_key(f"{concept}:{chapter_number}:{section_id}", difficulty, top_k)
     try:
         from app.memory.cache import redis_client
         raw = await redis_client.get(cache_key)
@@ -91,6 +93,52 @@ async def retrieve_concept_chunks_with_meta(
     query_vec = embed_text(query_text)
     query_tokens = _tokenize(query_text)
 
+    # ── Section-aware retrieval via EmbeddingChunk ──
+    if chapter_number is not None:
+        from app.models.entities import EmbeddingChunk
+        ec_stmt: Select = select(EmbeddingChunk).where(EmbeddingChunk.chapter_number == chapter_number)
+        if section_id is not None:
+            ec_stmt = ec_stmt.where(EmbeddingChunk.section_id == section_id)
+        ec_stmt = ec_stmt.limit(max(top_k * 4, 12))
+
+        ec_rows = (await db.execute(ec_stmt)).scalars().all()
+
+        scored: list[tuple[float, object]] = []
+        for idx, row in enumerate(ec_rows):
+            semantic_score = 1.0 - min(1.0, idx / max(1, len(ec_rows)))
+            kw_tokens = _tokenize(row.content)
+            kw_overlap = len(query_tokens.intersection(kw_tokens)) / max(1, len(query_tokens))
+            hybrid_score = (0.7 * semantic_score) + (0.3 * kw_overlap)
+            scored.append((hybrid_score, row))
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top_items = scored[:top_k]
+        chunks = [item.content for _score, item in top_items]
+        confidence = _retrieval_confidence(scored, top_k=top_k)
+
+        if not chunks:
+            message = f"No grounded chunks found for chapter {chapter_number}" + (f" section {section_id}" if section_id else "") + "."
+        elif confidence < 0.35:
+            message = "Low retrieval confidence. Showing best grounded matches."
+        else:
+            message = "Grounded retrieval confidence is acceptable."
+
+        result = {
+            "chunks": chunks,
+            "retrieval_confidence": confidence,
+            "semantic_fallback_used": False,
+            "message": message,
+            "candidate_count": len(scored),
+            "retrieval_mode": "section_aware",
+        }
+        try:
+            from app.memory.cache import redis_client
+            await redis_client.set(cache_key, json.dumps(result), ex=_RAG_CACHE_TTL)
+        except Exception:
+            pass
+        return result
+
+    # ── Legacy ConceptChunk retrieval ──
     stmt: Select = select(ConceptChunk).where(ConceptChunk.concept == concept)
     if difficulty is not None:
         stmt = stmt.where(ConceptChunk.difficulty <= difficulty + 1)

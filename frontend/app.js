@@ -493,22 +493,22 @@ function renderTasks(tasks, weekNumber) {
   container.innerHTML = tasks.map(t => {
     const icon = t.task_type === "read" ? "📖" : (t.task_type === "test" ? "📝" : "✍️");
     const statusCls = t.status;
+    const statusLabel = t.status.replace(/_/g, " ");
     return `
-            <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}">
+            <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" style="cursor:pointer">
                 <div class="task-icon">${icon}</div>
                 <div class="task-info">
                     <div class="task-title">${t.title}</div>
                     <div class="task-meta">${t.chapter} • ${t.task_type.toUpperCase()}</div>
                 </div>
-                <div class="task-status-badge ${statusCls}">${t.status.replace("_", " ")}</div>
+                <div class="task-status-badge ${statusCls}">${statusLabel}</div>
             </div>
         `;
   }).join("");
 
-  // Bind task clicks
+  // Bind task clicks — always allow access (no blocking on completed)
   container.querySelectorAll(".task-card").forEach(card => {
     card.addEventListener("click", () => {
-      if (card.classList.contains("completed")) return;
       const type = card.dataset.type;
       const chapter = card.dataset.chapter;
       const taskId = card.dataset.taskId;
@@ -528,7 +528,7 @@ function renderTasks(tasks, weekNumber) {
 
 function checkWeekComplete(tasks, learnerId) {
   if (!tasks || tasks.length === 0) return;
-  const allDone = tasks.every(t => t.status === "completed");
+  const allDone = tasks.every(t => t.status === "completed" || t.status.startsWith("completed"));
 
   if (allDone) {
     const container = $("current-tasks");
@@ -559,11 +559,19 @@ async function advanceWeek(learnerId) {
 
 function renderChapters(chapters) {
   $("chapters-grid").innerHTML = chapters.map(ch => `
-        <div class="chapter-card ${ch.status}">
+        <div class="chapter-card ${ch.status}" data-chapter-number="${ch.chapter_number}" style="cursor:pointer" title="Click to see subsection details">
             <div class="chapter-name">Ch ${ch.chapter_number}: ${ch.title}</div>
-            <div class="chapter-status-text">${ch.status.replace("_", " ")}</div>
+            <div class="chapter-status-text">${ch.status.replace(/_/g, " ")}</div>
         </div>
     `).join("");
+
+  // Bind chapter card clicks for drill-down
+  $("chapters-grid").querySelectorAll(".chapter-card").forEach(card => {
+    card.addEventListener("click", () => {
+      const chNum = parseInt(card.dataset.chapterNumber);
+      openChapterDetail(chNum);
+    });
+  });
 }
 
 function renderConfidence(confData) {
@@ -808,7 +816,10 @@ async function handleSubmitChapterTest() {
     feedbackEl.innerHTML = `
             <h3>${result.score >= 0.6 ? "🎉" : "💪"} Score: ${result.correct}/${result.total} (${(result.score * 100).toFixed(0)}%)</h3>
             <p>${result.message}</p>
-            <button class="btn btn-primary" style="margin-top:14px" onclick="backToDashboard()">Back to Dashboard</button>
+            <div style="margin-top:14px; display:flex; gap:10px; justify-content:center;">
+                <button class="btn btn-primary" onclick="openTest(${currentTestData.chapter_number})">🔄 Retake Test</button>
+                <button class="btn btn-secondary" onclick="backToDashboard()">← Dashboard</button>
+            </div>
         `;
 
     $("btn-submit-chapter-test").textContent = "Submit Test";
@@ -816,6 +827,135 @@ async function handleSubmitChapterTest() {
     alert("Error submitting test: " + err.message);
     $("btn-submit-chapter-test").disabled = false;
     $("btn-submit-chapter-test").textContent = "Submit Test";
+  }
+}
+
+
+// ── CHAPTER DETAIL DRILL-DOWN ───────────────────────────────────────────────
+async function openChapterDetail(chapterNumber) {
+  const learnerId = getLearnerId();
+  if (!learnerId) return;
+
+  try {
+    const data = await api(`/learning/chapter/${chapterNumber}/sections/${learnerId}`);
+    const sections = data.sections || [];
+
+    // Build modal overlay
+    let existingOverlay = document.getElementById("chapter-detail-overlay");
+    if (existingOverlay) existingOverlay.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "chapter-detail-overlay";
+    overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);z-index:1000;display:flex;align-items:center;justify-content:center;";
+
+    const bandColor = (band) => band === "mastered" ? "var(--success)" : band === "proficient" ? "var(--info)" : band === "developing" ? "var(--warning)" : "var(--danger)";
+
+    const sectionsHtml = sections.map(s => {
+      const pct = (s.best_score * 100).toFixed(0);
+      return `
+        <div style="background:var(--surface);border-radius:8px;padding:12px 16px;margin-bottom:8px;border-left:4px solid ${bandColor(s.mastery_band)}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <strong>${s.section_id} ${s.section_title}</strong>
+            <span class="mastery-badge ${s.mastery_band}" style="font-size:0.75rem">${s.mastery_band}</span>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;font-size:0.85rem;color:var(--text-muted)">
+            <span>${s.reading_completed ? "📖 Read" : "📖 Not read"}</span>
+            <span>•</span>
+            <span>Score: ${pct}%</span>
+            <span>•</span>
+            <span>Attempts: ${s.attempt_count}</span>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button class="btn btn-sm" onclick="openSectionReading(${chapterNumber}, '${s.section_id}')" style="padding:4px 12px;font-size:0.8rem;background:var(--primary);color:white;border:none;border-radius:4px;cursor:pointer">📖 Read</button>
+            <button class="btn btn-sm" onclick="openSectionTest(${chapterNumber}, '${s.section_id}')" style="padding:4px 12px;font-size:0.8rem;background:var(--info);color:white;border:none;border-radius:4px;cursor:pointer">📝 Test</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    overlay.innerHTML = `
+      <div style="background:var(--bg);border-radius:12px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;padding:24px;position:relative;">
+        <button onclick="document.getElementById('chapter-detail-overlay').remove()" style="position:absolute;top:12px;right:16px;background:none;border:none;font-size:1.4rem;cursor:pointer;color:var(--text-muted)">&times;</button>
+        <h3 style="margin-bottom:16px">📚 Ch ${chapterNumber}: ${data.chapter_title}</h3>
+        <p style="color:var(--text-muted);margin-bottom:16px;font-size:0.9rem">${sections.length} subsections • Click Read or Test for each section</p>
+        ${sectionsHtml}
+      </div>
+    `;
+
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  } catch (err) {
+    alert("Error loading chapter details: " + err.message);
+  }
+}
+
+async function openSectionReading(chapterNumber, sectionId) {
+  // Close detail overlay
+  const overlay = document.getElementById("chapter-detail-overlay");
+  if (overlay) overlay.remove();
+
+  showScreen("reading");
+  readingChapterNumber = chapterNumber;
+  readingSeconds = 0;
+  readingTaskId = null;  // No task for section-level reading
+
+  $("reading-chapter-title").textContent = "Loading section content...";
+  $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating section reading material from NCERT...</p></div>`;
+  $("reading-status").className = "reading-status in-progress";
+  $("reading-status").textContent = "📖 Reading section content...";
+
+  $("reading-timer").textContent = "Time: 0:00";
+  readingTimer = setInterval(() => {
+    readingSeconds++;
+    $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
+  }, 1000);
+
+  try {
+    const content = await api("/learning/content/section", {
+      method: "POST",
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId },
+    });
+
+    $("reading-chapter-title").textContent = `📖 ${content.section_id} - ${content.section_title}`;
+    $("reading-content").innerHTML = mdToHtml(content.content);
+    renderKaTeX($("reading-content"));
+  } catch (err) {
+    $("reading-content").innerHTML = `<p style="color:var(--danger)">Error loading section content: ${err.message}</p>`;
+  }
+}
+
+async function openSectionTest(chapterNumber, sectionId) {
+  // Close detail overlay
+  const overlay = document.getElementById("chapter-detail-overlay");
+  if (overlay) overlay.remove();
+
+  showScreen("test");
+  testSeconds = 600; // 10 minutes for section test
+
+  $("test-chapter-title").textContent = "Loading section test...";
+  $("chapter-test-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating section test questions...</p></div>`;
+  $("btn-submit-chapter-test").disabled = true;
+  hide($("test-result-feedback"));
+
+  try {
+    const testResp = await api("/learning/test/section/generate", {
+      method: "POST",
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId },
+    });
+
+    currentTestData = {
+      test_id: testResp.test_id,
+      questions: testResp.questions,
+      chapter: testResp.chapter,
+      chapter_number: chapterNumber,
+      section_id: sectionId,
+    };
+
+    $("test-chapter-title").textContent = `📝 ${testResp.section_id} - ${testResp.section_title}`;
+    renderChapterTestQuestions(testResp.questions);
+    startChapterTestTimer();
+  } catch (err) {
+    $("chapter-test-questions").innerHTML = `<p style="color:var(--danger)">Error generating section test: ${err.message}</p>`;
   }
 }
 

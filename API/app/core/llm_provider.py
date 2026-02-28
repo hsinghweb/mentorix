@@ -1,3 +1,4 @@
+import logging
 from abc import ABC, abstractmethod
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -6,6 +7,8 @@ import httpx
 from app.core.model_registry import resolve_role
 from app.core.resilience import get_breaker, retry_with_backoff
 from app.core.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -51,15 +54,18 @@ class GeminiLLMProvider(BaseLLMProvider):
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 700},
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 4096},
         }
+
+        prompt_tokens = _estimate_tokens(prompt)
+        logger.info("[LLM] Calling %s model=%s role=%s prompt_tokens~%d", self.provider_name, self.model_name, self.role, prompt_tokens)
 
         breaker = get_breaker(f"llm:{self.provider_name}:{self.model_name}:{self.role}")
         if not breaker.can_execute():
             return None, {"provider": self.provider_name, "model": self.model_name, "reason": "circuit_open"}
 
         async def _call():
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     api_url,
                     json=payload,
@@ -85,6 +91,7 @@ class GeminiLLMProvider(BaseLLMProvider):
                     "total_tokens_estimate": _estimate_tokens(prompt) + _estimate_tokens(text),
                     "cost_estimate_usd": round(((_estimate_tokens(prompt) + _estimate_tokens(text)) / 1000) * self.cost_per_1k, 6),
                 }
+                logger.info("[LLM] Success model=%s role=%s completion_tokens~%d", self.model_name, self.role, _estimate_tokens(text))
                 return (text or None), usage
 
         try:
@@ -93,6 +100,7 @@ class GeminiLLMProvider(BaseLLMProvider):
             return result
         except Exception as e:
             breaker.record_failure()
+            logger.warning("[LLM] Error model=%s role=%s error=%s", self.model_name, self.role, str(e)[:200])
             resp = getattr(e, "response", None)
             status = getattr(resp, "status_code", None)
             err_msg = (str(e) or "").lower()
@@ -112,7 +120,7 @@ class GeminiLLMProvider(BaseLLMProvider):
                         f"{self.model_name}:generateContent"
                     )
                     try:
-                        async with httpx.AsyncClient(timeout=20.0) as client:
+                        async with httpx.AsyncClient(timeout=60.0) as client:
                             response = await client.post(
                                 api_url_fb,
                                 json=payload,
@@ -149,7 +157,7 @@ class OllamaLLMProvider(BaseLLMProvider):
             return None, {"provider": self.provider_name, "model": self.model_name, "reason": "circuit_open"}
 
         async def _call():
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
                     f"{settings.ollama_base_url.rstrip('/')}/api/generate",
                     json={"model": self.model_name, "prompt": prompt, "stream": False},

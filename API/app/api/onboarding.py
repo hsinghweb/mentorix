@@ -943,26 +943,57 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         details={"source": "onboarding_submit", "score": score},
     )
 
+    math_9_percent = float(profile.math_9_percent or 0)
     recommended_timeline_weeks, recommendation_note = _recommend_timeline_weeks(selected_timeline_weeks, score)
     current_forecast_weeks = recommended_timeline_weeks
     timeline_delta_weeks = current_forecast_weeks - selected_timeline_weeks
     rough_plan, week_1 = _build_rough_plan(chapter_scores, target_weeks=current_forecast_weeks)
     await redis_client.delete(redis_key)
 
+    # 1. Update Profile (including all 14 chapters in mastery)
+    from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name
+    
+    mastery = {}
+    for ch_data in SYLLABUS_CHAPTERS:
+        ch_key = chapter_display_name(ch_data["number"])
+        # Initial mastery from diagnostic if possible, else 0.0
+        ch_score = chapter_scores.get(ch_key, 0.0)
+        mastery[ch_key] = ch_score
+    
+    profile.onboarding_diagnostic_score = score
+    profile.math_9_percent = int(math_9_percent)
     profile.selected_timeline_weeks = selected_timeline_weeks
     profile.recommended_timeline_weeks = recommended_timeline_weeks
-    profile.current_forecast_weeks = current_forecast_weeks
-    profile.timeline_delta_weeks = timeline_delta_weeks
-    await _update_profile_after_outcome(
-        db=db,
-        learner_id=use_learner_id,
-        profile=profile,
-        reason="onboarding_submit",
-        mastery_update=chapter_scores,
-        engagement_minutes=payload.time_spent_minutes,
-        extra={"diagnostic_score": score, "math_9_percent": profile.math_9_percent},
-    )
+    profile.current_forecast_weeks = recommended_timeline_weeks
+    profile.timeline_delta_weeks = recommended_timeline_weeks - selected_timeline_weeks
+    profile.concept_mastery = mastery
+    profile.cognitive_depth = round(float(0.5 * score + 0.5 * (math_9_percent / 100.0)), 3)
+    profile.last_updated = datetime.now(timezone.utc)
 
+    # 2. Initialize all 14 Chapters in Progression
+    for ch_data in SYLLABUS_CHAPTERS:
+        ch_key = chapter_display_name(ch_data["number"])
+        ch_score = mastery[ch_key]
+        
+        # Create ChapterProgression for each
+        existing_cp = (await db.execute(
+            select(ChapterProgression).where(
+                ChapterProgression.learner_id == use_learner_id,
+                ChapterProgression.chapter == ch_key
+            )
+        )).scalar_one_or_none()
+        
+        if not existing_cp:
+            db.add(ChapterProgression(
+                learner_id=use_learner_id,
+                chapter=ch_key,
+                status="not_started" if ch_data["number"] > 1 else "in_progress",
+                attempt_count=0,
+                best_score=ch_score,
+                last_score=ch_score
+            ))
+
+    # 3. Create Plan and Initial Tasks
     plan = WeeklyPlan(
         learner_id=use_learner_id,
         status="active",
@@ -981,27 +1012,11 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     db.add(plan)
     await db.flush()
     await _create_plan_version(db=db, plan=plan, reason="onboarding_initial_plan")
+    
     week_tasks = _default_week_tasks(learner_id=use_learner_id, chapter=week_1.chapter, week_number=1)
     for task in week_tasks:
         db.add(task)
-    for ch_num in range(1, 15):
-        ch_name = f"Chapter {ch_num}"
-        existing = (
-            await db.execute(
-                select(ChapterProgression).where(
-                    ChapterProgression.learner_id == use_learner_id,
-                    ChapterProgression.chapter == ch_name,
-                )
-            )
-        ).scalar_one_or_none()
-        if not existing:
-            db.add(
-                ChapterProgression(
-                    learner_id=use_learner_id,
-                    chapter=ch_name,
-                    status="not_started" if ch_num > 1 else "in_progress",
-                )
-            )
+        
     db.add(
         WeeklyForecast(
             learner_id=use_learner_id,
@@ -1013,6 +1028,16 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
             pacing_status=_pacing_status(timeline_delta_weeks),
             reason="initial_onboarding_forecast",
         )
+    )
+    
+    await _update_profile_after_outcome(
+        db=db,
+        learner_id=use_learner_id,
+        profile=profile,
+        reason="onboarding_submit",
+        mastery_update=mastery,
+        engagement_minutes=payload.time_spent_minutes,
+        extra={"diagnostic_score": score, "math_9_percent": profile.math_9_percent},
     )
     await db.commit()
 

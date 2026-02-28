@@ -30,6 +30,7 @@ from app.models.entities import (
     LearnerProfile,
     LearnerProfileSnapshot,
     RevisionQueueItem,
+    SubsectionProgression,
     Task,
     TaskAttempt,
     WeeklyForecast,
@@ -105,6 +106,12 @@ class CompleteReadingRequest(BaseModel):
     learner_id: UUID
     task_id: UUID
     time_spent_seconds: int = Field(ge=0)
+
+
+class SubsectionContentRequest(BaseModel):
+    learner_id: UUID
+    chapter_number: int = Field(ge=1, le=14)
+    section_id: str  # e.g. "1.2", "3.3.1"
 
 
 class CompleteReadingResponse(BaseModel):
@@ -185,24 +192,26 @@ async def _get_plan(db: AsyncSession, learner_id: UUID) -> WeeklyPlan | None:
     )).scalars().first()
 
 
-async def _retrieve_chapter_chunks(db: AsyncSession, chapter_number: int, top_k: int = 5) -> list[str]:
-    """Retrieve embedded chunks for a specific chapter from pgvector."""
+async def _retrieve_chapter_chunks(db: AsyncSession, chapter_number: int, top_k: int = 5, section_id: str | None = None) -> list[str]:
+    """Retrieve embedded chunks for a specific chapter (or section) from pgvector."""
     try:
         stmt = (
             select(EmbeddingChunk)
             .where(EmbeddingChunk.chapter_number == chapter_number)
-            .limit(top_k * 3)
         )
+        if section_id is not None:
+            stmt = stmt.where(EmbeddingChunk.section_id == section_id)
+        stmt = stmt.limit(top_k * 3)
         rows = (await db.execute(stmt)).scalars().all()
         if not rows:
-            # Fallback: get any chunks
+            # Fallback: get any chunks for this chapter
             stmt = select(EmbeddingChunk).where(
                 EmbeddingChunk.chapter_number == chapter_number
             ).limit(top_k)
             rows = (await db.execute(stmt)).scalars().all()
         return [r.content for r in rows[:top_k]] if rows else []
     except Exception as exc:
-        logger.warning("Chunk retrieval failed for chapter %s: %s", chapter_number, exc)
+        logger.warning("Chunk retrieval failed for chapter %s section %s: %s", chapter_number, section_id, exc)
         return []
 
 
@@ -401,7 +410,7 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
 # 3. Submit test answers
 @router.post("/test/submit", response_model=SubmitTestResponse)
 async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Depends(get_db)):
-    """Score a chapter test, apply threshold, update profile and progression."""
+    """Score a chapter test, apply threshold, update profile and progression. Allows unlimited retakes."""
     test_data = _test_store.get(payload.test_id)
     if not test_data:
         raise HTTPException(status_code=404, detail="Test not found or expired.")
@@ -445,43 +454,56 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
     if score > cp.best_score:
         cp.best_score = score
 
-    # Decision logic
-    if passed:
-        cp.status = "completed"
-        decision = "chapter_completed"
-        message = f"Congratulations! You scored {correct}/{total} ({score*100:.0f}%). Chapter completed! ✅"
-    elif cp.attempt_count >= MAX_CHAPTER_ATTEMPTS:
-        cp.status = "completed"
-        cp.revision_queued = True
-        decision = "move_on_revision"
-        message = (
-            f"You scored {correct}/{total} ({score*100:.0f}%). "
-            f"After {cp.attempt_count} attempts, we're moving on. "
-            f"This chapter has been added to your revision queue for later review."
-        )
-        # Add to revision queue
-        existing_rev = (await db.execute(
-            select(RevisionQueueItem).where(
-                RevisionQueueItem.learner_id == payload.learner_id,
-                RevisionQueueItem.chapter == chapter,
+    # Decision logic — unlimited retakes allowed, status only changes on qualifying events
+    already_completed = cp.status.startswith("completed")
+
+    if not already_completed:
+        if passed:
+            if cp.attempt_count == 1:
+                cp.status = "completed_first_attempt"
+            else:
+                cp.status = "completed"
+            decision = "chapter_completed"
+            message = f"Congratulations! You scored {correct}/{total} ({score*100:.0f}%). Chapter completed! ✅"
+        elif cp.attempt_count >= MAX_CHAPTER_ATTEMPTS:
+            cp.status = "completed"
+            cp.revision_queued = True
+            decision = "move_on_revision"
+            message = (
+                f"You scored {correct}/{total} ({score*100:.0f}%). "
+                f"After {cp.attempt_count} attempts, we're moving on. "
+                f"This chapter has been added to your revision queue for later review."
             )
-        )).scalar_one_or_none()
-        if not existing_rev:
-            db.add(RevisionQueueItem(
-                learner_id=payload.learner_id,
-                chapter=chapter,
-                status="pending",
-                priority=2,
-                reason=f"Failed to reach {COMPLETION_THRESHOLD*100:.0f}% after {MAX_CHAPTER_ATTEMPTS} attempts",
-            ))
+            # Add to revision queue
+            existing_rev = (await db.execute(
+                select(RevisionQueueItem).where(
+                    RevisionQueueItem.learner_id == payload.learner_id,
+                    RevisionQueueItem.chapter == chapter,
+                )
+            )).scalar_one_or_none()
+            if not existing_rev:
+                db.add(RevisionQueueItem(
+                    learner_id=payload.learner_id,
+                    chapter=chapter,
+                    status="pending",
+                    priority=2,
+                    reason=f"Failed to reach {COMPLETION_THRESHOLD*100:.0f}% after {MAX_CHAPTER_ATTEMPTS} attempts",
+                ))
+        else:
+            cp.status = "in_progress"
+            remaining = MAX_CHAPTER_ATTEMPTS - cp.attempt_count
+            decision = "retry"
+            message = (
+                f"You scored {correct}/{total} ({score*100:.0f}%). "
+                f"You need {COMPLETION_THRESHOLD*100:.0f}% to pass. "
+                f"You have {remaining} more attempt(s). Let's try again with more practice!"
+            )
     else:
-        cp.status = "in_progress"
-        decision = "retry"
-        remaining = MAX_CHAPTER_ATTEMPTS - cp.attempt_count
+        # Already completed — this is a practice retake
+        decision = "practice_retake"
         message = (
-            f"You scored {correct}/{total} ({score*100:.0f}%). "
-            f"You need {COMPLETION_THRESHOLD*100:.0f}% to pass. "
-            f"You have {remaining} more attempt(s). Let's try again with more practice!"
+            f"Practice retake: {correct}/{total} ({score*100:.0f}%). "
+            f"Your best score remains {cp.best_score*100:.0f}%."
         )
 
     # Save assessment result
@@ -498,25 +520,34 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
     mastery[chapter] = max(mastery.get(chapter, 0.0), score)
     profile.concept_mastery = mastery
 
-    # Mark test task as done
-    test_task = (await db.execute(
-        select(Task).where(
-            Task.learner_id == payload.learner_id,
-            Task.chapter == chapter,
-            Task.task_type == "test",
-            Task.status != "completed",
-        ).order_by(desc(Task.created_at))
-    )).scalars().first()
-    if test_task:
-        test_task.status = "completed"
-        test_task.completed_at = datetime.now(timezone.utc)
-        db.add(TaskAttempt(
-            task_id=test_task.id,
-            learner_id=payload.learner_id,
-            proof_payload={"score": score, "correct": correct, "total": total, "test_id": payload.test_id},
-            accepted=passed or cp.attempt_count >= MAX_CHAPTER_ATTEMPTS,
-            reason=decision,
-        ))
+    # Mark test task as done (only on first qualifying completion)
+    if not already_completed and (passed or cp.attempt_count >= MAX_CHAPTER_ATTEMPTS):
+        test_task = (await db.execute(
+            select(Task).where(
+                Task.learner_id == payload.learner_id,
+                Task.chapter == chapter,
+                Task.task_type == "test",
+                Task.status != "completed",
+            ).order_by(desc(Task.created_at))
+        )).scalars().first()
+        if test_task:
+            test_task.status = "completed"
+            test_task.completed_at = datetime.now(timezone.utc)
+
+    # Always log attempt
+    db.add(TaskAttempt(
+        task_id=(await db.execute(
+            select(Task.id).where(
+                Task.learner_id == payload.learner_id,
+                Task.chapter == chapter,
+                Task.task_type == "test",
+            ).order_by(desc(Task.created_at))
+        )).scalar() or uuid4(),
+        learner_id=payload.learner_id,
+        proof_payload={"score": score, "correct": correct, "total": total, "test_id": payload.test_id, "attempt": cp.attempt_count},
+        accepted=passed or cp.attempt_count >= MAX_CHAPTER_ATTEMPTS,
+        reason=decision,
+    ))
 
     await db.commit()
 
@@ -524,7 +555,7 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
         await redis_client.delete(f"learning:dashboard:{payload.learner_id}")
     except Exception:
         pass
-    _test_store.pop(payload.test_id, None)
+    # NOTE: Do NOT pop from _test_store — allow retakes with same test_id
 
     return SubmitTestResponse(
         learner_id=str(payload.learner_id),
@@ -580,6 +611,273 @@ async def complete_reading(payload: CompleteReadingRequest, db: AsyncSession = D
         pass
     return CompleteReadingResponse(task_id=str(task.id), accepted=True, reason="Reading completed! ✅")
 
+
+# ── SUBSECTION ENDPOINTS ─────────────────────────────────────────────────────
+
+async def _ensure_subsection_rows(db: AsyncSession, learner_id: UUID, chapter_number: int):
+    """Lazily create SubsectionProgression rows for all non-Summary subsections of a chapter."""
+    ch_info = _chapter_info(chapter_number)
+    chapter_key = chapter_display_name(chapter_number)
+    subtopics = [s for s in ch_info.get("subtopics", []) if "Summary" not in s["title"]]
+
+    existing = (await db.execute(
+        select(SubsectionProgression.section_id).where(
+            SubsectionProgression.learner_id == learner_id,
+            SubsectionProgression.chapter == chapter_key,
+        )
+    )).scalars().all()
+    existing_ids = set(existing)
+
+    for s in subtopics:
+        if s["id"] not in existing_ids:
+            db.add(SubsectionProgression(
+                learner_id=learner_id,
+                chapter=chapter_key,
+                section_id=s["id"],
+                section_title=s["title"],
+                status="not_started",
+            ))
+    if subtopics and len(existing_ids) < len(subtopics):
+        await db.flush()
+
+
+@router.get("/chapter/{chapter_number}/sections/{learner_id}")
+async def get_chapter_sections(chapter_number: int, learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Return per-subsection progress for a chapter."""
+    await _ensure_subsection_rows(db, learner_id, chapter_number)
+    chapter_key = chapter_display_name(chapter_number)
+    ch_info = _chapter_info(chapter_number)
+
+    rows = (await db.execute(
+        select(SubsectionProgression).where(
+            SubsectionProgression.learner_id == learner_id,
+            SubsectionProgression.chapter == chapter_key,
+        )
+    )).scalars().all()
+
+    sections = []
+    for r in rows:
+        sections.append({
+            "section_id": r.section_id,
+            "section_title": r.section_title,
+            "status": r.status,
+            "best_score": round(r.best_score, 2),
+            "last_score": round(r.last_score, 2),
+            "attempt_count": r.attempt_count,
+            "reading_completed": r.reading_completed,
+            "mastery_band": _mastery_band(r.best_score),
+        })
+
+    return {
+        "chapter_number": chapter_number,
+        "chapter_key": chapter_key,
+        "chapter_title": ch_info["title"],
+        "sections": sections,
+    }
+
+
+@router.post("/content/section")
+async def get_section_content(payload: SubsectionContentRequest, db: AsyncSession = Depends(get_db)):
+    """Generate reading content for a specific subsection, grounded on section-level chunk."""
+    profile = await _get_profile(db, payload.learner_id)
+    ch_info = _chapter_info(payload.chapter_number)
+    chapter_name = ch_info["title"]
+
+    # Find section title
+    section_title = payload.section_id
+    for s in ch_info.get("subtopics", []):
+        if s["id"] == payload.section_id:
+            section_title = s["title"]
+            break
+
+    # Determine ability and tone
+    ability = profile.cognitive_depth or 0.5
+    chapter_key = chapter_display_name(payload.chapter_number)
+    mastery = (profile.concept_mastery or {}).get(chapter_key, 0.5)
+    combined_ability = (ability + mastery) / 2
+    tone_config = _tone_for_ability(combined_ability)
+
+    # Retrieve section-scoped NCERT chunks
+    chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5, section_id=payload.section_id)
+    context = "\n\n".join(chunks[:4]) if chunks else ""
+
+    if not context:
+        # Try chapter-level fallback
+        chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5)
+        context = "\n\n".join(chunks[:4]) if chunks else ""
+
+    if not context:
+        return {
+            "chapter_number": payload.chapter_number,
+            "section_id": payload.section_id,
+            "section_title": section_title,
+            "content": (
+                f"# {section_title}\n\n"
+                f"**Note:** NCERT content for section {payload.section_id} is not yet embedded. "
+                f"Please refer to the NCERT textbook for Chapter {payload.chapter_number}."
+            ),
+            "source": "fallback",
+            "tone": tone_config["tone"],
+        }
+
+    prompt = (
+        f"You are a friendly math tutor teaching a Class 10 CBSE student.\n"
+        f"Generate a clear, well-structured reading lesson for:\n\n"
+        f"Chapter: {chapter_name}\n"
+        f"Section: {payload.section_id} - {section_title}\n\n"
+        f"Tone: {tone_config['tone']}\n"
+        f"Pace: {tone_config['pace']}\n"
+        f"Depth: {tone_config['depth']}\n"
+        f"Include {tone_config['examples']} solved examples.\n\n"
+        f"Use ONLY the following NCERT curriculum content as your source. "
+        f"Do not add any information outside of this:\n\n"
+        f"{context}\n\n"
+        f"Format the output in clean Markdown with headers, bullet points, "
+        f"and LaTeX math notation using \\\\( \\\\) for inline math.\n"
+        f"Keep the language appropriate for a 15-16 year old student.\n"
+    )
+
+    try:
+        provider = get_llm_provider(role="content_generator")
+        llm_text, _ = await provider.generate(prompt)
+        if llm_text and len(llm_text.strip()) > 50:
+            # Mark reading done for this subsection
+            await _ensure_subsection_rows(db, payload.learner_id, payload.chapter_number)
+            sp = (await db.execute(
+                select(SubsectionProgression).where(
+                    SubsectionProgression.learner_id == payload.learner_id,
+                    SubsectionProgression.chapter == chapter_key,
+                    SubsectionProgression.section_id == payload.section_id,
+                )
+            )).scalar_one_or_none()
+            if sp and not sp.reading_completed:
+                sp.reading_completed = True
+                if sp.status == "not_started":
+                    sp.status = "reading_done"
+                await db.commit()
+
+            return {
+                "chapter_number": payload.chapter_number,
+                "section_id": payload.section_id,
+                "section_title": section_title,
+                "content": llm_text.strip(),
+                "source": "llm",
+                "tone": tone_config["tone"],
+            }
+    except Exception as exc:
+        logger.warning("LLM section content generation failed: %s", exc)
+
+    return {
+        "chapter_number": payload.chapter_number,
+        "section_id": payload.section_id,
+        "section_title": section_title,
+        "content": f"# {section_title}\n\n## Key Concepts\n\n{context}\n\n*Content sourced from NCERT textbook.*",
+        "source": "rag_only",
+        "tone": tone_config["tone"],
+    }
+
+
+@router.post("/test/section/generate")
+async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSession = Depends(get_db)):
+    """Generate MCQ test for a specific subsection."""
+    ch_info = _chapter_info(payload.chapter_number)
+    chapter_name = ch_info["title"]
+    chapter_key = chapter_display_name(payload.chapter_number)
+
+    section_title = payload.section_id
+    for s in ch_info.get("subtopics", []):
+        if s["id"] == payload.section_id:
+            section_title = s["title"]
+            break
+
+    # Retrieve section-scoped chunks
+    chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5, section_id=payload.section_id)
+    context = "\n\n".join(chunks[:4]) if chunks else ""
+
+    if not context:
+        chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5)
+        context = "\n\n".join(chunks[:4]) if chunks else ""
+
+    test_id = str(uuid4())[:12]
+    questions: list[TestQuestion] = []
+    answer_key: dict[str, int] = {}
+
+    if context:
+        prompt = (
+            f"You are a math test generator for Class 10 CBSE.\n"
+            f"Generate exactly 5 multiple-choice questions for:\n"
+            f"Chapter: {chapter_name}\n"
+            f"Section: {payload.section_id} - {section_title}\n\n"
+            f"Use ONLY the following NCERT content:\n{context}\n\n"
+            f"Format: Return a JSON array of 5 objects, each with:\n"
+            f'  {{"q": "question text", "options": ["A", "B", "C", "D"], "correct": 0}}\n'
+            f"where correct is 0-3 (index of correct option).\n"
+            f"Use \\\\( \\\\) for inline LaTeX math.\n"
+            f"Return ONLY the JSON array, no other text.\n"
+        )
+
+        try:
+            provider = get_llm_provider(role="content_generator")
+            llm_text, _ = await provider.generate(prompt)
+            if llm_text:
+                text = llm_text.strip()
+                start = text.find("[")
+                end = text.rfind("]") + 1
+                if start >= 0 and end > start:
+                    parsed = json.loads(text[start:end])
+                    for i, item in enumerate(parsed[:5]):
+                        qid = f"st_{test_id}_q{i+1}"
+                        options = item.get("options", ["A", "B", "C", "D"])
+                        correct_idx = int(item.get("correct", 0))
+                        if correct_idx < 0 or correct_idx >= len(options):
+                            correct_idx = 0
+                        questions.append(TestQuestion(
+                            question_id=qid,
+                            prompt=item.get("q", f"Question {i+1}"),
+                            options=options,
+                            chapter_number=payload.chapter_number,
+                        ))
+                        answer_key[qid] = correct_idx
+        except Exception as exc:
+            logger.warning("LLM section test generation failed: %s", exc)
+
+    # Fallback
+    if len(questions) < 3:
+        questions = []
+        answer_key = {}
+        for i in range(5):
+            qid = f"st_{test_id}_q{i+1}"
+            questions.append(TestQuestion(
+                question_id=qid,
+                prompt=f"Which concept is central to '{section_title}'?",
+                options=[
+                    f"Correct definition of {section_title}",
+                    f"Incorrect variant A",
+                    f"Incorrect variant B",
+                    f"Unrelated concept",
+                ],
+                chapter_number=payload.chapter_number,
+            ))
+            answer_key[qid] = 0
+
+    _test_store[test_id] = {
+        "learner_id": str(payload.learner_id),
+        "chapter_number": payload.chapter_number,
+        "chapter": chapter_key,
+        "section_id": payload.section_id,
+        "answer_key": answer_key,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    return {
+        "learner_id": str(payload.learner_id),
+        "chapter": chapter_key,
+        "section_id": payload.section_id,
+        "section_title": section_title,
+        "test_id": test_id,
+        "questions": [q.model_dump() for q in questions],
+        "time_limit_minutes": 10,
+    }
 
 # 5. Check if week is complete and advance
 @router.post("/week/advance", response_model=WeekCompleteResponse)
