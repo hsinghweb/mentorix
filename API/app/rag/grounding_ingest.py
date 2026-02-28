@@ -127,6 +127,21 @@ def _split_chunks(text: str, chunk_size: int, overlap: int) -> list[str]:
     return chunks
 
 
+def _infer_chunk_doc_type(base_doc_type: str, section_title: str, content: str) -> str:
+    """Tag chunk as example when solved-example cues are present."""
+    text = f"{section_title}\n{content}".lower()
+    example_cues = [
+        "example",
+        "solved example",
+        "exercise",
+        "let us solve",
+        "solution:",
+    ]
+    if any(cue in text for cue in example_cues):
+        return "example"
+    return base_doc_type
+
+
 def _split_by_sections(
     text: str, chapter_number: int | None, max_section_chars: int = 3000, sub_overlap: int = 200
 ) -> list[dict]:
@@ -461,10 +476,15 @@ async def run_grounding_ingestion(db: AsyncSession, force_rebuild: bool = False)
 
             await db.execute(delete(EmbeddingChunk).where(EmbeddingChunk.document_id == existing_doc.id))
             for idx, sec_chunk in enumerate(section_chunks):
+                chunk_doc_type = _infer_chunk_doc_type(
+                    doc.doc_type,
+                    sec_chunk.get("section_title", ""),
+                    sec_chunk["content"],
+                )
                 db.add(
                     EmbeddingChunk(
                         document_id=existing_doc.id,
-                        doc_type=doc.doc_type,
+                        doc_type=chunk_doc_type,
                         chapter_number=doc.chapter_number,
                         section_id=sec_chunk.get("section_id"),
                         chunk_index=idx,

@@ -23,6 +23,7 @@ from app.core.settings import settings
 from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name
 from app.memory.cache import redis_client
 from app.memory.database import get_db
+from app.agents.decision_logger import log_agent_decision
 from app.models.entities import (
     AgentDecision,
     AssessmentResult,
@@ -52,6 +53,7 @@ TIMELINE_MAX_WEEKS = 28
 class ContentRequest(BaseModel):
     learner_id: UUID
     chapter_number: int = Field(ge=1, le=14)
+    regenerate: bool = False
 
 
 class ContentResponse(BaseModel):
@@ -115,6 +117,13 @@ class SubsectionContentRequest(BaseModel):
     chapter_number: int = Field(ge=1, le=14)
     section_id: str  # e.g. "1.2", "3.3.1"
     regenerate: bool = False  # True = force LLM call, ignore cache
+
+
+class PracticeGenerateRequest(BaseModel):
+    learner_id: UUID
+    chapter_number: int = Field(ge=1, le=14)
+    section_id: str
+    regenerate: bool = False
 
 
 class CompleteReadingResponse(BaseModel):
@@ -228,6 +237,8 @@ _test_store: dict[str, dict] = {}
 @router.post("/content", response_model=ContentResponse)
 async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depends(get_db)):
     """Generate reading content for a chapter, adapted to student's ability."""
+    from app.memory.content_cache import get_cached_content, save_content_cache
+
     profile = await _get_profile(db, payload.learner_id)
     ch_info = _chapter_info(payload.chapter_number)
     chapter_name = ch_info["title"]
@@ -238,6 +249,19 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     mastery = (profile.concept_mastery or {}).get(chapter_display_name(payload.chapter_number), 0.5)
     combined_ability = (ability + mastery) / 2
     tone_config = _tone_for_ability(combined_ability)
+    cache_section_id = "__chapter__"
+
+    if not payload.regenerate:
+        cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
+        if cached and cached.get("content"):
+            return ContentResponse(
+                chapter_number=payload.chapter_number,
+                chapter_title=chapter_name,
+                content=str(cached["content"]),
+                source="cached",
+                tone=str(cached.get("tone") or tone_config["tone"]),
+                examples_count=tone_config["examples"],
+            )
 
     # Retrieve NCERT chunks
     chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=6)
@@ -284,6 +308,14 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
         provider = get_llm_provider(role="content_generator")
         llm_text, _ = await provider.generate(prompt)
         if llm_text and len(llm_text.strip()) > 50:
+            save_content_cache(
+                str(payload.learner_id),
+                payload.chapter_number,
+                cache_section_id,
+                chapter_name,
+                llm_text.strip(),
+                tone_config["tone"],
+            )
             return ContentResponse(
                 chapter_number=payload.chapter_number,
                 chapter_title=chapter_name,
@@ -315,11 +347,34 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
 @router.post("/test/generate", response_model=GenerateTestResponse)
 async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depends(get_db)):
     """Generate an MCQ test for a chapter using NCERT embeddings + LLM."""
+    from app.memory.content_cache import get_cached_test, save_test_cache
+
     plan = await _get_plan(db, payload.learner_id)
     week_number = plan.current_week if plan else 1
     ch_info = _chapter_info(payload.chapter_number)
     chapter_name = ch_info["title"]
     chapter_key = chapter_display_name(payload.chapter_number)
+    cache_section_id = "__chapter__"
+
+    if not payload.regenerate:
+        cached = get_cached_test(str(payload.learner_id), payload.chapter_number, cache_section_id)
+        if cached:
+            _test_store[cached["test_id"]] = {
+                "learner_id": str(payload.learner_id),
+                "chapter_number": payload.chapter_number,
+                "chapter": chapter_key,
+                "chapter_level": True,
+                "answer_key": cached["answer_key"],
+                "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
+            }
+            return GenerateTestResponse(
+                learner_id=str(payload.learner_id),
+                week_number=week_number,
+                chapter=chapter_key,
+                test_id=cached["test_id"],
+                questions=[TestQuestion(**q) for q in cached["questions"]],
+                time_limit_minutes=20,
+            )
 
     # Retrieve chunks for question generation
     chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5)
@@ -489,10 +544,25 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
         attempt_number = sp.attempt_count
         max_attempts = 999
     else:
+        final_task_week = None
+        if selected_task_id:
+            selected_task = (await db.execute(
+                select(Task).where(
+                    Task.id == selected_task_id,
+                    Task.learner_id == payload.learner_id,
+                )
+            )).scalar_one_or_none()
+            if selected_task:
+                final_task_week = int(selected_task.week_number)
+        if final_task_week is None:
+            plan = await _get_plan(db, payload.learner_id)
+            final_task_week = int(plan.current_week if plan else 1)
+
         pending_section_tasks = (await db.execute(
             select(func.count(Task.id)).where(
                 Task.learner_id == payload.learner_id,
                 Task.chapter == chapter,
+                Task.week_number == final_task_week,
                 Task.task_type.in_(["read", "test"]),
                 Task.proof_policy["section_id"].is_not(None),
                 Task.status != "completed",
@@ -622,6 +692,31 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
         accepted=accepted_attempt,
         reason=decision,
     ))
+    try:
+        await log_agent_decision(
+            db=db,
+            learner_id=payload.learner_id,
+            agent_name="evaluation",
+            decision_type=decision,
+            chapter=chapter,
+            section_id=section_id,
+            input_snapshot={
+                "test_id": payload.test_id,
+                "answers_count": len(payload.answers),
+                "chapter_level": chapter_level,
+            },
+            output_payload={
+                "score": score,
+                "correct": correct,
+                "total": total,
+                "passed": passed,
+                "attempt_number": attempt_number,
+            },
+            confidence=round(score, 4),
+            reasoning=message,
+        )
+    except Exception:
+        pass
 
     await db.commit()
 
@@ -1025,6 +1120,15 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         "answer_key": answer_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    save_test_cache(
+        str(payload.learner_id),
+        payload.chapter_number,
+        cache_section_id,
+        chapter_name,
+        test_id,
+        [q.model_dump() for q in questions],
+        answer_key,
+    )
 
     # Save to MongoDB cache
     questions_dicts = [q.model_dump() for q in questions]
@@ -1043,6 +1147,21 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         "time_limit_minutes": 10,
         "source": "llm",
     }
+
+
+@router.post("/practice/generate")
+async def generate_practice(payload: PracticeGenerateRequest, db: AsyncSession = Depends(get_db)):
+    """Generate practice set for a subsection (alias over section test generation)."""
+    section_payload = SubsectionContentRequest(
+        learner_id=payload.learner_id,
+        chapter_number=payload.chapter_number,
+        section_id=payload.section_id,
+        regenerate=payload.regenerate,
+    )
+    result = await generate_section_test(section_payload, db)
+    if isinstance(result, dict):
+        result["practice"] = True
+    return result
 
 # 5. Check if week is complete and advance
 @router.post("/week/advance", response_model=WeekCompleteResponse)
@@ -1224,6 +1343,32 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     ))
 
     await db.commit()
+    pace_reasoning = (
+        f"Week {current_week} complete; moved to week {new_week}. "
+        f"Forecast is {plan.total_weeks} weeks vs selected {selected}."
+    )
+    try:
+        await log_agent_decision(
+            db=db,
+            learner_id=learner_id,
+            agent_name="planner",
+            decision_type="pace_adjustment",
+            chapter=chapter_display_name(next_chapter_number) if next_chapter_number else None,
+            input_snapshot={
+                "current_week": current_week,
+                "new_week": new_week,
+                "selected_timeline_weeks": selected,
+            },
+            output_payload={
+                "total_weeks": plan.total_weeks,
+                "timeline_delta_weeks": plan.total_weeks - selected,
+                "pacing_status": "ahead" if plan.total_weeks < selected else ("behind" if plan.total_weeks > selected else "on_track"),
+            },
+            reasoning=pace_reasoning,
+        )
+        await db.commit()
+    except Exception:
+        pass
 
     message = f"Week {current_week} complete! "
     if next_chapter_number:
@@ -1357,6 +1502,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             "is_locked": t.is_locked,
             "section_id": policy.get("section_id"),
             "chapter_level": policy.get("chapter_level", False),
+            "scheduled_day": t.scheduled_day.isoformat() if t.scheduled_day else None,
         })
 
     # Revision queue
@@ -1415,6 +1561,42 @@ async def get_plan_history(learner_id: UUID, db: AsyncSession = Depends(get_db))
             }
             for v in versions
         ],
+    }
+
+
+@router.get("/plan-history/{learner_id}")
+async def get_plan_history_alias(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Alias endpoint for plan history."""
+    return await get_plan_history(learner_id, db)
+
+
+@router.get("/confidence-trend/{learner_id}")
+async def get_confidence_trend(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Return recent assessment trend for charting confidence over time."""
+    rows = (await db.execute(
+        select(AssessmentResult).where(
+            AssessmentResult.learner_id == learner_id
+        ).order_by(AssessmentResult.timestamp.asc()).limit(200)
+    )).scalars().all()
+    points = [
+        {
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "score": round(float(r.score or 0.0), 4),
+            "concept": r.concept,
+        }
+        for r in rows
+    ]
+    if not points:
+        return {"learner_id": str(learner_id), "points": [], "trend": "flat", "latest_score": 0.0}
+    latest = points[-1]["score"]
+    window = points[-5:]
+    avg = sum(p["score"] for p in window) / max(1, len(window))
+    trend = "up" if latest > avg + 0.02 else ("down" if latest < avg - 0.02 else "flat")
+    return {
+        "learner_id": str(learner_id),
+        "points": points,
+        "trend": trend,
+        "latest_score": round(latest, 4),
     }
 
 

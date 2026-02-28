@@ -18,13 +18,21 @@ class ContentGenerationAgent(BaseAgent):
     @staticmethod
     def _derive_policy(concept: str, input_data: dict) -> dict:
         profile = input_data.get("profile_snapshot", {}) if isinstance(input_data, dict) else {}
+        full_profile = input_data.get("student_profile", {}) if isinstance(input_data, dict) else {}
         mastery_map = profile.get("chapter_mastery") or profile.get("concept_mastery") or {}
+        if not mastery_map and isinstance(full_profile, dict):
+            mastery_map = full_profile.get("chapter_mastery") or full_profile.get("concept_mastery") or {}
         concept_score = 0.5
         if isinstance(mastery_map, dict):
             for key, value in mastery_map.items():
                 if str(key).lower().replace(" ", "_") == str(concept).lower().replace(" ", "_"):
                     concept_score = float(value)
                     break
+
+        if isinstance(full_profile, dict):
+            engagement = float(full_profile.get("engagement_score", 0.5) or 0.5)
+            cognitive_depth = float(full_profile.get("cognitive_depth", 0.5) or 0.5)
+            concept_score = max(0.0, min(1.0, (0.5 * concept_score) + (0.3 * cognitive_depth) + (0.2 * engagement)))
 
         if concept_score < 0.45:
             return {

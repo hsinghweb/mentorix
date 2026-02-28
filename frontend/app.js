@@ -456,9 +456,11 @@ function renderDashboard(data) {
 
   // Confidence
   renderConfidence(data.chapter_confidence);
+  renderConfidenceTrend(data.learner_id);
 
   // Plan
   renderPlan(data.rough_plan, data.current_week);
+  renderPlanHistory(data.learner_id);
 
   // Revision
   if (data.revision_queue && data.revision_queue.length > 0) {
@@ -467,9 +469,6 @@ function renderDashboard(data) {
   } else {
     hide($("section-revision"));
   }
-
-  // Daily Plan
-  renderDailyPlan(data.current_week_tasks);
 
   // Check if week is complete (all tasks done) → show advance button
   checkWeekComplete(data.current_week_tasks, data.learner_id);
@@ -497,6 +496,42 @@ function renderTasks(tasks, weekNumber) {
     return;
   }
 
+  const hasScheduledDay = tasks.some(t => !!t.scheduled_day);
+  if (hasScheduledDay) {
+    const grouped = {};
+    tasks.forEach(t => {
+      const key = t.scheduled_day
+        ? new Date(t.scheduled_day).toLocaleDateString(undefined, { weekday: "short" })
+        : "Unscheduled";
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(t);
+    });
+    container.innerHTML = Object.entries(grouped).map(([day, dayTasks]) => `
+      <div style="margin-bottom:14px">
+        <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
+        ${dayTasks.map(t => {
+          const isChapterLevel = t.chapter_level;
+          const icon = t.task_type === "read" ? "📖" : (isChapterLevel ? "📋" : "📝");
+          const statusCls = t.status;
+          const statusLabel = t.status.replace(/_/g, " ");
+          const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+          const chapterLevelAttr = isChapterLevel ? 'data-chapter-level="true"' : "";
+          return `
+            <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} ${chapterLevelAttr} style="cursor:pointer;margin-bottom:8px">
+              <div class="task-icon">${icon}</div>
+              <div class="task-info">
+                <div class="task-title">${t.title}</div>
+                <div class="task-meta">${t.chapter} • ${t.task_type.toUpperCase()}${t.section_id ? " • §" + t.section_id : isChapterLevel ? " • FINAL" : ""}</div>
+              </div>
+              <div class="task-status-badge ${statusCls}">${statusLabel}</div>
+            </div>`;
+        }).join("")}
+      </div>
+    `).join("");
+    bindTaskCardClicks(container);
+    return;
+  }
+
   container.innerHTML = tasks.map(t => {
     const isChapterLevel = t.chapter_level;
     const icon = t.task_type === "read" ? "📖" : (isChapterLevel ? "📋" : "📝");
@@ -516,6 +551,10 @@ function renderTasks(tasks, weekNumber) {
         `;
   }).join("");
 
+  bindTaskCardClicks(container);
+}
+
+function bindTaskCardClicks(container) {
   // Bind task clicks — route section tasks to section functions
   container.querySelectorAll(".task-card").forEach(card => {
     card.addEventListener("click", () => {
@@ -718,12 +757,23 @@ async function openReading(chapterNumber, taskId) {
   try {
     const content = await api("/learning/content", {
       method: "POST",
-      body: { learner_id: getLearnerId(), chapter_number: chapterNumber },
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, regenerate: false },
     });
 
-    $("reading-chapter-title").textContent = `📖 ${content.chapter_title}`;
+    const sourceBadge = content.source === "cached"
+      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
+      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
+    $("reading-chapter-title").innerHTML = `📖 ${content.chapter_title} ${sourceBadge}`;
     $("reading-content").innerHTML = mdToHtml(content.content);
     renderKaTeX($("reading-content"));
+    if (readingSeconds >= 180) {
+      $("reading-status").className = "reading-status complete";
+      $("reading-status").innerHTML = `
+        ✅ Reading complete
+        <button onclick="openReading(${chapterNumber}, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Reload</button>
+        <button onclick="regenerateChapterReading(${chapterNumber}, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--info);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">✨ Regenerate</button>
+      `;
+    }
   } catch (err) {
     $("reading-content").innerHTML = `<p style="color:var(--danger)">Error loading content: ${err.message}</p>`;
   }
@@ -754,19 +804,19 @@ function backToDashboard() {
 
 
 // ── CHAPTER TEST ────────────────────────────────────────────────────────────
-async function openTest(chapterNumber, taskId = null) {
+async function openTest(chapterNumber, taskId = null, regenerate = false) {
   showScreen("test");
   testSeconds = 1200;
 
-  $("test-chapter-title").textContent = "Loading test...";
-  $("chapter-test-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating test questions...</p></div>`;
+  $("test-chapter-title").textContent = regenerate ? "Regenerating test..." : "Loading test...";
+  $("chapter-test-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>${regenerate ? "Generating new test questions..." : "Generating test questions..."}</p></div>`;
   $("btn-submit-chapter-test").disabled = true;
   hide($("test-result-feedback"));
 
   try {
     const testResp = await api("/learning/test/generate", {
       method: "POST",
-      body: { learner_id: getLearnerId(), chapter_number: chapterNumber },
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, regenerate },
     });
 
     currentTestData = {
@@ -775,9 +825,13 @@ async function openTest(chapterNumber, taskId = null) {
       chapter: testResp.chapter,
       chapter_number: chapterNumber,
       task_id: taskId,
+      regenerate,
     };
 
-    $("test-chapter-title").textContent = `📝 Test: ${testResp.chapter}`;
+    const sourceBadge = regenerate
+      ? `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">🔄 REGENERATED</span>`
+      : "";
+    $("test-chapter-title").innerHTML = `📝 Test: ${testResp.chapter} ${sourceBadge}`;
     renderChapterTestQuestions(testResp.questions);
     startChapterTestTimer();
   } catch (err) {
@@ -878,12 +932,16 @@ async function handleSubmitChapterTest() {
     feedbackEl.className = `test-feedback ${cls}`;
     const retakeAction = currentTestData.section_id
       ? `openSectionTest(${currentTestData.chapter_number}, '${currentTestData.section_id}', false, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"})`
-      : `openTest(${currentTestData.chapter_number}, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"})`;
+      : `openTest(${currentTestData.chapter_number}, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"}, false)`;
+    const regenerateAction = currentTestData.section_id
+      ? `openSectionTest(${currentTestData.chapter_number}, '${currentTestData.section_id}', true, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"})`
+      : `openTest(${currentTestData.chapter_number}, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"}, true)`;
     feedbackEl.innerHTML = `
             <h3>${result.score >= 0.6 ? "🎉" : "💪"} Score: ${result.correct}/${result.total} (${(result.score * 100).toFixed(0)}%)</h3>
             <p>${result.message}</p>
             <div style="margin-top:14px; display:flex; gap:10px; justify-content:center;">
                 <button class="btn btn-primary" onclick="${retakeAction}">🔄 Retake Test</button>
+                <button class="btn btn-outline" onclick="${regenerateAction}">✨ Regenerate</button>
                 <button class="btn btn-secondary" onclick="backToDashboard()">← Dashboard</button>
             </div>
         `;
@@ -1065,6 +1123,36 @@ function renderDailyPlan(tasks) {
   const container = $("daily-plan-content");
   if (!container) return;
 
+  const withSchedule = (tasks || []).filter(t => t.scheduled_day && (t.status === "pending" || t.status === "in_progress"));
+  if (withSchedule.length > 0) {
+    const grouped = {};
+    withSchedule.forEach(t => {
+      const d = new Date(t.scheduled_day);
+      const day = isNaN(d.getTime()) ? "Planned" : d.toLocaleDateString(undefined, { weekday: "short" });
+      if (!grouped[day]) grouped[day] = [];
+      grouped[day].push(t);
+    });
+    container.innerHTML = Object.entries(grouped).map(([day, dayTasks]) => `
+      <div style="margin-bottom:14px">
+        <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
+        ${dayTasks.map(t => {
+        const icon = t.task_type === "read" ? "📖" : (t.chapter_level ? "📋" : "📝");
+        const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+        return `
+          <div class="task-card pending" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} style="cursor:pointer;border-left:3px solid var(--accent);margin-bottom:8px">
+            <div class="task-icon">${icon}</div>
+            <div class="task-info">
+              <div class="task-title" style="font-size:0.85rem">${t.title}</div>
+              <div class="task-meta">${t.chapter}${t.section_id ? " • §" + t.section_id : ""}</div>
+            </div>
+          </div>`;
+      }).join("")}
+      </div>
+    `).join("");
+    bindDailyPlanTaskClicks(container);
+    return;
+  }
+
   const pending = (tasks || []).filter(t => t.status === "pending" || t.status === "in_progress");
   const todayTasks = pending.slice(0, 4);
 
@@ -1087,6 +1175,56 @@ function renderDailyPlan(tasks) {
     `;
   }).join("");
 
+  bindDailyPlanTaskClicks(container);
+}
+
+async function regenerateChapterReading(chapterNumber, taskId) {
+  showScreen("reading");
+  if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
+  readingTaskId = taskId;
+  readingChapterNumber = chapterNumber;
+  readingSeconds = 0;
+  $("reading-timer").textContent = "Time: 0:00";
+  $("reading-chapter-title").textContent = "Regenerating content...";
+  $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Regenerating fresh chapter content...</p></div>`;
+  try {
+    const content = await api("/learning/content", {
+      method: "POST",
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, regenerate: true },
+    });
+    $("reading-chapter-title").innerHTML = `📖 ${content.chapter_title} <span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">🔄 REGENERATED</span>`;
+    $("reading-content").innerHTML = mdToHtml(content.content);
+    renderKaTeX($("reading-content"));
+  } catch (err) {
+    $("reading-content").innerHTML = `<p style="color:var(--danger)">Error regenerating content: ${err.message}</p>`;
+  }
+}
+
+async function renderPlanHistory(learnerId) {
+  const el = $("plan-history-list");
+  if (!el) return;
+  try {
+    const data = await api(`/learning/plan-history/${learnerId}`);
+    const versions = (data.versions || []).slice(0, 6);
+    if (!versions.length) {
+      el.innerHTML = `<div style="color:var(--text-muted)">No plan history yet.</div>`;
+      return;
+    }
+    el.innerHTML = versions.map(v => `
+      <div class="revision-item">
+        <div class="revision-icon">🕒</div>
+        <div class="revision-info">
+          <div class="revision-chapter">Version ${v.version_number} • Week ${v.current_week}</div>
+          <div class="revision-reason">${v.reason || "plan_update"} • ${(v.created_at || "").replace("T", " ").slice(0, 19)}</div>
+        </div>
+      </div>
+    `).join("");
+  } catch (err) {
+    el.innerHTML = `<div style="color:var(--text-muted)">Plan history unavailable.</div>`;
+  }
+}
+
+function bindDailyPlanTaskClicks(container) {
   container.querySelectorAll(".task-card").forEach(card => {
     card.addEventListener("click", () => {
       const type = card.dataset.type;
@@ -1102,6 +1240,20 @@ function renderDailyPlan(tasks) {
       else if (type === "test") openTest(chNum, taskId);
     });
   });
+}
+
+async function renderConfidenceTrend(learnerId) {
+  const el = $("confidence-trend");
+  if (!el) return;
+  try {
+    const trend = await api(`/learning/confidence-trend/${learnerId}`);
+    const arrow = trend.trend === "up" ? "↗" : (trend.trend === "down" ? "↘" : "→");
+    const latest = ((trend.latest_score || 0) * 100).toFixed(0);
+    const n = (trend.points || []).length;
+    el.textContent = `${arrow} Confidence trend: ${trend.trend} • Latest ${latest}% • ${n} attempts tracked`;
+  } catch (err) {
+    el.textContent = "Confidence trend unavailable";
+  }
 }
 
 

@@ -123,7 +123,7 @@ class TestLearningFlow:
     def test_07_chapter_sections_progress(self, client, auth):
         token, learner_id = auth
         resp = client.get(
-            f"/learning/sections/1?learner_id={learner_id}",
+            f"/learning/chapter/1/sections/{learner_id}",
             headers=_headers(token),
         )
         assert resp.status_code == 200
@@ -132,11 +132,19 @@ class TestLearningFlow:
 
     def test_08_plan_history(self, client, auth):
         token, learner_id = auth
-        resp = client.get(f"/learning/plan/history/{learner_id}", headers=_headers(token))
+        resp = client.get(f"/learning/plan-history/{learner_id}", headers=_headers(token))
         assert resp.status_code == 200
         data = resp.json()
         assert "versions" in data
         assert isinstance(data["versions"], list)
+
+    def test_08b_confidence_trend(self, client, auth):
+        token, learner_id = auth
+        resp = client.get(f"/learning/confidence-trend/{learner_id}", headers=_headers(token))
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "points" in data
+        assert "trend" in data
 
     def test_09_decision_history(self, client, auth):
         token, learner_id = auth

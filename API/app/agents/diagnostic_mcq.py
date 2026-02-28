@@ -8,8 +8,10 @@ import json
 import logging
 import random
 from typing import TYPE_CHECKING
+from sqlalchemy import select
 from app.agents.base import BaseAgent
 from app.core.llm_provider import get_llm_provider
+from app.models.entities import QuestionBank
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +29,53 @@ class DiagnosticMCQAgent(BaseAgent):
         section_title = input_data.get("section_title", "General")
         chapter_title = input_data.get("chapter_title", f"Chapter {chapter_number}")
         difficulty = input_data.get("difficulty", 2)  # 1-5
+        math_9_percent = input_data.get("math_9_percent")
         count = input_data.get("count", 5)
         context = input_data.get("context", "")  # RAG chunks
+        db = input_data.get("db")
 
         questions = []
+
+        # Difficulty adaptation based on prior class 9 score.
+        if math_9_percent is not None:
+            try:
+                m9 = int(math_9_percent)
+                if m9 < 50:
+                    difficulty = max(1, min(difficulty, 2))
+                elif m9 > 75:
+                    difficulty = max(3, difficulty)
+            except Exception:
+                pass
+
+        # Reuse from persisted question bank first.
+        if db is not None:
+            try:
+                stmt = select(QuestionBank).where(
+                    QuestionBank.chapter_number == int(chapter_number),
+                    QuestionBank.difficulty == int(difficulty),
+                )
+                if section_id:
+                    stmt = stmt.where(QuestionBank.section_id == section_id)
+                rows = (await db.execute(stmt.limit(max(count, 1) * 3))).scalars().all()
+                for row in rows[:count]:
+                    options = list(row.options or [])
+                    if len(options) < 4:
+                        continue
+                    questions.append({
+                        "question_text": row.question_text,
+                        "options": options,
+                        "correct_index": int(row.correct_index or 0),
+                        "explanation": row.explanation or "",
+                        "difficulty": int(row.difficulty or difficulty),
+                        "chapter_number": int(row.chapter_number or chapter_number),
+                        "section_id": row.section_id,
+                        "source": "question_bank",
+                    })
+                    row.usage_count = int(row.usage_count or 0) + 1
+                if questions:
+                    await db.flush()
+            except Exception as exc:
+                logger.warning("QuestionBank lookup failed: %s", exc)
 
         if context:
             difficulty_label = {1: "easy", 2: "medium", 3: "moderate", 4: "hard", 5: "challenging"}.get(difficulty, "medium")
@@ -91,6 +136,30 @@ class DiagnosticMCQAgent(BaseAgent):
                     "section_id": section_id,
                     "source": "template",
                 })
+
+        # Persist newly generated questions for reuse.
+        if db is not None:
+            try:
+                for q in questions:
+                    if q.get("source") == "question_bank":
+                        continue
+                    db.add(
+                        QuestionBank(
+                            chapter_number=int(q.get("chapter_number", chapter_number)),
+                            section_id=q.get("section_id"),
+                            difficulty=int(q.get("difficulty", difficulty)),
+                            question_text=str(q.get("question_text", "")),
+                            options=list(q.get("options", [])),
+                            correct_index=int(q.get("correct_index", 0)),
+                            explanation=q.get("explanation"),
+                            source=q.get("source", "llm"),
+                            tags=[],
+                            usage_count=0,
+                        )
+                    )
+                await db.flush()
+            except Exception as exc:
+                logger.warning("QuestionBank persistence failed: %s", exc)
 
         return {
             "questions": questions,
