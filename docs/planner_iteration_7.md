@@ -220,6 +220,28 @@ All agent files except `content.py` (175 lines) are minimal stubs (13–22 lines
 - [x] All chapters start at 0% mastery and "beginner" band
 - [x] Diagnostic score feeds only `cognitive_depth` + `onboarding_diagnostic_score`
 
+### 7.5 Week Plan Parity with Subsection Flow [P0]
+
+> [!IMPORTANT]
+> Re-opened after UI review. Week 1 in onboarding still shows chapter-level tasks in some paths.
+> Week plan must match subsection-first delivery and existing cache behavior.
+
+- [x] Replace onboarding default week tasks with subsection-first generation:
+  - [x] For each subsection: `Read` + `Test`
+  - [x] For `Summary`: keep read (test policy controlled)
+  - [x] Add one final chapter-level test at the end
+- [x] Remove chapter-level `Practice worksheet` from default week plan
+- [x] Ensure onboarding submit + bootstrap `/onboarding/tasks` + `/onboarding/schedule` all use same subsection task factory
+- [x] Keep section content/test cache semantics unchanged (`cached` by default, regenerate only on explicit request)
+- [x] Define completion gating:
+  - [x] subsection complete via subsection read/test progression
+  - [x] chapter complete only after subsection flow + final chapter test threshold
+
+### 7.6 Chapter Popup Status-Only View [P1]
+- [x] Remove subsection `Read` and `Test` CTA buttons from chapter popup cards
+- [x] Keep only status/metrics per subsection (read state, score/mastery, attempts, level)
+- [x] Update helper copy to status-only wording (no "Click Read or Test")
+
 ---
 
 ## Implementation Order (Updated)

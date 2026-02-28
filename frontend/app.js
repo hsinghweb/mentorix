@@ -532,14 +532,14 @@ function renderTasks(tasks, weekNumber) {
       if (sectionId) {
         // Section-level task
         if (type === "read") {
-          openSectionReading(chNum, sectionId);
+          openSectionReading(chNum, sectionId, false, taskId);
         } else if (type === "test") {
-          openSectionTest(chNum, sectionId);
+          openSectionTest(chNum, sectionId, false, taskId);
         }
       } else if (type === "read") {
         openReading(chNum, taskId);
       } else if (type === "test") {
-        openTest(chNum);
+        openTest(chNum, taskId);
       }
     });
   });
@@ -754,7 +754,7 @@ function backToDashboard() {
 
 
 // ── CHAPTER TEST ────────────────────────────────────────────────────────────
-async function openTest(chapterNumber) {
+async function openTest(chapterNumber, taskId = null) {
   showScreen("test");
   testSeconds = 1200;
 
@@ -774,6 +774,7 @@ async function openTest(chapterNumber) {
       questions: testResp.questions,
       chapter: testResp.chapter,
       chapter_number: chapterNumber,
+      task_id: taskId,
     };
 
     $("test-chapter-title").textContent = `📝 Test: ${testResp.chapter}`;
@@ -862,6 +863,7 @@ async function handleSubmitChapterTest() {
         learner_id: getLearnerId(),
         test_id: currentTestData.test_id,
         answers: answers.filter(a => a.selected_index >= 0),
+        task_id: currentTestData.task_id || null,
       },
     });
 
@@ -874,11 +876,14 @@ async function handleSubmitChapterTest() {
     else if (result.decision === "move_on_revision") cls = "failed";
 
     feedbackEl.className = `test-feedback ${cls}`;
+    const retakeAction = currentTestData.section_id
+      ? `openSectionTest(${currentTestData.chapter_number}, '${currentTestData.section_id}', false, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"})`
+      : `openTest(${currentTestData.chapter_number}, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"})`;
     feedbackEl.innerHTML = `
             <h3>${result.score >= 0.6 ? "🎉" : "💪"} Score: ${result.correct}/${result.total} (${(result.score * 100).toFixed(0)}%)</h3>
             <p>${result.message}</p>
             <div style="margin-top:14px; display:flex; gap:10px; justify-content:center;">
-                <button class="btn btn-primary" onclick="openTest(${currentTestData.chapter_number})">🔄 Retake Test</button>
+                <button class="btn btn-primary" onclick="${retakeAction}">🔄 Retake Test</button>
                 <button class="btn btn-secondary" onclick="backToDashboard()">← Dashboard</button>
             </div>
         `;
@@ -927,10 +932,6 @@ async function openChapterDetail(chapterNumber) {
             <span style="color:var(--text-muted)">•</span>
             <span>Attempts: ${s.attempt_count}</span>
           </div>
-          <div style="display:flex;gap:8px">
-            <button onclick="openSectionReading(${chapterNumber}, '${s.section_id}')" style="padding:6px 14px;font-size:0.8rem;font-weight:600;background:linear-gradient(135deg,var(--accent),#5a4bd1);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-family:var(--font)">📖 Read</button>
-            <button onclick="openSectionTest(${chapterNumber}, '${s.section_id}')" style="padding:6px 14px;font-size:0.8rem;font-weight:600;background:var(--info);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-family:var(--font)">📝 Test</button>
-          </div>
         </div>
       `;
     }).join("");
@@ -939,7 +940,7 @@ async function openChapterDetail(chapterNumber) {
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);max-width:620px;width:92%;max-height:82vh;overflow-y:auto;padding:28px;position:relative;box-shadow:var(--shadow);">
         <button onclick="document.getElementById('chapter-detail-overlay').remove()" style="position:absolute;top:14px;right:18px;background:var(--bg-elevated);border:1px solid var(--border);width:32px;height:32px;border-radius:50%;font-size:1.1rem;cursor:pointer;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;font-family:var(--font)">&times;</button>
         <h3 style="margin-bottom:6px;color:var(--text-primary);font-size:1.25rem">📚 Ch ${chapterNumber}: ${data.chapter_title}</h3>
-        <p style="color:var(--text-muted);margin-bottom:20px;font-size:0.85rem">${sections.length} subsections • Click Read or Test for each</p>
+        <p style="color:var(--text-muted);margin-bottom:20px;font-size:0.85rem">${sections.length} subsections • Progress status overview</p>
         ${sectionsHtml}
       </div>
     `;
@@ -951,7 +952,7 @@ async function openChapterDetail(chapterNumber) {
   }
 }
 
-async function openSectionReading(chapterNumber, sectionId, regenerate = false) {
+async function openSectionReading(chapterNumber, sectionId, regenerate = false, taskId = null) {
   // Close detail overlay
   const overlay = document.getElementById("chapter-detail-overlay");
   if (overlay) overlay.remove();
@@ -959,17 +960,28 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false) 
   showScreen("reading");
   readingChapterNumber = chapterNumber;
   readingSeconds = 0;
-  readingTaskId = null;
+  readingTaskId = taskId;
 
   $("reading-chapter-title").textContent = regenerate ? "Regenerating section content..." : "Loading section content...";
   $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>${regenerate ? "Regenerating fresh content from NCERT..." : "Loading section reading material..."}</p></div>`;
   $("reading-status").className = "reading-status in-progress";
-  $("reading-status").textContent = "📖 Reading section content...";
+  $("reading-status").textContent = taskId ? "📖 Keep reading... (min 3 minutes)" : "📖 Reading section content...";
 
   $("reading-timer").textContent = "Time: 0:00";
+  let sectionTaskCompleted = false;
   readingTimer = setInterval(() => {
     readingSeconds++;
     $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
+    if (taskId && !sectionTaskCompleted && readingSeconds >= 180) {
+      sectionTaskCompleted = true;
+      completeReading();
+      $("reading-status").className = "reading-status complete";
+      $("reading-status").innerHTML = `
+        📖 Reading complete
+        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
+        <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
+      `;
+    }
   }, 1000);
 
   try {
@@ -986,19 +998,20 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false) 
     $("reading-content").innerHTML = mdToHtml(content.content);
     renderKaTeX($("reading-content"));
 
-    // Add Regenerate button
-    $("reading-status").className = "reading-status complete";
-    $("reading-status").innerHTML = `
-      📖 Reading complete
-      <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true)" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
-      <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
-    `;
+    if (!taskId) {
+      $("reading-status").className = "reading-status complete";
+      $("reading-status").innerHTML = `
+        📖 Reading complete
+        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
+        <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
+      `;
+    }
   } catch (err) {
     $("reading-content").innerHTML = `<p style="color:var(--danger)">Error loading section content: ${err.message}</p>`;
   }
 }
 
-async function openSectionTest(chapterNumber, sectionId, regenerate = false) {
+async function openSectionTest(chapterNumber, sectionId, regenerate = false, taskId = null) {
   // Close detail overlay
   const overlay = document.getElementById("chapter-detail-overlay");
   if (overlay) overlay.remove();
@@ -1023,6 +1036,7 @@ async function openSectionTest(chapterNumber, sectionId, regenerate = false) {
       chapter: testResp.chapter,
       chapter_number: chapterNumber,
       section_id: sectionId,
+      task_id: taskId,
     };
 
     const sourceBadge = testResp.source === "cached"
@@ -1078,13 +1092,14 @@ function renderDailyPlan(tasks) {
       const type = card.dataset.type;
       const chapter = card.dataset.chapter;
       const sectionId = card.dataset.sectionId;
+      const taskId = card.dataset.taskId;
       const match = chapter.match(/Chapter (\d+)/);
       const chNum = match ? parseInt(match[1]) : 1;
       if (sectionId) {
-        if (type === "read") openSectionReading(chNum, sectionId);
-        else if (type === "test") openSectionTest(chNum, sectionId);
+        if (type === "read") openSectionReading(chNum, sectionId, false, taskId);
+        else if (type === "test") openSectionTest(chNum, sectionId, false, taskId);
       } else if (type === "read") openReading(chNum, card.dataset.taskId);
-      else if (type === "test") openTest(chNum);
+      else if (type === "test") openTest(chNum, taskId);
     });
   });
 }

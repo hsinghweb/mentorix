@@ -88,6 +88,7 @@ class SubmitTestRequest(BaseModel):
     learner_id: UUID
     test_id: str
     answers: list[TestAnswer]
+    task_id: UUID | None = None
 
 
 class SubmitTestResponse(BaseModel):
@@ -395,6 +396,7 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
         "learner_id": str(payload.learner_id),
         "chapter_number": payload.chapter_number,
         "chapter": chapter_key,
+        "chapter_level": True,
         "answer_key": answer_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -412,15 +414,17 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
 # 3. Submit test answers
 @router.post("/test/submit", response_model=SubmitTestResponse)
 async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Depends(get_db)):
-    """Score a chapter test, apply threshold, update profile and progression. Allows unlimited retakes."""
+    """Score section/chapter tests, enforce subsection-first gating, and update progression."""
     test_data = _test_store.get(payload.test_id)
     if not test_data:
         raise HTTPException(status_code=404, detail="Test not found or expired.")
 
     answer_key = test_data["answer_key"]
     chapter = test_data["chapter"]
+    section_id = test_data.get("section_id")
+    chapter_level = bool(test_data.get("chapter_level", False))
+    chapter_number = int(test_data.get("chapter_number") or 1)
 
-    # Score
     correct = 0
     total = len(answer_key)
     for ans in payload.answers:
@@ -430,124 +434,192 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
 
     score = correct / max(total, 1)
     passed = score >= COMPLETION_THRESHOLD
+    selected_task_id = payload.task_id
+    attempt_number = 1
+    max_attempts = MAX_CHAPTER_ATTEMPTS
+    accepted_attempt = passed
 
-    # Get or create chapter progression
-    cp = (await db.execute(
-        select(ChapterProgression).where(
-            ChapterProgression.learner_id == payload.learner_id,
-            ChapterProgression.chapter == chapter,
-        )
-    )).scalar_one_or_none()
+    if section_id and not chapter_level:
+        chapter_key = chapter_display_name(chapter_number)
+        await _ensure_subsection_rows(db, payload.learner_id, chapter_number)
+        sp = (await db.execute(
+            select(SubsectionProgression).where(
+                SubsectionProgression.learner_id == payload.learner_id,
+                SubsectionProgression.chapter == chapter_key,
+                SubsectionProgression.section_id == section_id,
+            )
+        )).scalar_one_or_none()
+        if not sp:
+            raise HTTPException(status_code=404, detail="Subsection progression not found.")
 
-    if not cp:
-        cp = ChapterProgression(
-            learner_id=payload.learner_id,
-            chapter=chapter,
-            attempt_count=0,
-            best_score=0.0,
-            last_score=0.0,
-            status="not_started",
-        )
-        db.add(cp)
-        await db.flush()
+        sp.attempt_count += 1
+        sp.last_score = score
+        if score > sp.best_score:
+            sp.best_score = score
 
-    cp.attempt_count += 1
-    cp.last_score = score
-    if score > cp.best_score:
-        cp.best_score = score
-
-    # Decision logic — unlimited retakes allowed, status only changes on qualifying events
-    already_completed = cp.status.startswith("completed")
-
-    if not already_completed:
         if passed:
-            if cp.attempt_count == 1:
-                cp.status = "completed_first_attempt"
-            else:
-                cp.status = "completed"
-            decision = "chapter_completed"
-            message = f"Congratulations! You scored {correct}/{total} ({score*100:.0f}%). Chapter completed! ✅"
-        elif cp.attempt_count >= MAX_CHAPTER_ATTEMPTS:
-            cp.status = "completed"
-            cp.revision_queued = True
-            decision = "move_on_revision"
+            sp.status = "completed" if sp.reading_completed else "test_done"
+            decision = "section_completed"
             message = (
-                f"You scored {correct}/{total} ({score*100:.0f}%). "
-                f"After {cp.attempt_count} attempts, we're moving on. "
-                f"This chapter has been added to your revision queue for later review."
+                f"Section {section_id} passed: {correct}/{total} ({score*100:.0f}%). "
+                f"{'Subsection complete.' if sp.reading_completed else 'Complete reading to finish this subsection.'}"
             )
-            # Add to revision queue
-            existing_rev = (await db.execute(
-                select(RevisionQueueItem).where(
-                    RevisionQueueItem.learner_id == payload.learner_id,
-                    RevisionQueueItem.chapter == chapter,
-                )
-            )).scalar_one_or_none()
-            if not existing_rev:
-                db.add(RevisionQueueItem(
-                    learner_id=payload.learner_id,
-                    chapter=chapter,
-                    status="pending",
-                    priority=2,
-                    reason=f"Failed to reach {COMPLETION_THRESHOLD*100:.0f}% after {MAX_CHAPTER_ATTEMPTS} attempts",
-                ))
+            if not selected_task_id:
+                selected_task_id = (await db.execute(
+                    select(Task.id).where(
+                        Task.learner_id == payload.learner_id,
+                        Task.chapter == chapter,
+                        Task.task_type == "test",
+                        Task.status != "completed",
+                        Task.proof_policy["section_id"].as_string() == section_id,
+                    ).order_by(Task.sort_order.asc(), Task.created_at.asc())
+                )).scalar_one_or_none()
+            if selected_task_id:
+                task = (await db.execute(select(Task).where(Task.id == selected_task_id))).scalar_one_or_none()
+                if task and task.status != "completed":
+                    task.status = "completed"
+                    task.completed_at = datetime.now(timezone.utc)
         else:
-            cp.status = "in_progress"
-            remaining = MAX_CHAPTER_ATTEMPTS - cp.attempt_count
-            decision = "retry"
+            sp.status = "reading_done" if sp.reading_completed else "in_progress"
+            decision = "section_retry"
             message = (
-                f"You scored {correct}/{total} ({score*100:.0f}%). "
-                f"You need {COMPLETION_THRESHOLD*100:.0f}% to pass. "
-                f"You have {remaining} more attempt(s). Let's try again with more practice!"
+                f"Section {section_id}: {correct}/{total} ({score*100:.0f}%). "
+                f"Retry this subsection test to reach {COMPLETION_THRESHOLD*100:.0f}%."
             )
+        attempt_number = sp.attempt_count
+        max_attempts = 999
     else:
-        # Already completed — this is a practice retake
-        decision = "practice_retake"
-        message = (
-            f"Practice retake: {correct}/{total} ({score*100:.0f}%). "
-            f"Your best score remains {cp.best_score*100:.0f}%."
-        )
+        pending_section_tasks = (await db.execute(
+            select(func.count(Task.id)).where(
+                Task.learner_id == payload.learner_id,
+                Task.chapter == chapter,
+                Task.task_type.in_(["read", "test"]),
+                Task.proof_policy["section_id"].is_not(None),
+                Task.status != "completed",
+            )
+        )).scalar_one()
+        if int(pending_section_tasks or 0) > 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Complete all subsection read/test tasks before attempting final chapter test.",
+            )
 
-    # Save assessment result
+        cp = (await db.execute(
+            select(ChapterProgression).where(
+                ChapterProgression.learner_id == payload.learner_id,
+                ChapterProgression.chapter == chapter,
+            )
+        )).scalar_one_or_none()
+        if not cp:
+            cp = ChapterProgression(
+                learner_id=payload.learner_id,
+                chapter=chapter,
+                attempt_count=0,
+                best_score=0.0,
+                last_score=0.0,
+                status="not_started",
+            )
+            db.add(cp)
+            await db.flush()
+
+        cp.attempt_count += 1
+        cp.last_score = score
+        if score > cp.best_score:
+            cp.best_score = score
+        already_completed = cp.status.startswith("completed")
+
+        if not already_completed:
+            if passed:
+                cp.status = "completed_first_attempt" if cp.attempt_count == 1 else "completed"
+                decision = "chapter_completed"
+                message = f"Congratulations! You scored {correct}/{total} ({score*100:.0f}%). Chapter completed!"
+            elif cp.attempt_count >= MAX_CHAPTER_ATTEMPTS:
+                cp.status = "completed"
+                cp.revision_queued = True
+                decision = "move_on_revision"
+                message = (
+                    f"You scored {correct}/{total} ({score*100:.0f}%). "
+                    f"After {cp.attempt_count} attempts, we are moving on and queuing revision."
+                )
+                existing_rev = (await db.execute(
+                    select(RevisionQueueItem).where(
+                        RevisionQueueItem.learner_id == payload.learner_id,
+                        RevisionQueueItem.chapter == chapter,
+                    )
+                )).scalar_one_or_none()
+                if not existing_rev:
+                    db.add(RevisionQueueItem(
+                        learner_id=payload.learner_id,
+                        chapter=chapter,
+                        status="pending",
+                        priority=2,
+                        reason=f"Failed to reach {COMPLETION_THRESHOLD*100:.0f}% after {MAX_CHAPTER_ATTEMPTS} attempts",
+                    ))
+            else:
+                cp.status = "in_progress"
+                remaining = MAX_CHAPTER_ATTEMPTS - cp.attempt_count
+                decision = "retry"
+                message = (
+                    f"You scored {correct}/{total} ({score*100:.0f}%). "
+                    f"You need {COMPLETION_THRESHOLD*100:.0f}% to pass. {remaining} attempt(s) left."
+                )
+        else:
+            decision = "practice_retake"
+            message = f"Practice retake: {correct}/{total} ({score*100:.0f}%). Best {cp.best_score*100:.0f}%."
+
+        attempt_number = cp.attempt_count
+        accepted_attempt = passed or cp.attempt_count >= MAX_CHAPTER_ATTEMPTS
+        if not selected_task_id:
+            selected_task_id = (await db.execute(
+                select(Task.id).where(
+                    Task.learner_id == payload.learner_id,
+                    Task.chapter == chapter,
+                    Task.task_type == "test",
+                    Task.proof_policy["chapter_level"].as_boolean() == True,
+                ).order_by(Task.sort_order.asc(), Task.created_at.asc())
+            )).scalar_one_or_none()
+        if not already_completed and accepted_attempt and selected_task_id:
+            task = (await db.execute(select(Task).where(Task.id == selected_task_id))).scalar_one_or_none()
+            if task and task.status != "completed":
+                task.status = "completed"
+                task.completed_at = datetime.now(timezone.utc)
+
     db.add(AssessmentResult(
         learner_id=payload.learner_id,
-        concept=chapter,
+        concept=f"{chapter}:{section_id}" if section_id and not chapter_level else chapter,
         score=score,
         error_type="none" if passed else "below_threshold",
     ))
 
-    # Update profile mastery
     profile = await _get_profile(db, payload.learner_id)
     mastery = dict(profile.concept_mastery or {})
     mastery[chapter] = max(mastery.get(chapter, 0.0), score)
     profile.concept_mastery = mastery
 
-    # Mark test task as done (only on first qualifying completion)
-    if not already_completed and (passed or cp.attempt_count >= MAX_CHAPTER_ATTEMPTS):
-        test_task = (await db.execute(
-            select(Task).where(
-                Task.learner_id == payload.learner_id,
-                Task.chapter == chapter,
-                Task.task_type == "test",
-                Task.status != "completed",
-            ).order_by(desc(Task.created_at))
-        )).scalars().first()
-        if test_task:
-            test_task.status = "completed"
-            test_task.completed_at = datetime.now(timezone.utc)
-
-    # Always log attempt
-    db.add(TaskAttempt(
-        task_id=(await db.execute(
+    if not selected_task_id:
+        selected_task_id = (await db.execute(
             select(Task.id).where(
                 Task.learner_id == payload.learner_id,
                 Task.chapter == chapter,
                 Task.task_type == "test",
             ).order_by(desc(Task.created_at))
-        )).scalar() or uuid4(),
+        )).scalar_one_or_none()
+    if not selected_task_id:
+        raise HTTPException(status_code=404, detail="No matching test task found for this attempt.")
+
+    db.add(TaskAttempt(
+        task_id=selected_task_id,
         learner_id=payload.learner_id,
-        proof_payload={"score": score, "correct": correct, "total": total, "test_id": payload.test_id, "attempt": cp.attempt_count},
-        accepted=passed or cp.attempt_count >= MAX_CHAPTER_ATTEMPTS,
+        proof_payload={
+            "score": score,
+            "correct": correct,
+            "total": total,
+            "test_id": payload.test_id,
+            "attempt": attempt_number,
+            "section_id": section_id,
+            "chapter_level": chapter_level,
+        },
+        accepted=accepted_attempt,
         reason=decision,
     ))
 
@@ -557,7 +629,6 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
         await redis_client.delete(f"learning:dashboard:{payload.learner_id}")
     except Exception:
         pass
-    # NOTE: Do NOT pop from _test_store — allow retakes with same test_id
 
     return SubmitTestResponse(
         learner_id=str(payload.learner_id),
@@ -566,13 +637,11 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
         correct=correct,
         total=total,
         passed=passed,
-        attempt_number=cp.attempt_count,
-        max_attempts=MAX_CHAPTER_ATTEMPTS,
+        attempt_number=attempt_number,
+        max_attempts=max_attempts,
         decision=decision,
         message=message,
     )
-
-
 # 4. Complete reading task
 @router.post("/reading/complete", response_model=CompleteReadingResponse)
 async def complete_reading(payload: CompleteReadingRequest, db: AsyncSession = Depends(get_db)):
@@ -598,6 +667,26 @@ async def complete_reading(payload: CompleteReadingRequest, db: AsyncSession = D
 
     task.status = "completed"
     task.completed_at = datetime.now(timezone.utc)
+    section_id = (task.proof_policy or {}).get("section_id")
+    if section_id:
+        match = (task.chapter or "").split(" ")
+        chapter_number = int(match[-1]) if match and match[-1].isdigit() else None
+        if chapter_number:
+            await _ensure_subsection_rows(db, payload.learner_id, chapter_number)
+            sp = (await db.execute(
+                select(SubsectionProgression).where(
+                    SubsectionProgression.learner_id == payload.learner_id,
+                    SubsectionProgression.chapter == task.chapter,
+                    SubsectionProgression.section_id == section_id,
+                )
+            )).scalar_one_or_none()
+            if sp:
+                sp.reading_completed = True
+                if sp.status in ("not_started", "in_progress"):
+                    sp.status = "reading_done"
+                if sp.status == "test_done":
+                    sp.status = "completed"
+
     db.add(TaskAttempt(
         task_id=task.id,
         learner_id=payload.learner_id,
@@ -842,6 +931,7 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 "chapter_number": payload.chapter_number,
                 "chapter": chapter_key,
                 "section_id": payload.section_id,
+                "chapter_level": False,
                 "answer_key": cached["answer_key"],
                 "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
             }
@@ -931,6 +1021,7 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         "chapter_number": payload.chapter_number,
         "chapter": chapter_key,
         "section_id": payload.section_id,
+        "chapter_level": False,
         "answer_key": answer_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }

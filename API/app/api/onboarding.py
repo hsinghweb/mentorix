@@ -33,7 +33,7 @@ from app.models.entities import (
     WeeklyPlanVersion,
 )
 from app.agents.diagnostic_mcq import generate_diagnostic_mcq
-from app.data.syllabus_structure import get_syllabus_for_api
+from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name, get_syllabus_for_api
 from app.schemas.onboarding import (
     ChapterPlan,
     ChapterAdvanceRequest,
@@ -571,41 +571,67 @@ async def _upsert_revision_policy_state(db: AsyncSession, learner_id: UUID) -> R
 
 
 def _default_week_tasks(*, learner_id: UUID, chapter: str, week_number: int) -> list[Task]:
-    return [
+    match = re.search(r"(\d+)", chapter or "")
+    chapter_number = int(match.group(1)) if match else 1
+    ch_info = next((c for c in SYLLABUS_CHAPTERS if int(c["number"]) == chapter_number), None)
+    if not ch_info:
+        ch_info = {"number": chapter_number, "title": chapter, "subtopics": []}
+
+    chapter_label = chapter_display_name(chapter_number)
+    tasks: list[Task] = []
+    sort = 0
+
+    for st in ch_info.get("subtopics", []):
+        section_id = st.get("id")
+        section_title = st.get("title", "Section")
+        is_summary = section_title.lower().strip() == "summary"
+
+        sort += 1
+        tasks.append(
+            Task(
+                learner_id=learner_id,
+                week_number=week_number,
+                chapter=chapter_label,
+                task_type="read",
+                title=f"Read: {section_id} {section_title}",
+                sort_order=sort,
+                status="pending",
+                is_locked=True,
+                proof_policy={"min_reading_minutes": 3, "section_id": section_id},
+            )
+        )
+
+        if not is_summary:
+            sort += 1
+            tasks.append(
+                Task(
+                    learner_id=learner_id,
+                    week_number=week_number,
+                    chapter=chapter_label,
+                    task_type="test",
+                    title=f"Test: {section_id} {section_title}",
+                    sort_order=sort,
+                    status="pending",
+                    is_locked=True,
+                    proof_policy={"require_test_attempt_id": True, "section_id": section_id},
+                )
+            )
+
+    sort += 1
+    tasks.append(
         Task(
             learner_id=learner_id,
             week_number=week_number,
-            chapter=chapter,
-            task_type="read",
-            title=f"{chapter}: Read concept notes",
-            sort_order=1,
-            status="pending",
-            is_locked=True,
-            proof_policy={"min_reading_minutes": 8},
-        ),
-        Task(
-            learner_id=learner_id,
-            week_number=week_number,
-            chapter=chapter,
-            task_type="practice",
-            title=f"{chapter}: Practice worksheet",
-            sort_order=2,
-            status="pending",
-            is_locked=True,
-            proof_policy={"min_reading_minutes": 12},
-        ),
-        Task(
-            learner_id=learner_id,
-            week_number=week_number,
-            chapter=chapter,
+            chapter=chapter_label,
             task_type="test",
-            title=f"{chapter}: Weekly quiz attempt",
-            sort_order=3,
+            title=f"Chapter Test: {ch_info.get('title', chapter_label)}",
+            sort_order=sort,
             status="pending",
             is_locked=True,
-            proof_policy={"require_test_attempt_id": True},
-        ),
-    ]
+            proof_policy={"require_test_attempt_id": True, "chapter_level": True},
+        )
+    )
+    return tasks
 
 
 def _to_task_item(task: Task) -> TaskItem:
@@ -951,8 +977,6 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     await redis_client.delete(redis_key)
 
     # 1. Update Profile (including all 14 chapters in mastery)
-    from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name
-    
     mastery = {}
     for ch_data in SYLLABUS_CHAPTERS:
         ch_key = chapter_display_name(ch_data["number"])
