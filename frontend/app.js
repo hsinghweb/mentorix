@@ -12,16 +12,18 @@ function getStoredLearnerId() {
   return localStorage.getItem(LEARNER_ID_KEY) || "";
 }
 function setAuth(token, learnerId, apiBase) {
-  if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
-  if (learnerId) localStorage.setItem(LEARNER_ID_KEY, learnerId);
-  if (apiBase) localStorage.setItem(API_BASE_KEY, apiBase);
+  if (token) localStorage.setItem(AUTH_TOKEN_KEY, String(token));
+  if (learnerId != null && learnerId !== "") localStorage.setItem(LEARNER_ID_KEY, String(learnerId));
+  if (apiBase != null && String(apiBase).trim()) localStorage.setItem(API_BASE_KEY, String(apiBase).trim().replace(/\/+$/, ""));
 }
 function clearAuth() {
   localStorage.removeItem(AUTH_TOKEN_KEY);
   localStorage.removeItem(LEARNER_ID_KEY);
 }
 function getAuthBaseUrl() {
-  return (el("authApiBase") && el("authApiBase").value.trim().replace(/\/+$/, "")) || localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
+  const input = el("authApiBase");
+  const fromInput = input && input.value && String(input.value).trim().replace(/\/+$/, "");
+  return fromInput || localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
 }
 function showAuthGate() {
   if (el("auth-gate")) el("auth-gate").classList.remove("hidden");
@@ -31,11 +33,7 @@ function showApp() {
   if (el("auth-gate")) el("auth-gate").classList.add("hidden");
   if (el("app-main")) el("app-main").classList.remove("hidden");
   const lid = getStoredLearnerId();
-  const base = localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
-  if (el("learnerId")) el("learnerId").value = lid;
-  if (el("obLearnerId")) el("obLearnerId").textContent = lid;
-  if (el("apiBase")) el("apiBase").value = base;
-  if (el("obApiBase")) el("obApiBase").value = base;
+  if (lid) loadLandingOverview().catch(() => {});
 }
 function showAuthPanel(name) {
   ["auth-login", "auth-signup", "auth-diagnostic", "auth-result"].forEach((id) => {
@@ -45,9 +43,11 @@ function showAuthPanel(name) {
 }
 
 function logStatus(message, data) {
+  const statusEl = el("status");
+  if (!statusEl) return;
   const stamp = new Date().toLocaleTimeString();
   const suffix = data ? `\n${JSON.stringify(data, null, 2)}` : "";
-  el("status").textContent = `[${stamp}] ${message}${suffix}`;
+  statusEl.textContent = `[${stamp}] ${message}${suffix}`;
 }
 
 function newUuid() {
@@ -55,7 +55,8 @@ function newUuid() {
 }
 
 function getBaseUrl() {
-  return el("apiBase").value.trim().replace(/\/+$/, "");
+  const base = localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
+  return (typeof base === "string" ? base : "").trim().replace(/\/+$/, "") || "http://localhost:8000";
 }
 
 function getObBaseUrl() {
@@ -64,6 +65,189 @@ function getObBaseUrl() {
 
 function getAdminBaseUrl() {
   return (el("adminApiBase") && el("adminApiBase").value.trim().replace(/\/+$/, "")) || getBaseUrl();
+}
+
+async function loadLandingOverview() {
+  const learnerId = getStoredLearnerId();
+  if (!learnerId) return;
+  const base = getBaseUrl();
+  const rootCompletion = el("courseCompletionRoot");
+  const rootProfile = el("profileConfidenceRoot");
+  const rootSchedule = el("scheduleRoot");
+  function setError(where, msg) {
+    if (where) where.innerHTML = "<p class=\"muted\">" + (msg || "Could not load.") + "</p>";
+  }
+  try {
+    const [syllabusResp, standResp, scheduleResp] = await Promise.all([
+      fetch(`${base}/onboarding/syllabus`).then((r) => r.ok ? r.json() : { chapters: [] }),
+      fetch(`${base}/onboarding/where-i-stand/${learnerId}`).then((r) => r.json()),
+      fetch(`${base}/onboarding/schedule/${learnerId}`).then((r) => r.ok ? r.json() : null),
+    ]);
+    const syllabus = syllabusResp.chapters || [];
+    renderCourseCompletion(rootCompletion, syllabus, standResp);
+    renderProfileConfidence(rootProfile, syllabus, standResp);
+    renderSchedule(rootSchedule, scheduleResp);
+  } catch (err) {
+    setError(rootCompletion, "Could not load course completion.");
+    setError(rootProfile, "Could not load profile.");
+    setError(rootSchedule, "Could not load schedule.");
+  }
+}
+
+function renderCourseCompletion(root, syllabus, standData) {
+  if (!root) return;
+  const status = (standData && standData.chapter_status) || [];
+  const byChapter = {};
+  status.forEach((s) => {
+    const ch = s.chapter || s.name || "";
+    if (ch) byChapter[ch] = s;
+  });
+  if (!syllabus.length) {
+    root.innerHTML = "<p class=\"muted\">No syllabus data. Showing chapter list from profile.</p>";
+    const rows = [];
+    for (let i = 1; i <= 14; i += 1) {
+      const chName = "Chapter " + i;
+      const entry = byChapter[chName] || null;
+      const score = entry && typeof entry.score === "number" ? entry.score : null;
+      const completed = score !== null && score >= 0.7;
+      rows.push("<tr><td>" + chName + "</td><td>" + (completed ? "Completed" : "Not completed yet") + "</td></tr>");
+    }
+    root.innerHTML = "<table class=\"status-table\"><thead><tr><th>Chapter</th><th>Status</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>";
+    return;
+  }
+  const parts = syllabus.map((ch) => {
+    const chName = "Chapter " + ch.number;
+    const entry = byChapter[chName] || null;
+    const score = entry && typeof entry.score === "number" ? entry.score : null;
+    const completed = score !== null && score >= 0.7;
+    const statusLabel = completed ? "Completed" : "Not completed yet";
+    const subtopicsHtml = (ch.subtopics || []).map((st) => "<li class=\"subtopic\"><span class=\"subtopic-id\">" + escapeHtml(st.id) + "</span> " + escapeHtml(st.title) + " — <span class=\"subtopic-status\">" + (completed ? "Done" : "—") + "</span></li>").join("");
+    return "<div class=\"chapter-block\"><h3 class=\"chapter-title\">" + escapeHtml(chName) + " · " + escapeHtml(ch.title) + "</h3><p class=\"chapter-status\">" + statusLabel + "</p><ul class=\"subtopic-list\">" + subtopicsHtml + "</ul></div>";
+  });
+  root.innerHTML = parts.join("");
+}
+
+function renderProfileConfidence(root, syllabus, standData) {
+  if (!root) return;
+  const status = (standData && standData.chapter_status) || [];
+  const byChapter = {};
+  status.forEach((s) => {
+    const ch = s.chapter || s.name || "";
+    if (ch) byChapter[ch] = s;
+  });
+  const confidencePct = standData && typeof standData.confidence_score === "number" ? (standData.confidence_score * 100).toFixed(0) + "%" : "—";
+  let body = "<p class=\"profile-summary\">Overall confidence: <strong>" + confidencePct + "</strong></p>";
+  if (!syllabus.length) {
+    const rows = [];
+    for (let i = 1; i <= 14; i += 1) {
+      const chName = "Chapter " + i;
+      const entry = byChapter[chName] || null;
+      const perc = entry && typeof entry.score === "number" ? (entry.score * 100).toFixed(0) + "%" : "—";
+      const band = entry && entry.band ? entry.band : "Not started";
+      rows.push("<tr><td>" + chName + "</td><td>" + perc + "</td><td>" + escapeHtml(band) + "</td></tr>");
+    }
+    root.innerHTML = body + "<table class=\"status-table\"><thead><tr><th>Chapter</th><th>Accuracy</th><th>Level</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>";
+    return;
+  }
+  const parts = syllabus.map((ch) => {
+    const chName = "Chapter " + ch.number;
+    const entry = byChapter[chName] || null;
+    const perc = entry && typeof entry.score === "number" ? (entry.score * 100).toFixed(0) + "%" : "—";
+    const band = entry && entry.band ? entry.band : "Not started";
+    const subtopicsHtml = (ch.subtopics || []).map((st) => "<li class=\"subtopic\"><span class=\"subtopic-id\">" + escapeHtml(st.id) + "</span> " + escapeHtml(st.title) + " — <span class=\"subtopic-accuracy\">" + (entry ? perc : "—") + " / " + escapeHtml(band) + "</span></li>").join("");
+    return "<div class=\"chapter-block\"><h3 class=\"chapter-title\">" + escapeHtml(chName) + " · " + escapeHtml(ch.title) + "</h3><p class=\"chapter-accuracy\">Accuracy: " + perc + " · " + escapeHtml(band) + "</p><ul class=\"subtopic-list\">" + subtopicsHtml + "</ul></div>";
+  });
+  root.innerHTML = body + parts.join("");
+}
+
+function renderSchedule(root, scheduleData) {
+  if (!root) return;
+  if (!scheduleData || !scheduleData.weeks || !scheduleData.weeks.length) {
+    root.innerHTML = "<p class=\"muted\">No schedule data yet.</p>";
+    return;
+  }
+  const currentWeek = scheduleData.current_week;
+  const parts = scheduleData.weeks.map((w) => {
+    const isPast = w.is_past;
+    const isCurrent = w.is_current;
+    let badge = "";
+    if (isCurrent) badge = " <span class=\"week-badge current\">Current</span>";
+    else if (isPast) badge = " <span class=\"week-badge past\">Past</span>";
+    const taskRows = (w.tasks || []).map((t) => "<tr><td>" + escapeHtml(t.title || t.chapter || "Task") + "</td><td>" + escapeHtml(t.task_type || "—") + "</td><td>" + escapeHtml(t.chapter || "—") + "</td><td>" + escapeHtml(t.status || "pending") + "</td></tr>").join("");
+    const taskTable = taskRows ? "<table class=\"status-table week-tasks\"><thead><tr><th>Task</th><th>Type</th><th>Chapter</th><th>Status</th></tr></thead><tbody>" + taskRows + "</tbody></table>" : "<p class=\"muted\">No tasks for this week yet.</p>";
+    return "<div class=\"week-block" + (isCurrent ? " week-current" : "") + "\"><h3 class=\"week-title\">Week " + w.week_number + badge + "</h3><p class=\"week-meta\">" + escapeHtml(w.chapter || "—") + " · " + escapeHtml(w.focus || "") + "</p>" + taskTable + "</div>";
+  });
+  root.innerHTML = "<p class=\"muted\">Timeline: " + scheduleData.total_weeks + " weeks total. You are on week " + currentWeek + ".</p>" + parts.join("");
+}
+
+function escapeHtml(s) {
+  if (s == null) return "";
+  const t = document.createElement("textarea");
+  t.textContent = String(s);
+  return t.innerHTML;
+}
+
+function renderChapterStatusTable(data) {
+  const body = el("chapStatusTableBody");
+  if (!body) return;
+  const status = (data && data.chapter_status) || [];
+  const byChapter = {};
+  status.forEach((s) => {
+    const ch = s.chapter || s.name || "";
+    if (ch) byChapter[ch] = s;
+  });
+  const rows = [];
+  for (let i = 1; i <= 14; i += 1) {
+    const chName = "Chapter " + i;
+    const entry = byChapter[chName] || null;
+    const score = entry && typeof entry.score === "number" ? entry.score : null;
+    const completed = score !== null && score >= 0.7;
+    const label = completed ? "Completed" : "Not completed yet";
+    rows.push(`<tr><td>${chName}</td><td>${label}</td></tr>`);
+  }
+  body.innerHTML = rows.join("");
+}
+
+function renderChapterAccuracyTable(data) {
+  const body = el("chapAccuracyTableBody");
+  if (!body) return;
+  const status = (data && data.chapter_status) || [];
+  const byChapter = {};
+  status.forEach((s) => {
+    const ch = s.chapter || s.name || "";
+    if (ch) byChapter[ch] = s;
+  });
+  const rows = [];
+  for (let i = 1; i <= 14; i += 1) {
+    const chName = "Chapter " + i;
+    const entry = byChapter[chName] || null;
+    const rawScore = entry && typeof entry.score === "number" ? entry.score : null;
+    const perc = rawScore !== null ? (rawScore * 100).toFixed(0) + "%" : "—";
+    const band = entry && entry.band ? entry.band : "Not started";
+    rows.push(`<tr><td>${chName}</td><td>${perc}</td><td>${band}</td></tr>`);
+  }
+  body.innerHTML = rows.join("");
+}
+
+function renderCurrentWeekPlan(data) {
+  const body = el("currentWeekTasksBody");
+  const weekLabel = el("currentWeekLabel");
+  if (!body) return;
+  const tasks = (data && data.tasks) || [];
+  const week = data && data.week_number;
+  if (weekLabel) weekLabel.textContent = week != null ? String(week) : "-";
+  if (!tasks.length) {
+    body.innerHTML = "<tr><td colspan=\"4\">No tasks scheduled for this week yet.</td></tr>";
+    return;
+  }
+  const rows = tasks.map((t) => {
+    const title = t.title || t.chapter || "Task";
+    const type = t.task_type || "task";
+    const chapter = t.chapter || "—";
+    const status = t.status || "pending";
+    return `<tr><td>${title}</td><td>${type}</td><td>${chapter}</td><td>${status}</td></tr>`;
+  });
+  body.innerHTML = rows.join("");
 }
 
 async function apiCall(path, method = "GET", body = null) {
@@ -180,38 +364,58 @@ let _authSignupDraftId = null;
 let _authDiagnosticStartTime = null;
 let _authTimerInterval = null;
 
-document.querySelectorAll("#auth-tabs .tab").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const auth = btn.getAttribute("data-auth");
-    if (!auth) return;
-    document.querySelectorAll("#auth-tabs .tab").forEach((t) => t.classList.remove("active"));
-    btn.classList.add("active");
-    showAuthPanel(auth);
-    if (el("authLoginError")) el("authLoginError").classList.add("hidden");
-    if (el("authSignupError")) el("authSignupError").classList.add("hidden");
+function initAuthTabs() {
+  const tabs = document.querySelectorAll("#auth-tabs .tab");
+  tabs.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const auth = btn.getAttribute("data-auth");
+      if (!auth) return;
+      tabs.forEach((t) => t.classList.remove("active"));
+      btn.classList.add("active");
+      showAuthPanel(auth);
+      const loginErr = el("authLoginError");
+      const signupErr = el("authSignupError");
+      if (loginErr) { loginErr.classList.add("hidden"); loginErr.textContent = ""; }
+      if (signupErr) { signupErr.classList.add("hidden"); signupErr.textContent = ""; }
+    });
   });
-});
+}
 
 async function doLogin() {
-  const username = (el("loginUsername") && el("loginUsername").value.trim()) || "";
-  const password = (el("loginPassword") && el("loginPassword").value) || "";
+  const usernameInput = el("loginUsername");
+  const passwordInput = el("loginPassword");
+  const username = (usernameInput && usernameInput.value && String(usernameInput.value).trim()) || "";
+  const password = (passwordInput && passwordInput.value) || "";
   const base = getAuthBaseUrl();
+  const errEl = el("authLoginError");
+  const btnEl = el("loginBtn");
+
   if (!username || !password) {
-    if (el("authLoginError")) { el("authLoginError").textContent = "Username and password required."; el("authLoginError").classList.remove("hidden"); }
+    if (errEl) { errEl.textContent = "Please enter your username and password."; errEl.classList.remove("hidden"); }
     return;
   }
+  if (errEl) { errEl.classList.add("hidden"); errEl.textContent = ""; }
+  const originalLabel = btnEl ? btnEl.textContent : "Login";
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Signing in…"; }
   try {
     const resp = await fetch(`${base}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || resp.statusText);
-    setAuth(data.token, data.learner_id, base);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const msg = typeof data.detail === "string" ? data.detail : Array.isArray(data.detail) ? (data.detail[0] && data.detail[0].msg) || data.detail[0] : data.message || resp.statusText || "Login failed.";
+      throw new Error(msg);
+    }
+    const token = data.token;
+    const learnerId = data.learner_id != null ? String(data.learner_id) : "";
+    if (!token || !learnerId) throw new Error("Invalid response from server. Please try again.");
+    setAuth(token, learnerId, base);
     showApp();
   } catch (err) {
-    if (el("authLoginError")) { el("authLoginError").textContent = err.message || "Login failed."; el("authLoginError").classList.remove("hidden"); }
+    if (errEl) { errEl.textContent = err.message || "Login failed. Check your username and password."; errEl.classList.remove("hidden"); }
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalLabel; }
   }
 }
 
@@ -245,29 +449,38 @@ function startAuthTimer() {
 }
 
 async function doSignup() {
-  const username = (el("signupUsername") && el("signupUsername").value.trim()) || "";
+  const username = (el("signupUsername") && el("signupUsername").value && String(el("signupUsername").value).trim()) || "";
   const password = (el("signupPassword") && el("signupPassword").value) || "";
-  const name = (el("signupName") && el("signupName").value.trim()) || "";
+  const name = (el("signupName") && el("signupName").value && String(el("signupName").value).trim()) || "";
   const date_of_birth = (el("signupDob") && el("signupDob").value) || "";
   const math_9_percent = parseInt((el("signupMathPercent") && el("signupMathPercent").value) || "0", 10);
   const selected_timeline_weeks = parseInt((el("signupWeeks") && el("signupWeeks").value) || "28", 10);
   const base = getAuthBaseUrl();
+  const errEl = el("authSignupError");
+  const btnEl = el("signupBtn");
+
   if (!username || !password || !name || !date_of_birth) {
-    if (el("authSignupError")) { el("authSignupError").textContent = "All fields required."; el("authSignupError").classList.remove("hidden"); }
+    if (errEl) { errEl.textContent = "Please fill in username, password, full name, and date of birth."; errEl.classList.remove("hidden"); }
     return;
   }
   if (Number.isNaN(math_9_percent) || math_9_percent < 0 || math_9_percent > 100) {
-    if (el("authSignupError")) { el("authSignupError").textContent = "Enter Class 9 Maths % between 0 and 100."; el("authSignupError").classList.remove("hidden"); }
+    if (errEl) { errEl.textContent = "Class 9 Maths % must be between 0 and 100."; errEl.classList.remove("hidden"); }
     return;
   }
+  if (errEl) { errEl.classList.add("hidden"); errEl.textContent = ""; }
+  const originalLabel = btnEl ? btnEl.textContent : "Continue to test";
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Loading…"; }
   try {
     const resp = await fetch(`${base}/auth/start-signup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, name, date_of_birth, selected_timeline_weeks, math_9_percent }),
     });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || resp.statusText);
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const msg = typeof data.detail === "string" ? data.detail : Array.isArray(data.detail) ? (data.detail[0] && data.detail[0].msg) || data.detail[0] : data.message || resp.statusText || "Signup failed.";
+      throw new Error(msg);
+    }
     _authSignupDraftId = data.signup_draft_id;
     _authDiagnosticAttemptId = null;
     _authDiagnosticQuestions = [];
@@ -276,17 +489,18 @@ async function doSignup() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ signup_draft_id: _authSignupDraftId }),
     });
-    const qData = await qResp.json();
-    if (!qResp.ok) throw new Error(qData.detail || "Could not load diagnostic questions.");
+    const qData = await qResp.json().catch(() => ({}));
+    if (!qResp.ok) throw new Error(qData.detail || qData.message || "Could not load the diagnostic test. Please try again.");
     _authDiagnosticAttemptId = qData.diagnostic_attempt_id;
     _authDiagnosticQuestions = qData.questions || [];
     renderAuthDiagnosticQuestions();
     startAuthTimer();
     showAuthPanel("diagnostic");
-    if (el("authDiagnosticError")) el("authDiagnosticError").classList.add("hidden");
+    if (el("authDiagnosticError")) { el("authDiagnosticError").classList.add("hidden"); el("authDiagnosticError").textContent = ""; }
   } catch (err) {
-    if (el("authSignupError")) { el("authSignupError").textContent = err.message || "Signup failed."; el("authSignupError").classList.remove("hidden"); }
+    if (errEl) { errEl.textContent = err.message || "Something went wrong. Please try again."; errEl.classList.remove("hidden"); }
   }
+  if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalLabel; }
 }
 
 function renderAuthDiagnosticQuestions() {
@@ -395,32 +609,33 @@ async function submitAuthDiagnostic() {
   }
 }
 
-if (el("loginBtn")) el("loginBtn").addEventListener("click", doLogin);
-if (el("signupBtn")) el("signupBtn").addEventListener("click", doSignup);
-if (el("authSubmitDiagnosticBtn")) el("authSubmitDiagnosticBtn").addEventListener("click", submitAuthDiagnostic);
-if (el("authGoDashboardBtn")) el("authGoDashboardBtn").addEventListener("click", () => { showApp(); });
-if (el("logoutBtn")) el("logoutBtn").addEventListener("click", () => { clearAuth(); showAuthGate(); });
+function initApp() {
+  initAuthTabs();
+  const loginBtn = el("loginBtn");
+  const signupBtn = el("signupBtn");
+  const submitDiagBtn = el("authSubmitDiagnosticBtn");
+  const goDashBtn = el("authGoDashboardBtn");
+  const logoutBtn = el("logoutBtn");
+  if (loginBtn) loginBtn.addEventListener("click", doLogin);
+  if (signupBtn) signupBtn.addEventListener("click", doSignup);
+  if (submitDiagBtn) submitDiagBtn.addEventListener("click", submitAuthDiagnostic);
+  if (goDashBtn) goDashBtn.addEventListener("click", function () { showApp(); });
+  if (logoutBtn) logoutBtn.addEventListener("click", function () { clearAuth(); showAuthGate(); });
 
-if (getAuthToken() && getStoredLearnerId()) {
-  showApp();
-} else {
-  showAuthGate();
+  if (getAuthToken() && getStoredLearnerId()) {
+    showApp();
+  } else {
+    showAuthGate();
+  }
 }
 
-// Tabs (main app only)
-document.querySelectorAll("#app-main nav.tabs .tab[data-tab]").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const tab = btn.getAttribute("data-tab");
-    if (!tab) return;
-    document.querySelectorAll("#app-main nav.tabs .tab[data-tab]").forEach((t) => t.classList.remove("active"));
-    document.querySelectorAll("#app-main .panel").forEach((p) => p.classList.add("hidden"));
-    btn.classList.add("active");
-    const panel = document.getElementById("panel-" + tab);
-    if (panel) panel.classList.remove("hidden");
-  });
-});
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initApp);
+} else {
+  initApp();
+}
 
-// Onboarding & Plan (diagnostic wizard state)
+// Onboarding & Plan (diagnostic wizard state — used only for programmatic API tests; dashboard uses auth-gate flow)
 let _obAttemptId = null;
 let _obQuestions = [];
 
@@ -774,7 +989,3 @@ if (el("adminGroundingBtn")) el("adminGroundingBtn").addEventListener("click", a
 if (el("adminCohortBtn")) el("adminCohortBtn").addEventListener("click", adminCohort);
 if (el("adminViolationsBtn")) el("adminViolationsBtn").addEventListener("click", adminViolations);
 if (el("adminDriftBtn")) el("adminDriftBtn").addEventListener("click", adminDrift);
-
-if (!el("learnerId").value) {
-  el("learnerId").value = newUuid();
-}

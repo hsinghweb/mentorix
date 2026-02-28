@@ -17,21 +17,21 @@
           <button type="button" class="tab" data-auth="signup">Sign up</button>
         </div>
         <div id="auth-login" class="auth-panel">
-          <div class="row"><label for="loginUsername">Username</label><input id="loginUsername" type="text" autocomplete="username" /></div>
-          <div class="row"><label for="loginPassword">Password</label><input id="loginPassword" type="password" autocomplete="current-password" /></div>
-          <div class="row"><label for="authApiBase">API URL</label><input id="authApiBase" type="text" value="http://localhost:8000" /></div>
-          <div class="row actions"><button id="loginBtn" class="primary">Login</button></div>
-          <p id="authLoginError" class="auth-error hidden"></p>
+          <div class="row"><label for="loginUsername">Username</label><input id="loginUsername" type="text" autocomplete="username" placeholder="Your username" /></div>
+          <div class="row"><label for="loginPassword">Password</label><input id="loginPassword" type="password" autocomplete="current-password" placeholder="Your password" /></div>
+          <div class="row auth-api-row"><label for="authApiBase">API URL</label><input id="authApiBase" type="text" value="http://localhost:8000" placeholder="http://localhost:8000" /></div>
+          <div class="row actions"><button id="loginBtn" type="button" class="primary">Login</button></div>
+          <p id="authLoginError" class="auth-error hidden" role="alert"></p>
         </div>
         <div id="auth-signup" class="auth-panel hidden">
-          <div class="row"><label for="signupUsername">Username</label><input id="signupUsername" type="text" autocomplete="username" /></div>
-          <div class="row"><label for="signupPassword">Password</label><input id="signupPassword" type="password" autocomplete="new-password" /></div>
-          <div class="row"><label for="signupName">Full name</label><input id="signupName" type="text" placeholder="Your name" /></div>
+          <div class="row"><label for="signupUsername">Username</label><input id="signupUsername" type="text" autocomplete="username" placeholder="Choose a username" /></div>
+          <div class="row"><label for="signupPassword">Password</label><input id="signupPassword" type="password" autocomplete="new-password" placeholder="Choose a password" /></div>
+          <div class="row"><label for="signupName">Full name</label><input id="signupName" type="text" placeholder="Your full name" /></div>
           <div class="row"><label for="signupDob">Date of birth</label><input id="signupDob" type="date" /></div>
           <div class="row"><label for="signupMathPercent">Class 9 Maths % (0–100)</label><input id="signupMathPercent" type="number" min="0" max="100" value="75" /></div>
           <div class="row"><label for="signupWeeks">Weeks to complete course (14–28)</label><select id="signupWeeks"><option value="14">14 weeks</option><option value="16">16 weeks</option><option value="18">18 weeks</option><option value="20">20 weeks</option><option value="22">22 weeks</option><option value="24">24 weeks</option><option value="26">26 weeks</option><option value="28" selected>28 weeks</option></select></div>
-          <div class="row actions"><button id="signupBtn" class="primary">Continue to test</button></div>
-          <p id="authSignupError" class="auth-error hidden"></p>
+          <div class="row actions"><button id="signupBtn" type="button" class="primary">Continue to test</button></div>
+          <p id="authSignupError" class="auth-error hidden" role="alert"></p>
         </div>
         <div id="auth-diagnostic" class="auth-panel hidden">
           <h2>Diagnostic test (25 MCQs)</h2>
@@ -49,242 +49,35 @@
       </div>
     </div>
     <main id="app-main" class="container hidden">
-      <header>
+      <header class="dashboard-header">
         <h1>Mentorix</h1>
-        <p class="sub">Student portal · Onboarding &amp; Plan · Admin <button type="button" id="logoutBtn" class="logout-btn">Logout</button></p>
-        <nav class="tabs">
-          <button type="button" class="tab active" data-tab="student">Student</button>
-          <button type="button" class="tab" data-tab="onboarding">Onboarding &amp; Plan</button>
-          <button type="button" class="tab" data-tab="admin">Admin</button>
-        </nav>
+        <p class="sub">Class 10 Mathematics · Your dashboard</p>
+        <button type="button" id="logoutBtn" class="logout-btn">Logout</button>
       </header>
 
-      <div id="panel-student" class="panel">
-      <section class="card">
-        <h2>Session</h2>
-        <div class="row">
-          <label for="apiBase">API Base URL</label>
-          <input id="apiBase" type="text" value="http://localhost:8000" />
-        </div>
-        <div class="row">
-          <label for="learnerId">Learner ID (UUID)</label>
-          <input id="learnerId" type="text" />
-        </div>
-        <div class="row actions">
-          <button id="newLearnerBtn">Generate Learner ID</button>
-          <button id="startBtn" class="primary">Start Session</button>
+      <section class="card dashboard-section">
+        <h2>Current status of course completion</h2>
+        <p class="muted">Chapter-wise completion including subtopics (from syllabus). Status is based on your mastery.</p>
+        <div id="courseCompletionRoot" class="syllabus-root">
+          <p class="muted">Loading…</p>
         </div>
       </section>
 
-      <section class="card lesson">
-        <h2>Current Lesson</h2>
-        <div class="row">
-          <label>Session ID</label>
-          <code id="sessionId">-</code>
-        </div>
-        <div class="row">
-          <label>Concept</label>
-          <code id="concept">-</code>
-        </div>
-        <div class="row">
-          <label>Question</label>
-          <p id="question">-</p>
-        </div>
-        <div class="row">
-          <label>Explanation</label>
-          <pre id="explanation">-</pre>
+      <section class="card dashboard-section">
+        <h2>Student profile — confidence &amp; accuracy</h2>
+        <p class="muted">Chapter-wise (and subtopics) accuracy and confidence level from your diagnostic and study history.</p>
+        <div id="profileConfidenceRoot" class="syllabus-root">
+          <p class="muted">Loading…</p>
         </div>
       </section>
 
-      <section class="card">
-        <h2>Submit Answer</h2>
-        <div class="row">
-          <label for="answer">Answer</label>
-          <textarea id="answer" rows="4"></textarea>
-        </div>
-        <div class="row">
-          <label for="responseTime">Response Time (sec)</label>
-          <input id="responseTime" type="number" min="0" step="0.1" value="8.5" />
-        </div>
-        <div class="row actions">
-          <button id="submitBtn" class="primary">Submit Answer</button>
-          <button id="dashboardBtn">Refresh Dashboard</button>
+      <section class="card dashboard-section">
+        <h2>Current schedule</h2>
+        <p class="muted">All weeks with assigned tasks and timeline to complete. This schedule is assigned by Mentorix and is read-only.</p>
+        <div id="scheduleRoot" class="schedule-root">
+          <p class="muted">Loading…</p>
         </div>
       </section>
-
-      <section class="card split">
-        <h2>Evaluation</h2>
-        <div class="row">
-          <label>Score</label>
-          <code id="score" class="pill">-</code>
-        </div>
-        <div class="row">
-          <label>Error Type</label>
-          <code id="errorType">-</code>
-        </div>
-        <div class="row">
-          <label>Adaptation</label>
-          <pre id="adaptation">-</pre>
-        </div>
-      </section>
-
-      <section class="card split">
-        <h2>Dashboard</h2>
-        <div class="row">
-          <label>Engagement</label>
-          <code id="engagement">-</code>
-        </div>
-        <div class="row">
-          <label>Weak Areas</label>
-          <code id="weakAreas">-</code>
-        </div>
-        <div class="row">
-          <label>Mastery Map</label>
-          <pre id="masteryMap">-</pre>
-        </div>
-        <div class="row">
-          <label>Last Sessions</label>
-          <pre id="lastSessions">-</pre>
-        </div>
-      </section>
-
-      <section class="card status">
-        <h2>Status</h2>
-        <pre id="status">Ready.</pre>
-      </section>
-      </div>
-
-      <div id="panel-onboarding" class="panel hidden">
-        <section class="card">
-          <h2>Onboarding &amp; Plan</h2>
-          <div class="row">
-            <label for="obApiBase">API Base URL</label>
-            <input id="obApiBase" type="text" value="http://localhost:8000" />
-          </div>
-          <div class="row">
-            <label for="obName">Name</label>
-            <input id="obName" type="text" placeholder="Student name" value="Test Learner" />
-          </div>
-          <div class="row">
-            <label for="obGrade">Grade</label>
-            <input id="obGrade" type="text" value="10" />
-          </div>
-          <div class="row">
-            <label for="obTimeline">Timeline (weeks, 14–28)</label>
-            <input id="obTimeline" type="number" min="14" max="28" value="16" />
-          </div>
-          <div class="row actions">
-            <button id="obStartBtn" class="primary">Start Onboarding</button>
-          </div>
-          <div class="row">
-            <label>Learner ID (after start)</label>
-            <code id="obLearnerId">-</code>
-          </div>
-        </section>
-        <section class="card" id="obDiagnosticSection">
-          <h2>Diagnostic test</h2>
-          <div id="obQuestionsContainer" class="ob-questions">
-            <p class="muted">Start onboarding above to load questions.</p>
-          </div>
-          <div class="row" id="obSubmitDiagnosticRow" style="display: none;">
-            <label for="obTimeSpent">Time spent (minutes)</label>
-            <input id="obTimeSpent" type="number" min="1" max="240" value="15" />
-          </div>
-          <div class="row actions" id="obSubmitDiagnosticActions" style="display: none;">
-            <button id="obSubmitDiagnosticBtn" class="primary">Submit diagnostic</button>
-          </div>
-          <div class="row" id="obDiagnosticResult" style="display: none;">
-            <label>Result</label>
-            <pre id="obDiagnosticResultPre">-</pre>
-          </div>
-        </section>
-        <section class="card">
-          <h2>Plan &amp; Tasks</h2>
-          <div class="row actions">
-            <button id="obPlanBtn">Get Plan</button>
-            <button id="obTasksBtn">Get Tasks</button>
-            <button id="obStandBtn">Where I Stand</button>
-            <button id="obRevisionQueueBtn">Revision queue</button>
-          </div>
-          <div class="row" id="obTimelineSummaryRow" style="display: none;">
-            <label>Timeline</label>
-            <p id="obTimelineSummary" class="timeline-summary"></p>
-          </div>
-          <div class="row">
-            <label>Plan / Tasks / Where I Stand</label>
-            <pre id="obResult">-</pre>
-          </div>
-        </section>
-        <section class="card">
-          <h2>Streak &amp; engagement</h2>
-          <div class="row actions">
-            <button id="obStreakBtn">Load summary</button>
-          </div>
-          <div class="row" id="obStreakSummaryRow" style="display: none;">
-            <label>Summary</label>
-            <p id="obStreakSummary" class="streak-summary"></p>
-          </div>
-        </section>
-        <section class="card">
-          <h2>Chapter tracker &amp; concept map</h2>
-          <div class="row actions">
-            <button id="obChapterTrackerBtn">Load chapter tracker</button>
-            <button id="obConceptMapBtn">Load concept map</button>
-          </div>
-          <div class="row" id="obChapterTrackerRow" style="display: none;">
-            <label>Chapters (mastery level)</label>
-            <p id="obChapterTrackerText" class="timeline-summary"></p>
-          </div>
-          <div class="row" id="obConceptMapRow" style="display: none;">
-            <label>Strengths / Weaknesses / Confidence</label>
-            <p id="obConceptMapText" class="streak-summary"></p>
-          </div>
-        </section>
-        <section class="card">
-          <h2>Next-week guidance</h2>
-          <div class="row actions">
-            <button id="obNextWeekBtn">Load next week</button>
-          </div>
-          <div class="row" id="obNextWeekRow" style="display: none;">
-            <label>Next week</label>
-            <p id="obNextWeekText" class="timeline-summary"></p>
-          </div>
-        </section>
-        <section class="card">
-          <h2>Forecast trend</h2>
-          <div class="row actions">
-            <button id="obForecastTrendBtn">Load forecast trend</button>
-          </div>
-          <div class="row" id="obForecastTrendRow" style="display: none;">
-            <label>History (week → forecast weeks, delta)</label>
-            <pre id="obForecastTrendText" class="streak-summary"></pre>
-          </div>
-        </section>
-      </div>
-
-      <div id="panel-admin" class="panel hidden">
-        <section class="card">
-          <h2>Admin · Health &amp; Metrics</h2>
-          <div class="row">
-            <label for="adminApiBase">API Base URL</label>
-            <input id="adminApiBase" type="text" value="http://localhost:8000" />
-          </div>
-          <div class="row actions">
-            <button id="adminHealthBtn">Health</button>
-            <button id="adminMetricsBtn">Metrics (app)</button>
-            <button id="adminGroundingBtn">Grounding Status</button>
-          </div>
-          <div class="row actions">
-            <button id="adminCohortBtn">Cohort</button>
-            <button id="adminViolationsBtn">Policy violations</button>
-            <button id="adminDriftBtn">Timeline drift</button>
-          </div>
-          <div class="row">
-            <label>Response</label>
-            <pre id="adminResult">-</pre>
-          </div>
-        </section>
-      </div>
     </main>
 
     <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js" crossorigin="anonymous"></script>

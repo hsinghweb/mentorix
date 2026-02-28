@@ -33,6 +33,7 @@ from app.models.entities import (
     WeeklyPlanVersion,
 )
 from app.agents.diagnostic_mcq import generate_diagnostic_mcq
+from app.data.syllabus_structure import get_syllabus_for_api
 from app.schemas.onboarding import (
     ChapterPlan,
     ChapterAdvanceRequest,
@@ -1429,6 +1430,84 @@ async def list_current_week_tasks(learner_id: UUID, db: AsyncSession = Depends(g
         "forecast_read_only": True,
         "tasks": [_to_task_item(task) for task in tasks],
         "daily_breakdown": _daily_breakdown_from_tasks(tasks, plan.current_week),
+    }
+
+
+@router.get("/syllabus")
+async def get_syllabus():
+    """Return Class 10 Maths syllabus: chapters and subtopics (from syllabus.txt)."""
+    return {"chapters": get_syllabus_for_api()}
+
+
+@router.get("/schedule/{learner_id}")
+async def get_full_schedule(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Return full schedule: all weeks with tasks and timeline (read-only for student)."""
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+
+    plan = (
+        await db.execute(
+            select(WeeklyPlan)
+            .where(WeeklyPlan.learner_id == learner_id)
+            .order_by(WeeklyPlan.generated_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if plan is None:
+        plan = WeeklyPlan(
+            learner_id=learner_id,
+            status="active",
+            current_week=1,
+            total_weeks=14,
+            plan_payload={"rough_plan": [{"week": 1, "chapter": "Chapter 1", "focus": "learn + practice"}]},
+        )
+        db.add(plan)
+        await db.flush()
+        await _create_plan_version(db=db, plan=plan, reason="system_bootstrap_current_week")
+        for task in _default_week_tasks(learner_id=learner_id, chapter="Chapter 1", week_number=1):
+            db.add(task)
+        await db.commit()
+        plan = (
+            await db.execute(
+                select(WeeklyPlan).where(WeeklyPlan.learner_id == learner_id).order_by(WeeklyPlan.generated_at.desc()).limit(1)
+            )
+        ).scalar_one()
+
+    rough = (plan.plan_payload or {}).get("rough_plan", [])
+    if not rough:
+        rough = [{"week": 1, "chapter": "Chapter 1", "focus": "learn + practice"}]
+    plan_by_week = {item["week"]: item for item in rough if isinstance(item, dict)}
+
+    all_tasks = (
+        await db.execute(
+            select(Task)
+            .where(Task.learner_id == learner_id)
+            .order_by(Task.week_number.asc(), Task.sort_order.asc(), Task.created_at.asc())
+        )
+    ).scalars().all()
+    tasks_by_week = {}
+    for t in all_tasks:
+        tasks_by_week.setdefault(t.week_number, []).append(_to_task_item(t))
+
+    current = int(plan.current_week)
+    total = int(plan.total_weeks or 14)
+    weeks_list = []
+    for w in range(1, total + 1):
+        row = plan_by_week.get(w) or {}
+        weeks_list.append({
+            "week_number": w,
+            "chapter": row.get("chapter") or f"Chapter {min(w, 14)}",
+            "focus": row.get("focus") or "learn + practice",
+            "is_current": w == current,
+            "is_past": w < current,
+            "tasks": tasks_by_week.get(w, []),
+        })
+    return {
+        "learner_id": learner_id,
+        "current_week": current,
+        "total_weeks": total,
+        "weeks": weeks_list,
     }
 
 
