@@ -1,6 +1,6 @@
 # Mentorix V2 — Planner Iteration 7 (All Incomplete Tasks)
 
-**Date:** 2026-02-28  
+**Date:** 2026-02-28 (updated: session 2)  
 **Purpose:** Single source of truth for all remaining work. Consolidates every incomplete, partial, and deferred task from previous planners after codebase verification.
 
 > [!IMPORTANT]
@@ -23,6 +23,10 @@
 Currently only the first 5 of 14 chapters are embedded. The retriever has no chapter-scoped filtering.
 
 ### 1.1 Expand Grounding to All 14 Chapters
+
+> [!NOTE]
+> **Deferred** — keeping at 5 chapters for now (local laptop memory/compute constraints).
+
 - [ ] Change `grounding_chapter_count` from `5` → `14` in `API/app/core/settings.py`
 - [ ] Re-run grounding ingestion to embed chapters 6–14
 - [ ] Verify `embedding_chunks` table has rows for all 14 chapters
@@ -47,11 +51,16 @@ Currently only the first 5 of 14 chapters are embedded. The retriever has no cha
 - [ ] Add test in `tests/` that calls the content endpoint and verifies the response only contains NCERT-sourced content (no hallucination)
 - [ ] Extend existing `tests/test_rag_grounding_compliance.py` if applicable
 
+### 1.6 Grounding Ingestion — Re-run [DONE]
+- [x] Rebuilt Docker volumes (`docker-compose down -v`) to wipe stale data
+- [x] Rebuilt API image (`docker-compose build api`)
+- [x] Re-ran ingestion via `POST /grounding/ingest?force_rebuild=true` — chapters 1-5 now use section-aware chunks with `section_id` tags
+
 ---
 
 ## 2. Multi-Agent Refactoring [P1]
 
-All agent files except `content.py` (175 lines) are minimal stubs (13–22 lines each). Business logic currently lives in `API/app/api/onboarding.py` (1900+ lines) and `API/app/api/learning.py` (907 lines).
+All agent files except `content.py` (175 lines) are minimal stubs (13–22 lines each). Business logic currently lives in `API/app/api/onboarding.py` (1900+ lines) and `API/app/api/learning.py` (~1200 lines after changes).
 
 ### 2.1 Onboarding Agent — `API/app/agents/onboarding.py` (currently 17 lines)
 - [ ] Move signup-diagnostic-plan orchestration logic from `API/app/api/onboarding.py` into the agent
@@ -106,16 +115,16 @@ All agent files except `content.py` (175 lines) are minimal stubs (13–22 lines
 
 ### 3.1 New Tables
 - [ ] `question_bank` — `id`, `chapter_number`, `difficulty`, `prompt`, `options` (JSON), `correct_index`, `embedding` (vector), `created_at`
-- [ ] `concept_mastery` — `id`, `learner_id`, `chapter`, `subtopic`, `mastery_score`, `attempt_count`, `updated_at`
+- [x] ~~`concept_mastery`~~ → **Superseded by `subsection_progression`** table (tracks per-section status, scores, reading, mastery)
 - [ ] `agent_decisions` — `id`, `learner_id`, `agent_name`, `decision_type`, `reasoning`, `input_data` (JSON), `output_data` (JSON), `created_at`
 
 ### 3.2 Schema Changes
-- [ ] Add `section_title` (VARCHAR, nullable) to `embedding_chunks` table
+- [x] ~~Add `section_title` to `embedding_chunks`~~ → **Done as `section_id` (VARCHAR(16))** — e.g., `"1.2"`, `"3.3.1"`
 - [ ] Add `scheduled_day` (VARCHAR, nullable) to `tasks` table
 
 ### 3.3 Migrations
-- [ ] Create single Alembic migration for all changes in 3.1 and 3.2
-- [ ] Run and verify: `uv run alembic upgrade head`
+- [x] Migration `20260228_0016_subsection_tracking.py` — `section_id` on `embedding_chunks` + `subsection_progression` table
+- [ ] Create migration for remaining items (question_bank, agent_decisions, scheduled_day)
 
 ---
 
@@ -130,17 +139,22 @@ All agent files except `content.py` (175 lines) are minimal stubs (13–22 lines
 - [ ] Update `renderTasks()` in `app.js` to support day-grouped view
 
 ### 4.3 Mastery Band Badges
-- [ ] Already partially implemented in `renderConfidence()` in `app.js` (has mastery_band classes)
+- [x] Already implemented in `renderConfidence()` in `app.js` (has mastery_band classes)
 - [ ] Verify color coding works for all 4 bands: Beginner (red), Developing (orange), Proficient (blue), Mastered (green)
-- [ ] Add the same band badges to chapter cards in completion status section
+- [x] Band badges added to chapter drill-down modal (per-subsection mastery badges)
 
-### 4.4 Subtopic Tracking
-- [ ] When `concept_mastery` table exists, add per-subtopic progress bars within each chapter card
-- [ ] Backend: add subtopic data to dashboard response
+### 4.4 Subtopic Tracking [DONE]
+- [x] `SubsectionProgression` table created with per-section status, scores, mastery tracking
+- [x] `GET /learning/chapter/{n}/sections/{learner_id}` — returns per-subsection progress
+- [x] `POST /learning/content/section` — section-scoped reading with grounded NCERT content
+- [x] `POST /learning/test/section/generate` — 5-MCQ section test
+- [x] Frontend: chapter card click → modal drill-down showing all subsections with Read/Test buttons
+- [x] Frontend: `openSectionReading()` and `openSectionTest()` functions
 
-### 4.5 Practice Question Screen
-- [ ] Add new screen for practice questions (similar to test screen but without timer/scoring)
-- [ ] Wire up to `POST /learning/practice/generate` endpoint
+### 4.6 Test Retake UI [DONE]
+- [x] Removed `completed` click-block on task cards — all tasks always accessible
+- [x] Test feedback now shows "🔄 Retake Test" + "← Dashboard" buttons
+- [x] `checkWeekComplete()` updated to recognize `completed_first_attempt` status
 
 ---
 
@@ -178,17 +192,27 @@ All agent files except `content.py` (175 lines) are minimal stubs (13–22 lines
 
 ---
 
-## Implementation Order (Suggested)
+## Implementation Order (Updated)
 
 ```
-Sprint 1 (Foundation):
-  1.1  Expand grounding to 14 chapters
-  3.2  Add section_title and scheduled_day fields
-  3.3  Alembic migration
-  1.3  Chapter-scoped RAG retrieval
+DONE (Session 2 — 2026-02-28):
+  1.2  Section-level embeddings (_split_by_sections, section_id)
+  1.3  Chapter-scoped RAG retrieval (chapter_number + section_id filters)
+  1.5  LLM fix (maxOutputTokens 700→4096, timeout 20→60s, logging)
+  1.6  Ingestion re-run with section-aware chunks
+  2.2  Unlimited test retakes + subsection mastery tracking
+  3.2  section_id on embedding_chunks
+  3.3  Migration 20260228_0016
+  4.4  Subtopic tracking endpoints + frontend drill-down
+  4.6  Test retake UI
+
+Sprint 1 (Remaining Foundation):
+  3.1  New tables (question_bank, agent_decisions)
+  3.2  scheduled_day on tasks
+  6.2  Learning flow E2E test
 
 Sprint 2 (Agents — Core):
-  2.2  Evaluation Agent (threshold + scoring)
+  2.2  Remaining: per-chapter scoring breakdown, confidence metric
   2.4  Planner Agent (plan generation + recalculation)
   2.3  Student Profiling Agent (profile updates)
   2.8  Progress & Revision Agent
@@ -196,17 +220,15 @@ Sprint 2 (Agents — Core):
 Sprint 3 (Agents — Content):
   2.5  Content Generator (practice Qs + examples)
   2.6  Diagnostic MCQ Agent (question bank)
-  1.2  Section-level embeddings
+  1.1  Expand to 14 chapters (when hardware allows)
 
 Sprint 4 (Frontend + Polish):
   4.1  Confidence trend chart
-  4.3  Mastery band badges
-  4.5  Practice question screen
   4.2  Daily plan view
+  4.5  Practice question screen
 
 Sprint 5 (Observability):
-  3.1  New tables (question_bank, concept_mastery, agent_decisions)
   5.1  Agent decision logging
   5.2  Plan history view
-  6.2  New integration tests
+  6.2  Integration tests
 ```
