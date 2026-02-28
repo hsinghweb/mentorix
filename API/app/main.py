@@ -8,6 +8,7 @@ from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
 from app.api.grounding import router as grounding_router
+from app.api.learning import router as learning_router
 from app.api.onboarding import router as onboarding_router
 from app.api.events import router as events_router
 from app.api.memory import router as memory_router
@@ -50,6 +51,7 @@ app.include_router(notifications_router)
 app.include_router(grounding_router)
 app.include_router(admin_router)
 app.include_router(onboarding_router)
+app.include_router(learning_router)
 app.middleware("http")(api_key_auth_middleware)
 app.middleware("http")(request_id_middleware)
 app.middleware("http")(metrics_middleware)

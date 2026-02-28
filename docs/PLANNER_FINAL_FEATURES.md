@@ -134,3 +134,13 @@ Refinements (e.g. merging or splitting agents) will be updated in this section a
 - **Backend:** `StudentAuth` model + migration; `POST /auth/signup`, `POST /auth/login` (JWT); `POST /onboarding/diagnostic-questions` (25 LLM MCQs); submit creates profile, 14-chapter status, rough plan, week 1 schedule. Tasks are locked; completion is evidence-based.
 - **Frontend:** First screen = auth gate (Login | Sign up). Sign up → 25 MCQ test → result + rough plan + Week 1 → “Go to my dashboard”. Logout clears session. Learner ID and API base stored in localStorage and applied in app.
 - **How to run and test:** Start stack (`docker compose up -d`). Open frontend (e.g. http://localhost:5500). If DB was already at schema 20260222_0011, run `alembic stamp 20260222_0011` then `alembic upgrade head` once to add `student_auth`. New deployments run `alembic upgrade head` from scratch. Ensure LLM (e.g. Gemini) is configured for diagnostic question generation.
+
+### Run when ready (after stack is up)
+
+| Step | Command / reference |
+|------|----------------------|
+| 1. Migration | From `API/`: `uv run alembic upgrade head` |
+| 2. Phase 0 (no DB) | From `API/`: `uv run python scripts/verify_phase0.py` |
+| 3. Phase 1.1 schema | From `API/`: `uv run python scripts/verify_phase1_schema.py` |
+| 4. Grounding | `docs/PHASE0_RUNBOOK.md` — ingest + verify embedding_chunks |
+| 5. Full tests | From repo root: `$env:PYTHONPATH="API"; uv run pytest tests/` |

@@ -91,8 +91,47 @@ class GeminiLLMProvider(BaseLLMProvider):
             result = await retry_with_backoff(_call)
             breaker.record_success()
             return result
-        except Exception:
+        except Exception as e:
             breaker.record_failure()
+            resp = getattr(e, "response", None)
+            status = getattr(resp, "status_code", None)
+            err_msg = (str(e) or "").lower()
+            # If model not available (404 / upgrade message), retry with flash
+            use_fallback = (
+                status == 404
+                or "not available" in err_msg
+                or "upgrade" in err_msg
+                or "404" in err_msg
+            )
+            if use_fallback:
+                fallback = "gemini-2.5-flash"
+                if fallback != self.model_name:
+                    self.model_name = fallback
+                    api_url_fb = (
+                        f"https://generativelanguage.googleapis.com/v1beta/models/"
+                        f"{self.model_name}:generateContent"
+                    )
+                    try:
+                        async with httpx.AsyncClient(timeout=20.0) as client:
+                            response = await client.post(
+                                api_url_fb,
+                                json=payload,
+                                headers={"x-goog-api-key": settings.gemini_api_key},
+                            )
+                            response.raise_for_status()
+                            data = response.json()
+                            candidates = data.get("candidates", [])
+                            if candidates:
+                                parts = candidates[0].get("content", {}).get("parts", [])
+                                text = "\n".join(p.get("text", "") for p in parts if isinstance(p, dict)).strip()
+                                return (text or None), {
+                                    "provider": self.provider_name,
+                                    "model": self.model_name,
+                                    "role": self.role,
+                                    "fallback_used": True,
+                                }
+                    except Exception:
+                        pass
             raise
 
 

@@ -25,7 +25,19 @@ This verifies:
 - Ollama embeddings endpoint
 - End-to-end API smoke flow
 
+## 3.0) Schema migration (once per DB)
+After the stack is up, apply the latest Alembic migration (e.g. adds `school` to `learners`):
+
+```powershell
+cd API
+uv run alembic upgrade head
+```
+
+Optional: verify Phase 1.1 tables exist: `uv run python scripts/verify_phase1_schema.py`
+
 ## 3.1) Grounding pre-work (recommended before demo)
+See **Phase 0** in `docs/PHASE0_RUNBOOK.md` for full verification steps.
+
 ```powershell
 Invoke-RestMethod -Method GET -Uri "http://localhost:8000/grounding/status"
 Invoke-RestMethod -Method POST -Uri "http://localhost:8000/grounding/ingest"
@@ -33,6 +45,7 @@ Invoke-RestMethod -Method GET -Uri "http://localhost:8000/grounding/status"
 ```
 Notes:
 - `syllabus.txt` is auto-preferred if present beside `syllabus.pdf`.
+- For demo, only the first 5 chapters are embedded (`grounding_chapter_count = 5`).
 - This ensures embeddings are precomputed before learner session flow.
 
 ## 3.2) Memory migration + backup ops (NoSQL)
@@ -61,8 +74,8 @@ python -m http.server 5500
 Open:
 - `http://localhost:5500`
 
-Default API URL in UI:
-- `http://localhost:8000`
+API URL in UI:
+- Default `http://localhost:8000`. If your API runs elsewhere (e.g. different port/host), set **API URL** on the Login or Sign up form; it is stored for the session.
 
 ## 5) Suggested demo narrative (3-5 min)
 0. (Optional) Run onboarding-first adaptive plan:

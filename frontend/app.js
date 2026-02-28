@@ -1,991 +1,828 @@
-const AUTH_TOKEN_KEY = "mentorix_token";
-const LEARNER_ID_KEY = "mentorix_learner_id";
+// API and auth storage keys
+const TOKEN_KEY = "mentorix_token";
+const LEARNER_KEY = "mentorix_learner_id";
+const NAME_KEY = "mentorix_name";
 const API_BASE_KEY = "mentorix_api_base";
 
-function el(id) {
-  return document.getElementById(id);
+function getApiBase() {
+  if (typeof document !== "undefined") {
+    const input = document.getElementById("api-base-url") || document.getElementById("api-base-url-signup");
+    if (input && input.value && input.value.trim()) return input.value.trim().replace(/\/+$/, "");
+  }
+  return (typeof window !== "undefined" && window.__MENTORIX_API_BASE__)
+    ? window.__MENTORIX_API_BASE__
+    : (typeof localStorage !== "undefined" && localStorage.getItem(API_BASE_KEY)) || "http://localhost:8000";
 }
-function getAuthToken() {
-  return localStorage.getItem(AUTH_TOKEN_KEY) || "";
+
+function setApiBase(url) {
+  if (url && typeof localStorage !== "undefined") localStorage.setItem(API_BASE_KEY, url);
 }
-function getStoredLearnerId() {
-  return localStorage.getItem(LEARNER_ID_KEY) || "";
-}
-function setAuth(token, learnerId, apiBase) {
-  if (token) localStorage.setItem(AUTH_TOKEN_KEY, String(token));
-  if (learnerId != null && learnerId !== "") localStorage.setItem(LEARNER_ID_KEY, String(learnerId));
-  if (apiBase != null && String(apiBase).trim()) localStorage.setItem(API_BASE_KEY, String(apiBase).trim().replace(/\/+$/, ""));
+
+let diagnosticData = null;     // { attempt_id, questions, answer_key, signup_draft_id }
+let diagnosticTimer = null;
+let diagnosticSeconds = 1800;  // 30 minutes
+let readingTimer = null;
+let readingSeconds = 0;
+let readingTaskId = null;
+let readingChapterNumber = null;
+let testTimer = null;
+let testSeconds = 1200;        // 20 minutes
+let currentTestData = null;    // { test_id, questions, chapter, chapter_number }
+
+// ── HELPERS ─────────────────────────────────────────────────────────────────
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+function getLearnerId() { return localStorage.getItem(LEARNER_KEY); }
+function setAuth(token, learnerId, name) {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(LEARNER_KEY, learnerId);
+  localStorage.setItem(NAME_KEY, name);
 }
 function clearAuth() {
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-  localStorage.removeItem(LEARNER_ID_KEY);
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(LEARNER_KEY);
+  localStorage.removeItem(NAME_KEY);
 }
-function getAuthBaseUrl() {
-  const input = el("authApiBase");
-  const fromInput = input && input.value && String(input.value).trim().replace(/\/+$/, "");
-  return fromInput || localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
-}
-function showAuthGate() {
-  if (el("auth-gate")) el("auth-gate").classList.remove("hidden");
-  if (el("app-main")) el("app-main").classList.add("hidden");
-}
-function showApp() {
-  if (el("auth-gate")) el("auth-gate").classList.add("hidden");
-  if (el("app-main")) el("app-main").classList.remove("hidden");
-  const lid = getStoredLearnerId();
-  if (lid) loadLandingOverview().catch(() => {});
-}
-function showAuthPanel(name) {
-  ["auth-login", "auth-signup", "auth-diagnostic", "auth-result"].forEach((id) => {
-    const p = el(id);
-    if (p) p.classList.toggle("hidden", id !== "auth-" + name);
+
+async function api(path, options = {}) {
+  const base = getApiBase();
+  const token = getToken();
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const resp = await fetch(`${base}${path}`, {
+    ...options,
+    headers,
+    body: options.body ? JSON.stringify(options.body) : undefined,
   });
-}
 
-function logStatus(message, data) {
-  const statusEl = el("status");
-  if (!statusEl) return;
-  const stamp = new Date().toLocaleTimeString();
-  const suffix = data ? `\n${JSON.stringify(data, null, 2)}` : "";
-  statusEl.textContent = `[${stamp}] ${message}${suffix}`;
-}
-
-function newUuid() {
-  return crypto.randomUUID();
-}
-
-function getBaseUrl() {
-  const base = localStorage.getItem(API_BASE_KEY) || "http://localhost:8000";
-  return (typeof base === "string" ? base : "").trim().replace(/\/+$/, "") || "http://localhost:8000";
-}
-
-function getObBaseUrl() {
-  return (el("obApiBase") && el("obApiBase").value.trim().replace(/\/+$/, "")) || getBaseUrl();
-}
-
-function getAdminBaseUrl() {
-  return (el("adminApiBase") && el("adminApiBase").value.trim().replace(/\/+$/, "")) || getBaseUrl();
-}
-
-async function loadLandingOverview() {
-  const learnerId = getStoredLearnerId();
-  if (!learnerId) return;
-  const base = getBaseUrl();
-  const rootCompletion = el("courseCompletionRoot");
-  const rootProfile = el("profileConfidenceRoot");
-  const rootSchedule = el("scheduleRoot");
-  function setError(where, msg) {
-    if (where) where.innerHTML = "<p class=\"muted\">" + (msg || "Could not load.") + "</p>";
-  }
-  try {
-    const [syllabusResp, standResp, scheduleResp] = await Promise.all([
-      fetch(`${base}/onboarding/syllabus`).then((r) => r.ok ? r.json() : { chapters: [] }),
-      fetch(`${base}/onboarding/where-i-stand/${learnerId}`).then((r) => r.json()),
-      fetch(`${base}/onboarding/schedule/${learnerId}`).then((r) => r.ok ? r.json() : null),
-    ]);
-    const syllabus = syllabusResp.chapters || [];
-    renderCourseCompletion(rootCompletion, syllabus, standResp);
-    renderProfileConfidence(rootProfile, syllabus, standResp);
-    renderSchedule(rootSchedule, scheduleResp);
-  } catch (err) {
-    setError(rootCompletion, "Could not load course completion.");
-    setError(rootProfile, "Could not load profile.");
-    setError(rootSchedule, "Could not load schedule.");
-  }
-}
-
-function renderCourseCompletion(root, syllabus, standData) {
-  if (!root) return;
-  const status = (standData && standData.chapter_status) || [];
-  const byChapter = {};
-  status.forEach((s) => {
-    const ch = s.chapter || s.name || "";
-    if (ch) byChapter[ch] = s;
-  });
-  if (!syllabus.length) {
-    root.innerHTML = "<p class=\"muted\">No syllabus data. Showing chapter list from profile.</p>";
-    const rows = [];
-    for (let i = 1; i <= 14; i += 1) {
-      const chName = "Chapter " + i;
-      const entry = byChapter[chName] || null;
-      const score = entry && typeof entry.score === "number" ? entry.score : null;
-      const completed = score !== null && score >= 0.7;
-      rows.push("<tr><td>" + chName + "</td><td>" + (completed ? "Completed" : "Not completed yet") + "</td></tr>");
-    }
-    root.innerHTML = "<table class=\"status-table\"><thead><tr><th>Chapter</th><th>Status</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>";
-    return;
-  }
-  const parts = syllabus.map((ch) => {
-    const chName = "Chapter " + ch.number;
-    const entry = byChapter[chName] || null;
-    const score = entry && typeof entry.score === "number" ? entry.score : null;
-    const completed = score !== null && score >= 0.7;
-    const statusLabel = completed ? "Completed" : "Not completed yet";
-    const subtopicsHtml = (ch.subtopics || []).map((st) => "<li class=\"subtopic\"><span class=\"subtopic-id\">" + escapeHtml(st.id) + "</span> " + escapeHtml(st.title) + " — <span class=\"subtopic-status\">" + (completed ? "Done" : "—") + "</span></li>").join("");
-    return "<div class=\"chapter-block\"><h3 class=\"chapter-title\">" + escapeHtml(chName) + " · " + escapeHtml(ch.title) + "</h3><p class=\"chapter-status\">" + statusLabel + "</p><ul class=\"subtopic-list\">" + subtopicsHtml + "</ul></div>";
-  });
-  root.innerHTML = parts.join("");
-}
-
-function renderProfileConfidence(root, syllabus, standData) {
-  if (!root) return;
-  const status = (standData && standData.chapter_status) || [];
-  const byChapter = {};
-  status.forEach((s) => {
-    const ch = s.chapter || s.name || "";
-    if (ch) byChapter[ch] = s;
-  });
-  const confidencePct = standData && typeof standData.confidence_score === "number" ? (standData.confidence_score * 100).toFixed(0) + "%" : "—";
-  let body = "<p class=\"profile-summary\">Overall confidence: <strong>" + confidencePct + "</strong></p>";
-  if (!syllabus.length) {
-    const rows = [];
-    for (let i = 1; i <= 14; i += 1) {
-      const chName = "Chapter " + i;
-      const entry = byChapter[chName] || null;
-      const perc = entry && typeof entry.score === "number" ? (entry.score * 100).toFixed(0) + "%" : "—";
-      const band = entry && entry.band ? entry.band : "Not started";
-      rows.push("<tr><td>" + chName + "</td><td>" + perc + "</td><td>" + escapeHtml(band) + "</td></tr>");
-    }
-    root.innerHTML = body + "<table class=\"status-table\"><thead><tr><th>Chapter</th><th>Accuracy</th><th>Level</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>";
-    return;
-  }
-  const parts = syllabus.map((ch) => {
-    const chName = "Chapter " + ch.number;
-    const entry = byChapter[chName] || null;
-    const perc = entry && typeof entry.score === "number" ? (entry.score * 100).toFixed(0) + "%" : "—";
-    const band = entry && entry.band ? entry.band : "Not started";
-    const subtopicsHtml = (ch.subtopics || []).map((st) => "<li class=\"subtopic\"><span class=\"subtopic-id\">" + escapeHtml(st.id) + "</span> " + escapeHtml(st.title) + " — <span class=\"subtopic-accuracy\">" + (entry ? perc : "—") + " / " + escapeHtml(band) + "</span></li>").join("");
-    return "<div class=\"chapter-block\"><h3 class=\"chapter-title\">" + escapeHtml(chName) + " · " + escapeHtml(ch.title) + "</h3><p class=\"chapter-accuracy\">Accuracy: " + perc + " · " + escapeHtml(band) + "</p><ul class=\"subtopic-list\">" + subtopicsHtml + "</ul></div>";
-  });
-  root.innerHTML = body + parts.join("");
-}
-
-function renderSchedule(root, scheduleData) {
-  if (!root) return;
-  if (!scheduleData || !scheduleData.weeks || !scheduleData.weeks.length) {
-    root.innerHTML = "<p class=\"muted\">No schedule data yet.</p>";
-    return;
-  }
-  const currentWeek = scheduleData.current_week;
-  const parts = scheduleData.weeks.map((w) => {
-    const isPast = w.is_past;
-    const isCurrent = w.is_current;
-    let badge = "";
-    if (isCurrent) badge = " <span class=\"week-badge current\">Current</span>";
-    else if (isPast) badge = " <span class=\"week-badge past\">Past</span>";
-    const taskRows = (w.tasks || []).map((t) => "<tr><td>" + escapeHtml(t.title || t.chapter || "Task") + "</td><td>" + escapeHtml(t.task_type || "—") + "</td><td>" + escapeHtml(t.chapter || "—") + "</td><td>" + escapeHtml(t.status || "pending") + "</td></tr>").join("");
-    const taskTable = taskRows ? "<table class=\"status-table week-tasks\"><thead><tr><th>Task</th><th>Type</th><th>Chapter</th><th>Status</th></tr></thead><tbody>" + taskRows + "</tbody></table>" : "<p class=\"muted\">No tasks for this week yet.</p>";
-    return "<div class=\"week-block" + (isCurrent ? " week-current" : "") + "\"><h3 class=\"week-title\">Week " + w.week_number + badge + "</h3><p class=\"week-meta\">" + escapeHtml(w.chapter || "—") + " · " + escapeHtml(w.focus || "") + "</p>" + taskTable + "</div>";
-  });
-  root.innerHTML = "<p class=\"muted\">Timeline: " + scheduleData.total_weeks + " weeks total. You are on week " + currentWeek + ".</p>" + parts.join("");
-}
-
-function escapeHtml(s) {
-  if (s == null) return "";
-  const t = document.createElement("textarea");
-  t.textContent = String(s);
-  return t.innerHTML;
-}
-
-function renderChapterStatusTable(data) {
-  const body = el("chapStatusTableBody");
-  if (!body) return;
-  const status = (data && data.chapter_status) || [];
-  const byChapter = {};
-  status.forEach((s) => {
-    const ch = s.chapter || s.name || "";
-    if (ch) byChapter[ch] = s;
-  });
-  const rows = [];
-  for (let i = 1; i <= 14; i += 1) {
-    const chName = "Chapter " + i;
-    const entry = byChapter[chName] || null;
-    const score = entry && typeof entry.score === "number" ? entry.score : null;
-    const completed = score !== null && score >= 0.7;
-    const label = completed ? "Completed" : "Not completed yet";
-    rows.push(`<tr><td>${chName}</td><td>${label}</td></tr>`);
-  }
-  body.innerHTML = rows.join("");
-}
-
-function renderChapterAccuracyTable(data) {
-  const body = el("chapAccuracyTableBody");
-  if (!body) return;
-  const status = (data && data.chapter_status) || [];
-  const byChapter = {};
-  status.forEach((s) => {
-    const ch = s.chapter || s.name || "";
-    if (ch) byChapter[ch] = s;
-  });
-  const rows = [];
-  for (let i = 1; i <= 14; i += 1) {
-    const chName = "Chapter " + i;
-    const entry = byChapter[chName] || null;
-    const rawScore = entry && typeof entry.score === "number" ? entry.score : null;
-    const perc = rawScore !== null ? (rawScore * 100).toFixed(0) + "%" : "—";
-    const band = entry && entry.band ? entry.band : "Not started";
-    rows.push(`<tr><td>${chName}</td><td>${perc}</td><td>${band}</td></tr>`);
-  }
-  body.innerHTML = rows.join("");
-}
-
-function renderCurrentWeekPlan(data) {
-  const body = el("currentWeekTasksBody");
-  const weekLabel = el("currentWeekLabel");
-  if (!body) return;
-  const tasks = (data && data.tasks) || [];
-  const week = data && data.week_number;
-  if (weekLabel) weekLabel.textContent = week != null ? String(week) : "-";
-  if (!tasks.length) {
-    body.innerHTML = "<tr><td colspan=\"4\">No tasks scheduled for this week yet.</td></tr>";
-    return;
-  }
-  const rows = tasks.map((t) => {
-    const title = t.title || t.chapter || "Task";
-    const type = t.task_type || "task";
-    const chapter = t.chapter || "—";
-    const status = t.status || "pending";
-    return `<tr><td>${title}</td><td>${type}</td><td>${chapter}</td><td>${status}</td></tr>`;
-  });
-  body.innerHTML = rows.join("");
-}
-
-async function apiCall(path, method = "GET", body = null) {
-  const opts = { method, headers: { "Content-Type": "application/json" } };
-  if (body) opts.body = JSON.stringify(body);
-  const resp = await fetch(`${getBaseUrl()}${path}`, opts);
-  const data = await resp.json();
   if (!resp.ok) {
-    throw new Error(`${resp.status} ${resp.statusText}: ${JSON.stringify(data)}`);
+    const err = await resp.json().catch(() => ({ detail: resp.statusText }));
+    throw new Error(err.detail || err.message || `Error ${resp.status}`);
   }
-  return data;
+  return resp.json();
 }
 
-async function apiCallOb(path, method = "GET", body = null) {
-  const base = getObBaseUrl();
-  const opts = { method, headers: { "Content-Type": "application/json" } };
-  if (body) opts.body = JSON.stringify(body);
-  const resp = await fetch(`${base}${path}`, opts);
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(`${resp.status}: ${JSON.stringify(data)}`);
-  return data;
-}
+function $(id) { return document.getElementById(id); }
+function show(el) { el.classList.remove("hidden"); }
+function hide(el) { el.classList.add("hidden"); }
 
-async function apiCallAdmin(path) {
-  const base = getAdminBaseUrl();
-  const resp = await fetch(`${base}${path}`);
-  const data = await resp.json();
-  if (!resp.ok) throw new Error(`${resp.status}: ${JSON.stringify(data)}`);
-  return data;
-}
-
-function renderStart(data) {
-  el("sessionId").textContent = data.session_id ?? "-";
-  el("concept").textContent = data.concept ?? "-";
-  el("question").textContent = data.question ?? "-";
-  el("explanation").textContent = data.explanation ?? "-";
-}
-
-function renderSubmit(data) {
-  const scoreEl = el("score");
-  const scoreVal = Number(data.score ?? 0);
-  scoreEl.textContent = String(data.score ?? "-");
-  scoreEl.classList.remove("score-good", "score-bad");
-  if (!Number.isNaN(scoreVal)) {
-    scoreEl.classList.add(scoreVal >= 0.6 ? "score-good" : "score-bad");
-  }
-  el("errorType").textContent = data.error_type ?? "-";
-  el("adaptation").textContent = JSON.stringify(data.adaptation_applied ?? {}, null, 2);
-  el("explanation").textContent = data.next_explanation ?? "-";
-}
-
-function renderDashboard(data) {
-  el("engagement").textContent = String(data.engagement_score ?? "-");
-  el("weakAreas").textContent = (data.weak_areas || []).join(", ") || "-";
-  el("masteryMap").textContent = JSON.stringify(data.mastery_map || {}, null, 2);
-  el("lastSessions").textContent = JSON.stringify(data.last_sessions || [], null, 2);
-}
-
-async function startSession() {
-  try {
-    const learnerId = el("learnerId").value.trim();
-    if (!learnerId) throw new Error("Learner ID is required");
-    const data = await apiCall("/start-session", "POST", { learner_id: learnerId });
-    renderStart(data);
-    logStatus("Session started", data);
-  } catch (err) {
-    logStatus("Start session failed", { error: err.message });
-  }
-}
-
-async function submitAnswer() {
-  try {
-    const sessionId = el("sessionId").textContent.trim();
-    if (!sessionId || sessionId === "-") throw new Error("Start a session first");
-    const answer = el("answer").value.trim();
-    const responseTime = Number(el("responseTime").value || "0");
-    const data = await apiCall("/submit-answer", "POST", {
-      session_id: sessionId,
-      answer,
-      response_time: responseTime,
-    });
-    renderSubmit(data);
-    logStatus("Answer submitted", data);
-  } catch (err) {
-    logStatus("Submit answer failed", { error: err.message });
-  }
-}
-
-async function refreshDashboard() {
-  try {
-    const learnerId = el("learnerId").value.trim();
-    if (!learnerId) throw new Error("Learner ID is required");
-    const data = await apiCall(`/dashboard/${learnerId}`, "GET");
-    renderDashboard(data);
-    logStatus("Dashboard refreshed", data);
-  } catch (err) {
-    logStatus("Dashboard failed", { error: err.message });
-  }
-}
-
-el("newLearnerBtn").addEventListener("click", () => {
-  el("learnerId").value = newUuid();
-});
-el("startBtn").addEventListener("click", startSession);
-el("submitBtn").addEventListener("click", submitAnswer);
-el("dashboardBtn").addEventListener("click", refreshDashboard);
-
-// Auth gate: login / signup / diagnostic flow (PLANNER_FINAL_FEATURES)
-// Account is created only after the user completes the 25-question diagnostic.
-const DIAGNOSTIC_TIME_LIMIT_MINUTES = 30;
-let _authDiagnosticAttemptId = null;
-let _authDiagnosticQuestions = [];
-let _authSignupDraftId = null;
-let _authDiagnosticStartTime = null;
-let _authTimerInterval = null;
-
-function initAuthTabs() {
-  const tabs = document.querySelectorAll("#auth-tabs .tab");
-  tabs.forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const auth = btn.getAttribute("data-auth");
-      if (!auth) return;
-      tabs.forEach((t) => t.classList.remove("active"));
-      btn.classList.add("active");
-      showAuthPanel(auth);
-      const loginErr = el("authLoginError");
-      const signupErr = el("authSignupError");
-      if (loginErr) { loginErr.classList.add("hidden"); loginErr.textContent = ""; }
-      if (signupErr) { signupErr.classList.add("hidden"); signupErr.textContent = ""; }
-    });
-  });
-}
-
-async function doLogin() {
-  const usernameInput = el("loginUsername");
-  const passwordInput = el("loginPassword");
-  const username = (usernameInput && usernameInput.value && String(usernameInput.value).trim()) || "";
-  const password = (passwordInput && passwordInput.value) || "";
-  const base = getAuthBaseUrl();
-  const errEl = el("authLoginError");
-  const btnEl = el("loginBtn");
-
-  if (!username || !password) {
-    if (errEl) { errEl.textContent = "Please enter your username and password."; errEl.classList.remove("hidden"); }
-    return;
-  }
-  if (errEl) { errEl.classList.add("hidden"); errEl.textContent = ""; }
-  const originalLabel = btnEl ? btnEl.textContent : "Login";
-  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Signing in…"; }
-  try {
-    const resp = await fetch(`${base}/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      const msg = typeof data.detail === "string" ? data.detail : Array.isArray(data.detail) ? (data.detail[0] && data.detail[0].msg) || data.detail[0] : data.message || resp.statusText || "Login failed.";
-      throw new Error(msg);
-    }
-    const token = data.token;
-    const learnerId = data.learner_id != null ? String(data.learner_id) : "";
-    if (!token || !learnerId) throw new Error("Invalid response from server. Please try again.");
-    setAuth(token, learnerId, base);
-    showApp();
-  } catch (err) {
-    if (errEl) { errEl.textContent = err.message || "Login failed. Check your username and password."; errEl.classList.remove("hidden"); }
-    if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalLabel; }
-  }
-}
-
-function stopAuthTimer() {
-  if (_authTimerInterval) {
-    clearInterval(_authTimerInterval);
-    _authTimerInterval = null;
-  }
-}
-
-function startAuthTimer() {
-  stopAuthTimer();
-  _authDiagnosticStartTime = Date.now();
-  const timerEl = el("authDiagnosticTimer");
-  if (!timerEl) return;
-  function tick() {
-    const elapsedMs = Date.now() - _authDiagnosticStartTime;
-    const limitMs = DIAGNOSTIC_TIME_LIMIT_MINUTES * 60 * 1000;
-    const leftMs = Math.max(0, limitMs - elapsedMs);
-    const leftMin = Math.floor(leftMs / 60000);
-    const leftSec = Math.floor((leftMs % 60000) / 1000);
-    timerEl.textContent = "Time left: " + leftMin + ":" + (leftSec < 10 ? "0" : "") + leftSec;
-    if (leftMs <= 0) {
-      stopAuthTimer();
-      timerEl.textContent = "Time's up! Submitting...";
-      submitAuthDiagnostic();
-    }
-  }
-  tick();
-  _authTimerInterval = setInterval(tick, 1000);
-}
-
-async function doSignup() {
-  const username = (el("signupUsername") && el("signupUsername").value && String(el("signupUsername").value).trim()) || "";
-  const password = (el("signupPassword") && el("signupPassword").value) || "";
-  const name = (el("signupName") && el("signupName").value && String(el("signupName").value).trim()) || "";
-  const date_of_birth = (el("signupDob") && el("signupDob").value) || "";
-  const math_9_percent = parseInt((el("signupMathPercent") && el("signupMathPercent").value) || "0", 10);
-  const selected_timeline_weeks = parseInt((el("signupWeeks") && el("signupWeeks").value) || "28", 10);
-  const base = getAuthBaseUrl();
-  const errEl = el("authSignupError");
-  const btnEl = el("signupBtn");
-
-  if (!username || !password || !name || !date_of_birth) {
-    if (errEl) { errEl.textContent = "Please fill in username, password, full name, and date of birth."; errEl.classList.remove("hidden"); }
-    return;
-  }
-  if (Number.isNaN(math_9_percent) || math_9_percent < 0 || math_9_percent > 100) {
-    if (errEl) { errEl.textContent = "Class 9 Maths % must be between 0 and 100."; errEl.classList.remove("hidden"); }
-    return;
-  }
-  if (errEl) { errEl.classList.add("hidden"); errEl.textContent = ""; }
-  const originalLabel = btnEl ? btnEl.textContent : "Continue to test";
-  if (btnEl) { btnEl.disabled = true; btnEl.textContent = "Loading…"; }
-  try {
-    const resp = await fetch(`${base}/auth/start-signup`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password, name, date_of_birth, selected_timeline_weeks, math_9_percent }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok) {
-      const msg = typeof data.detail === "string" ? data.detail : Array.isArray(data.detail) ? (data.detail[0] && data.detail[0].msg) || data.detail[0] : data.message || resp.statusText || "Signup failed.";
-      throw new Error(msg);
-    }
-    _authSignupDraftId = data.signup_draft_id;
-    _authDiagnosticAttemptId = null;
-    _authDiagnosticQuestions = [];
-    const qResp = await fetch(`${base}/onboarding/diagnostic-questions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ signup_draft_id: _authSignupDraftId }),
-    });
-    const qData = await qResp.json().catch(() => ({}));
-    if (!qResp.ok) throw new Error(qData.detail || qData.message || "Could not load the diagnostic test. Please try again.");
-    _authDiagnosticAttemptId = qData.diagnostic_attempt_id;
-    _authDiagnosticQuestions = qData.questions || [];
-    renderAuthDiagnosticQuestions();
-    startAuthTimer();
-    showAuthPanel("diagnostic");
-    if (el("authDiagnosticError")) { el("authDiagnosticError").classList.add("hidden"); el("authDiagnosticError").textContent = ""; }
-  } catch (err) {
-    if (errEl) { errEl.textContent = err.message || "Something went wrong. Please try again."; errEl.classList.remove("hidden"); }
-  }
-  if (btnEl) { btnEl.disabled = false; btnEl.textContent = originalLabel; }
-}
-
-function renderAuthDiagnosticQuestions() {
-  const container = el("authQuestionsContainer");
-  if (!container || !_authDiagnosticQuestions.length) return;
-  container.innerHTML = "";
-  const questions = _authDiagnosticQuestions.slice(0, 25);
-  questions.forEach((q, idx) => {
-    const block = document.createElement("div");
-    block.className = "q-block";
-
-    const lab = document.createElement("p");
-    lab.className = "q-prompt";
-    lab.innerHTML = (idx + 1) + ". " + (q.prompt || "Question");
-    block.appendChild(lab);
-
-    const opts = (q.options || []).slice(0, 4);
-    const labels = ["A", "B", "C", "D"];
-    opts.forEach((opt, optIdx) => {
-      const optId = "auth-q-" + idx + "-opt-" + optIdx;
-      const wrapper = document.createElement("label");
-      wrapper.className = "q-option";
-
-      const input = document.createElement("input");
-      input.type = "radio";
-      input.name = "auth-q-" + idx;
-      input.id = optId;
-      input.value = opt;
-
-      const span = document.createElement("span");
-      span.className = "q-option-text";
-      span.innerHTML = labels[optIdx] + ". " + opt;
-
-      wrapper.appendChild(input);
-      wrapper.appendChild(span);
-      block.appendChild(wrapper);
-    });
-
-    container.appendChild(block);
-  });
+function renderKaTeX(container) {
   if (typeof renderMathInElement === "function") {
     renderMathInElement(container, {
-      delimiters: [{ left: "\\(", right: "\\)" }, { left: "\\[", right: "\\]" }],
+      delimiters: [
+        { left: "\\(", right: "\\)", display: false },
+        { left: "\\[", right: "\\]", display: true },
+        { left: "$$", right: "$$", display: true },
+      ],
       throwOnError: false,
     });
   }
 }
 
-async function submitAuthDiagnostic() {
-  stopAuthTimer();
-  const base = getAuthBaseUrl();
-  const useDraft = _authSignupDraftId;
-  const learnerId = getStoredLearnerId();
-  if (!_authDiagnosticAttemptId || !_authDiagnosticQuestions.length) {
-    if (el("authDiagnosticError")) { el("authDiagnosticError").textContent = "Complete the test first."; el("authDiagnosticError").classList.remove("hidden"); }
-    return;
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+// Simple markdown-to-HTML conversion
+function mdToHtml(md) {
+  if (!md) return "";
+  return md
+    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
+    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
+    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/^- (.+)$/gm, "<li>$1</li>")
+    .replace(/(<li>.*<\/li>)/s, "<ul>$1</ul>")
+    .replace(/\n\n/g, "</p><p>")
+    .replace(/\n/g, "<br>")
+    .replace(/^/, "<p>")
+    .replace(/$/, "</p>")
+    .replace(/<p><h/g, "<h")
+    .replace(/<\/h(\d)><\/p>/g, "</h$1>")
+    .replace(/<p><ul>/g, "<ul>")
+    .replace(/<\/ul><\/p>/g, "</ul>")
+    .replace(/<p><\/p>/g, "");
+}
+
+
+// ── INITIALIZATION ──────────────────────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  initWeeksDropdown();
+  bindEvents();
+  checkAuthState();
+});
+
+function initWeeksDropdown() {
+  const sel = $("signup-weeks");
+  if (sel) {
+    for (let w = 14; w <= 28; w++) {
+      const opt = document.createElement("option");
+      opt.value = w;
+      opt.textContent = `${w} weeks`;
+      sel.appendChild(opt);
+    }
   }
-  if (!useDraft && !learnerId) {
-    if (el("authDiagnosticError")) { el("authDiagnosticError").textContent = "Session expired. Please sign up again."; el("authDiagnosticError").classList.remove("hidden"); }
-    return;
+  const savedBase = typeof localStorage !== "undefined" && localStorage.getItem(API_BASE_KEY);
+  if (savedBase) {
+    const inp = $("api-base-url");
+    const inp2 = $("api-base-url-signup");
+    if (inp) inp.value = savedBase;
+    if (inp2) inp2.value = savedBase;
   }
-  const elapsedMs = _authDiagnosticStartTime ? Date.now() - _authDiagnosticStartTime : DIAGNOSTIC_TIME_LIMIT_MINUTES * 60 * 1000;
-  const timeSpentMinutes = Math.min(DIAGNOSTIC_TIME_LIMIT_MINUTES, Math.max(1, Math.floor(elapsedMs / 60000)));
-  const answers = _authDiagnosticQuestions.slice(0, 25).map((q, idx) => {
-    const selected = document.querySelector('input[name="auth-q-' + idx + '"]:checked');
-    return { question_id: q.question_id, answer: (selected && selected.value) ? selected.value.trim() : "" };
-  });
-  const body = {
-    diagnostic_attempt_id: _authDiagnosticAttemptId,
-    answers,
-    time_spent_minutes: timeSpentMinutes,
-  };
-  if (useDraft) body.signup_draft_id = useDraft;
-  else body.learner_id = learnerId;
+}
+
+function bindEvents() {
+  // Auth
+  $("form-login").addEventListener("submit", handleLogin);
+  $("form-signup").addEventListener("submit", handleSignup);
+  $("link-to-signup").addEventListener("click", e => { e.preventDefault(); hide($("panel-login")); show($("panel-signup")); });
+  $("link-to-login").addEventListener("click", e => { e.preventDefault(); hide($("panel-signup")); show($("panel-login")); });
+  $("btn-logout").addEventListener("click", handleLogout);
+
+  // Diagnostic
+  $("btn-submit-test").addEventListener("click", handleSubmitDiagnostic);
+
+  // Result
+  $("btn-go-dashboard").addEventListener("click", () => { hide($("auth-gate")); show($("app-main")); loadDashboard(); });
+
+  // Reading & Test
+  $("btn-back-from-reading").addEventListener("click", backToDashboard);
+  $("btn-back-from-test").addEventListener("click", backToDashboard);
+  $("btn-submit-chapter-test").addEventListener("click", handleSubmitChapterTest);
+}
+
+function checkAuthState() {
+  if (getToken() && getLearnerId()) {
+    hide($("auth-gate"));
+    show($("app-main"));
+    $("nav-student-name").textContent = localStorage.getItem(NAME_KEY) || "Student";
+    loadDashboard();
+  }
+}
+
+
+// ── AUTH ─────────────────────────────────────────────────────────────────────
+async function handleLogin(e) {
+  e.preventDefault();
+  const errEl = $("login-error");
+  hide(errEl);
+
   try {
-    const resp = await fetch(`${base}/onboarding/submit`, {
+    const base = getApiBase();
+    const data = await api("/auth/login", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      body: {
+        username: $("login-username").value.trim(),
+        password: $("login-password").value,
+      },
     });
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.detail || resp.statusText);
-    if (data.token && data.learner_id) {
-      setAuth(data.token, data.learner_id, base);
-      _authSignupDraftId = null;
-    }
-    const scoreLine = data.correct_out_of_total ? "You got " + data.correct_out_of_total + " correct." : "Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-");
-    const lines = [
-      scoreLine,
-      "",
-      "You asked for: " + (data.selected_timeline_weeks || "-") + " weeks",
-      "We suggest: " + (data.recommended_timeline_weeks || "-") + " weeks",
-      (data.timeline_recommendation_note || ""),
-      "",
-      "Week 1 schedule:",
-      (data.current_week_schedule && data.current_week_schedule.chapter) ? data.current_week_schedule.chapter + " – " + (data.current_week_schedule.focus || "") : "-",
-      "",
-      "Tasks this week:",
-      ...(data.current_week_tasks || []).map((t) => "  • " + (t.title || t.chapter)),
-    ];
-    if (el("authResultPre")) el("authResultPre").textContent = lines.join("\n");
-    showAuthPanel("result");
-    if (el("authDiagnosticError")) el("authDiagnosticError").classList.add("hidden");
+    setApiBase(base);
+    setAuth(data.token, data.learner_id, data.name);
+    hide($("auth-gate"));
+    show($("app-main"));
+    $("nav-student-name").textContent = data.name;
+    loadDashboard();
   } catch (err) {
-    if (el("authDiagnosticError")) { el("authDiagnosticError").textContent = err.message || "Submit failed."; el("authDiagnosticError").classList.remove("hidden"); }
+    errEl.textContent = err.message;
+    show(errEl);
   }
 }
 
-function initApp() {
-  initAuthTabs();
-  const loginBtn = el("loginBtn");
-  const signupBtn = el("signupBtn");
-  const submitDiagBtn = el("authSubmitDiagnosticBtn");
-  const goDashBtn = el("authGoDashboardBtn");
-  const logoutBtn = el("logoutBtn");
-  if (loginBtn) loginBtn.addEventListener("click", doLogin);
-  if (signupBtn) signupBtn.addEventListener("click", doSignup);
-  if (submitDiagBtn) submitDiagBtn.addEventListener("click", submitAuthDiagnostic);
-  if (goDashBtn) goDashBtn.addEventListener("click", function () { showApp(); });
-  if (logoutBtn) logoutBtn.addEventListener("click", function () { clearAuth(); showAuthGate(); });
+async function handleSignup(e) {
+  e.preventDefault();
+  const errEl = $("signup-error");
+  hide(errEl);
 
-  if (getAuthToken() && getStoredLearnerId()) {
-    showApp();
-  } else {
-    showAuthGate();
+  try {
+    setApiBase(getApiBase());
+    // Step 1: Start signup
+    const draft = await api("/auth/start-signup", {
+      method: "POST",
+      body: {
+        username: $("signup-username").value.trim(),
+        password: $("signup-password").value,
+        name: $("signup-name").value.trim(),
+        date_of_birth: $("signup-dob").value,
+        selected_timeline_weeks: parseInt($("signup-weeks").value),
+        math_9_percent: parseInt($("signup-math9").value),
+      },
+    });
+
+    // Step 2: Get diagnostic questions
+    const diagResp = await api("/onboarding/diagnostic-questions", {
+      method: "POST",
+      body: { signup_draft_id: draft.signup_draft_id },
+    });
+
+    diagnosticData = {
+      attempt_id: diagResp.diagnostic_attempt_id,
+      signup_draft_id: draft.signup_draft_id,
+      questions: diagResp.questions,
+    };
+
+    // Show diagnostic test
+    hide($("panel-signup"));
+    show($("panel-diagnostic"));
+    renderDiagnosticQuestions(diagResp.questions);
+    startDiagnosticTimer();
+  } catch (err) {
+    errEl.textContent = err.message;
+    show(errEl);
   }
 }
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initApp);
-} else {
-  initApp();
+function handleLogout() {
+  clearAuth();
+  if (diagnosticTimer) clearInterval(diagnosticTimer);
+  if (readingTimer) clearInterval(readingTimer);
+  if (testTimer) clearInterval(testTimer);
+  hide($("app-main"));
+  show($("auth-gate"));
+  hide($("panel-diagnostic"));
+  hide($("panel-result"));
+  show($("panel-login"));
 }
 
-// Onboarding & Plan (diagnostic wizard state — used only for programmatic API tests; dashboard uses auth-gate flow)
-let _obAttemptId = null;
-let _obQuestions = [];
 
-function renderObQuestions() {
-  const container = el("obQuestionsContainer");
-  if (!container) return;
-  if (!_obQuestions.length) {
-    container.innerHTML = "<p class=\"muted\">Start onboarding above to load questions.</p>";
-    if (el("obSubmitDiagnosticRow")) el("obSubmitDiagnosticRow").style.display = "none";
-    if (el("obSubmitDiagnosticActions")) el("obSubmitDiagnosticActions").style.display = "none";
-    return;
-  }
+// ── DIAGNOSTIC ──────────────────────────────────────────────────────────────
+function renderDiagnosticQuestions(questions) {
+  const container = $("test-questions");
   container.innerHTML = "";
-  const questions = _obQuestions.slice(0, 25);
-  questions.forEach((q, idx) => {
-    const block = document.createElement("div");
-    block.className = "q-block";
-    const lab = document.createElement("p");
-    lab.className = "q-prompt";
-    lab.textContent = (idx + 1) + ". " + (q.prompt || "Question");
-    block.appendChild(lab);
 
-    if ((q.question_type === "mcq" || q.question_type === "true_false") && q.options && q.options.length) {
-      const opts = q.options.slice(0, q.question_type === "true_false" ? 2 : 4);
-      const labels = ["A", "B", "C", "D"];
-      opts.forEach((opt, optIdx) => {
-        const optId = "ob-q-" + idx + "-opt-" + optIdx;
-        const wrapper = document.createElement("label");
-        wrapper.className = "q-option";
+  questions.forEach((q, i) => {
+    const card = document.createElement("div");
+    card.className = "question-card";
+    card.id = `diag-q-${q.question_id}`;
 
-        const input = document.createElement("input");
-        input.type = "radio";
-        input.name = "ob-q-" + idx;
-        input.id = optId;
-        input.value = opt;
-
-        const span = document.createElement("span");
-        const letter = labels[optIdx] || "";
-        span.textContent = (letter ? letter + ". " : "") + opt;
-
-        wrapper.appendChild(input);
-        wrapper.appendChild(span);
-        block.appendChild(wrapper);
-      });
-    } else {
-      const input = document.createElement("input");
-      input.type = "text";
-      input.placeholder = "Your answer";
-      input.id = "ob-a-" + idx;
-      block.appendChild(input);
-    }
-
-    container.appendChild(block);
+    card.innerHTML = `
+            <div class="question-number">Question ${i + 1} of ${questions.length}</div>
+            <div class="question-prompt">${q.prompt}</div>
+            <div class="question-options">
+                ${q.options.map((opt, oi) => `
+                    <label class="option-label" data-qid="${q.question_id}" data-idx="${oi}">
+                        <input type="radio" name="diag_${q.question_id}" value="${oi}">
+                        <span class="option-indicator"></span>
+                        <span>${opt}</span>
+                    </label>
+                `).join("")}
+            </div>
+        `;
+    container.appendChild(card);
   });
-  if (el("obSubmitDiagnosticRow")) el("obSubmitDiagnosticRow").style.display = "block";
-  if (el("obSubmitDiagnosticActions")) el("obSubmitDiagnosticActions").style.display = "block";
+
+  // Bind option clicks
+  container.querySelectorAll(".option-label").forEach(label => {
+    label.addEventListener("click", () => {
+      const qid = label.dataset.qid;
+      // Remove previous selection for this question
+      container.querySelectorAll(`[data-qid="${qid}"]`).forEach(l => l.classList.remove("selected"));
+      label.classList.add("selected");
+      label.querySelector("input").checked = true;
+
+      // Update card state
+      const card = $(`diag-q-${qid}`);
+      if (card) card.classList.add("answered");
+
+      updateDiagnosticProgress();
+    });
+  });
+
+  renderKaTeX(container);
 }
 
-async function onboardingStart() {
-  const name = (el("obName") && el("obName").value.trim()) || "Test Learner";
-  const grade_level = (el("obGrade") && el("obGrade").value.trim()) || "10";
-  const selected_timeline_weeks = parseInt((el("obTimeline") && el("obTimeline").value) || "16", 10);
+function updateDiagnosticProgress() {
+  const answered = document.querySelectorAll(".question-card.answered").length;
+  $("test-answered").textContent = answered;
+  $("btn-submit-test").disabled = answered === 0;
+}
+
+function startDiagnosticTimer() {
+  diagnosticSeconds = 1800;
+  const timerEl = $("test-timer");
+  timerEl.textContent = formatTime(diagnosticSeconds);
+
+  diagnosticTimer = setInterval(() => {
+    diagnosticSeconds--;
+    timerEl.textContent = formatTime(diagnosticSeconds);
+    if (diagnosticSeconds <= 300) timerEl.classList.add("danger");
+    if (diagnosticSeconds <= 0) {
+      clearInterval(diagnosticTimer);
+      handleSubmitDiagnostic();
+    }
+  }, 1000);
+}
+
+async function handleSubmitDiagnostic() {
+  if (diagnosticTimer) clearInterval(diagnosticTimer);
+  $("btn-submit-test").disabled = true;
+  $("btn-submit-test").textContent = "Submitting...";
+
+  // Collect answers
+  const answers = [];
+  diagnosticData.questions.forEach(q => {
+    const selected = document.querySelector(`input[name="diag_${q.question_id}"]:checked`);
+    if (selected) {
+      const idx = parseInt(selected.value);
+      answers.push({
+        question_id: q.question_id,
+        answer: q.options[idx],
+      });
+    }
+  });
+
   try {
-    const data = await apiCallOb("/onboarding/start", "POST", {
-      name,
-      grade_level,
-      exam_in_months: 10,
-      selected_timeline_weeks,
+    const result = await api("/onboarding/submit", {
+      method: "POST",
+      body: {
+        signup_draft_id: diagnosticData.signup_draft_id,
+        diagnostic_attempt_id: diagnosticData.attempt_id,
+        answers: answers,
+        time_spent_minutes: Math.ceil((1800 - diagnosticSeconds) / 60),
+      },
     });
-    if (data.learner_id) el("obLearnerId").textContent = data.learner_id;
-    _obAttemptId = data.diagnostic_attempt_id || null;
-    _obQuestions = (data.questions || []).slice(0, 25);
-    renderObQuestions();
-    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "none";
-    el("obResult").textContent = "Onboarding started. Learner ID: " + data.learner_id + "\nQuestions: " + (_obQuestions.length) + " items. Complete the diagnostic below and submit.";
+
+    // Save auth if token returned
+    if (result.token) {
+      setAuth(result.token, result.learner_id, localStorage.getItem(NAME_KEY) || $("signup-name").value);
+    }
+
+    // Show result
+    hide($("panel-diagnostic"));
+    show($("panel-result"));
+    renderResult(result);
   } catch (err) {
-    el("obResult").textContent = "Error: " + err.message;
+    $("btn-submit-test").disabled = false;
+    $("btn-submit-test").textContent = "Submit Test";
+    alert("Error submitting test: " + err.message);
   }
 }
 
-async function submitDiagnostic() {
-  const learnerId = getObLearnerId();
-  if (!_obAttemptId || !_obQuestions.length) {
-    el("obDiagnosticResultPre").textContent = "Start onboarding and load questions first.";
-    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "block";
+function renderResult(result) {
+  const container = $("result-content");
+  const score = result.score;
+  const scorePercent = (score * 100).toFixed(0);
+  const correct = result.correct_out_of_total || `${Math.round(score * 25)}/25`;
+
+  let chaptersHtml = "";
+  if (result.chapter_scores) {
+    chaptersHtml = `<div class="result-chapters">`;
+    for (const [ch, sc] of Object.entries(result.chapter_scores)) {
+      const cls = sc >= 0.6 ? "strong" : "weak";
+      chaptersHtml += `<div class="result-ch-badge ${cls}">${ch}: ${(sc * 100).toFixed(0)}%</div>`;
+    }
+    chaptersHtml += `</div>`;
+  }
+
+  container.innerHTML = `
+        <div class="result-score-card">
+            <div class="result-score-big">${scorePercent}%</div>
+            <div class="result-score-label">${correct} correct</div>
+        </div>
+        <div class="result-plan-note">
+            📅 You chose <strong>${result.selected_timeline_weeks} weeks</strong>.
+            Based on your performance, we suggest <strong>${result.recommended_timeline_weeks} weeks</strong>.
+            ${result.timeline_recommendation_note || ""}
+        </div>
+        ${chaptersHtml}
+    `;
+  renderKaTeX(container);
+}
+
+
+// ── DASHBOARD ───────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  showScreen("dashboard");
+  const learnerId = getLearnerId();
+  $("nav-student-name").textContent = localStorage.getItem(NAME_KEY) || "Student";
+
+  try {
+    const data = await api(`/learning/dashboard/${learnerId}`);
+    renderDashboard(data);
+  } catch (err) {
+    console.error("Dashboard load failed:", err);
+    // Show a minimal dashboard if the learning endpoint fails
+    try {
+      // Try onboarding endpoint as fallback
+      renderDashboardFallback();
+    } catch (e2) {
+      $("profile-card").innerHTML = `<div class="profile-stat"><div class="stat-value">⚠️</div><div class="stat-label">${err.message}</div></div>`;
+    }
+  }
+}
+
+function renderDashboard(data) {
+  // Profile card
+  $("profile-card").innerHTML = `
+        <div class="profile-stat">
+            <div class="stat-value">📐</div>
+            <div class="stat-label">${data.student_name}</div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">W${data.current_week}</div>
+            <div class="stat-label">Current Week</div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">${data.overall_completion_percent.toFixed(0)}%</div>
+            <div class="stat-label">Completed</div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">${data.overall_mastery_percent.toFixed(0)}%</div>
+            <div class="stat-label">Mastery</div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">${data.diagnostic_score !== null ? (data.diagnostic_score * 100).toFixed(0) + "%" : "—"}</div>
+            <div class="stat-label">Diagnostic</div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">${data.selected_weeks || "—"}/${data.suggested_weeks || "—"}</div>
+            <div class="stat-label">Chosen / Suggested Wks</div>
+        </div>
+    `;
+
+  // Current week tasks
+  renderTasks(data.current_week_tasks, data.current_week);
+
+  // Completion status
+  $("completion-bar").querySelector("span").style.width = `${data.overall_completion_percent}%`;
+  $("completion-label").textContent = `${data.overall_completion_percent.toFixed(0)}% Complete`;
+  renderChapters(data.chapter_status);
+
+  // Confidence
+  renderConfidence(data.chapter_confidence);
+
+  // Plan
+  renderPlan(data.rough_plan, data.current_week);
+
+  // Revision
+  if (data.revision_queue && data.revision_queue.length > 0) {
+    show($("section-revision"));
+    renderRevision(data.revision_queue);
+  } else {
+    hide($("section-revision"));
+  }
+
+  // Check if week is complete (all tasks done) → show advance button
+  checkWeekComplete(data.current_week_tasks, data.learner_id);
+}
+
+function renderDashboardFallback() {
+  $("profile-card").innerHTML = `
+        <div class="profile-stat">
+            <div class="stat-value">📐</div>
+            <div class="stat-label">${localStorage.getItem(NAME_KEY) || "Student"}</div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">—</div>
+            <div class="stat-label">Loading...</div>
+        </div>
+    `;
+}
+
+function renderTasks(tasks, weekNumber) {
+  const container = $("current-tasks");
+  $("section-tasks").querySelector(".section-title").textContent = `📋 Week ${weekNumber} Tasks`;
+
+  if (!tasks || tasks.length === 0) {
+    container.innerHTML = `<div class="loading-overlay"><p>No tasks yet. Complete onboarding to get started!</p></div>`;
     return;
   }
-  const time_spent_minutes = parseInt((el("obTimeSpent") && el("obTimeSpent").value) || "15", 10);
-  const answers = _obQuestions.slice(0, 25).map((q, idx) => {
-    let value = "";
-    if (q.question_type === "mcq" || q.question_type === "true_false") {
-      const selected = document.querySelector('input[name="ob-q-' + idx + '"]:checked');
-      value = (selected && selected.value) ? selected.value.trim() : "";
-    } else {
-      const input = el("ob-a-" + idx);
-      value = (input && input.value) ? input.value.trim() : "";
-    }
-    return { question_id: q.question_id, answer: value };
-  });
-  try {
-    const data = await apiCallOb("/onboarding/submit", "POST", {
-      learner_id: learnerId,
-      diagnostic_attempt_id: _obAttemptId,
-      answers,
-      time_spent_minutes,
-    });
-    const summary = "Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-") +
-      "\nSelected timeline: " + (data.selected_timeline_weeks || "-") + " weeks" +
-      "\nRecommended: " + (data.recommended_timeline_weeks || "-") + " weeks" +
-      "\nCurrent forecast: " + (data.current_forecast_weeks || "-") + " weeks" +
-      "\nNote: " + (data.timeline_recommendation_note || "-") +
-      "\n\nFull response:\n" + JSON.stringify(data, null, 2);
-    el("obDiagnosticResultPre").textContent = summary;
-    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "block";
-    el("obResult").textContent = "Diagnostic submitted. Score: " + (data.score != null ? (data.score * 100).toFixed(1) + "%" : "-");
-  } catch (err) {
-    el("obDiagnosticResultPre").textContent = "Error: " + err.message;
-    if (el("obDiagnosticResult")) el("obDiagnosticResult").style.display = "block";
-  }
-}
 
-function getObLearnerId() {
-  const id = el("obLearnerId") && el("obLearnerId").textContent.trim();
-  if (!id || id === "-") throw new Error("Start onboarding first to get a learner ID");
-  return id;
-}
+  container.innerHTML = tasks.map(t => {
+    const icon = t.task_type === "read" ? "📖" : (t.task_type === "test" ? "📝" : "✍️");
+    const statusCls = t.status;
+    return `
+            <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}">
+                <div class="task-icon">${icon}</div>
+                <div class="task-info">
+                    <div class="task-title">${t.title}</div>
+                    <div class="task-meta">${t.chapter} • ${t.task_type.toUpperCase()}</div>
+                </div>
+                <div class="task-status-badge ${statusCls}">${t.status.replace("_", " ")}</div>
+            </div>
+        `;
+  }).join("");
 
-async function fetchPlan() {
-  try {
-    const data = await apiCallOb("/onboarding/plan/" + getObLearnerId());
-    el("obResult").textContent = JSON.stringify(data, null, 2);
-    const sel = data.selected_timeline_weeks;
-    const fcast = data.current_forecast_weeks;
-    const delta = data.timeline_delta_weeks;
-    const row = el("obTimelineSummaryRow");
-    const summary = el("obTimelineSummary");
-    if (row && summary && (sel != null || fcast != null)) {
-      const d = delta != null ? delta : (fcast != null && sel != null ? fcast - sel : null);
-      let hint = "";
-      if (d != null) {
-        if (d < 0) hint = " (ahead of goal)";
-        else if (d > 0) hint = " (behind goal)";
-        else hint = " (on track)";
+  // Bind task clicks
+  container.querySelectorAll(".task-card").forEach(card => {
+    card.addEventListener("click", () => {
+      if (card.classList.contains("completed")) return;
+      const type = card.dataset.type;
+      const chapter = card.dataset.chapter;
+      const taskId = card.dataset.taskId;
+
+      // Extract chapter number from "Chapter N"
+      const match = chapter.match(/Chapter (\d+)/);
+      const chNum = match ? parseInt(match[1]) : 1;
+
+      if (type === "read") {
+        openReading(chNum, taskId);
+      } else if (type === "test") {
+        openTest(chNum);
       }
-      summary.textContent = "Selected: " + (sel != null ? sel : "-") + " weeks | Forecast: " + (fcast != null ? fcast : "-") + " weeks | Delta: " + (d != null ? d : "-") + " weeks" + hint;
-      row.style.display = "block";
-    }
-  } catch (err) {
-    el("obResult").textContent = "Error: " + err.message;
-    if (el("obTimelineSummaryRow")) el("obTimelineSummaryRow").style.display = "none";
-  }
-}
-
-async function fetchTasks() {
-  try {
-    const data = await apiCallOb("/onboarding/tasks/" + getObLearnerId());
-    el("obResult").textContent = JSON.stringify(data, null, 2);
-  } catch (err) {
-    el("obResult").textContent = "Error: " + err.message;
-  }
-}
-
-async function fetchWhereIStand() {
-  try {
-    const data = await apiCallOb("/onboarding/where-i-stand/" + getObLearnerId());
-    el("obResult").textContent = JSON.stringify(data, null, 2);
-  } catch (err) {
-    el("obResult").textContent = "Error: " + err.message;
-  }
-}
-
-async function fetchRevisionQueue() {
-  try {
-    const data = await apiCallOb("/onboarding/revision-queue/" + getObLearnerId());
-    el("obResult").textContent = JSON.stringify(data, null, 2);
-  } catch (err) {
-    el("obResult").textContent = "Error: " + err.message;
-  }
-}
-
-async function fetchStreakSummary() {
-  try {
-    const id = getObLearnerId();
-    const [metrics, engagement] = await Promise.all([
-      apiCallOb("/onboarding/learning-metrics/" + id).catch(() => ({})),
-      apiCallOb("/onboarding/engagement/summary/" + id).catch(() => ({})),
-    ]);
-    const parts = [];
-    if (metrics.login_streak_days != null) parts.push("Login streak: " + metrics.login_streak_days + " days");
-    if (engagement.login_streak_days != null && !parts.some(function(p) { return p.startsWith("Login streak"); })) parts.push("Login streak: " + engagement.login_streak_days + " days");
-    if (metrics.adherence_rate_week != null) parts.push("Adherence (week): " + (metrics.adherence_rate_week * 100).toFixed(0) + "%");
-    if (engagement.adherence_rate_week != null && !parts.some(p => p.startsWith("Adherence"))) parts.push("Adherence (week): " + (engagement.adherence_rate_week * 100).toFixed(0) + "%");
-    if (metrics.confidence_score != null) parts.push("Confidence: " + (metrics.confidence_score * 100).toFixed(0) + "%");
-    if (metrics.timeline_adherence_weeks != null) parts.push("Timeline adherence: " + metrics.timeline_adherence_weeks + " weeks");
-    if (metrics.forecast_drift_weeks != null) parts.push("Forecast drift: " + metrics.forecast_drift_weeks + " weeks");
-    if (engagement.engagement_minutes_week != null) parts.push("Minutes this week: " + engagement.engagement_minutes_week);
-    const text = parts.length ? parts.join(" · ") : (metrics.avg_mastery_score != null ? "Avg mastery: " + (metrics.avg_mastery_score * 100).toFixed(0) + "%" : "No data yet.");
-    el("obStreakSummary").textContent = text;
-    el("obStreakSummaryRow").style.display = "block";
-  } catch (err) {
-    el("obStreakSummary").textContent = "Error: " + err.message;
-    el("obStreakSummaryRow").style.display = "block";
-  }
-}
-
-if (el("obStartBtn")) el("obStartBtn").addEventListener("click", onboardingStart);
-if (el("obSubmitDiagnosticBtn")) el("obSubmitDiagnosticBtn").addEventListener("click", submitDiagnostic);
-if (el("obPlanBtn")) el("obPlanBtn").addEventListener("click", fetchPlan);
-if (el("obTasksBtn")) el("obTasksBtn").addEventListener("click", fetchTasks);
-function masteryLevel(score) {
-  if (score == null || typeof score !== "number") return "—";
-  if (score < 0.4) return "Beginner";
-  if (score < 0.6) return "Developing";
-  if (score < 0.8) return "Proficient";
-  return "Mastered";
-}
-
-async function fetchChapterTracker() {
-  try {
-    const data = await apiCallOb("/onboarding/where-i-stand/" + getObLearnerId());
-    const status = data.chapter_status || [];
-    const lines = status.map(function(s) {
-      const ch = s.chapter || s.name || "?";
-      const level = s.band || masteryLevel(s.score != null ? s.score : (s.mastery != null ? s.mastery : null));
-      return ch + ": " + level;
     });
-    el("obChapterTrackerText").textContent = lines.length ? lines.join(" · ") : "No chapter data yet.";
-    el("obChapterTrackerRow").style.display = "block";
-  } catch (err) {
-    el("obChapterTrackerText").textContent = "Error: " + err.message;
-    el("obChapterTrackerRow").style.display = "block";
+  });
+}
+
+function checkWeekComplete(tasks, learnerId) {
+  if (!tasks || tasks.length === 0) return;
+  const allDone = tasks.every(t => t.status === "completed");
+
+  if (allDone) {
+    const container = $("current-tasks");
+    container.innerHTML += `
+            <div style="text-align:center; margin-top:16px;">
+                <button class="btn btn-success" id="btn-advance-week" style="padding:14px 28px; font-size:1rem;">
+                    🎉 All done! Advance to next week →
+                </button>
+            </div>
+        `;
+    $("btn-advance-week").addEventListener("click", () => advanceWeek(learnerId));
   }
 }
 
-async function fetchConceptMap() {
+async function advanceWeek(learnerId) {
+  const btn = $("btn-advance-week");
+  if (btn) { btn.disabled = true; btn.textContent = "Advancing..."; }
+
   try {
-    const data = await apiCallOb("/onboarding/where-i-stand/" + getObLearnerId());
-    const strengths = (data.concept_strengths || []).slice(0, 8);
-    const weaknesses = (data.concept_weaknesses || []).slice(0, 8);
-    const conf = data.confidence_score != null ? (data.confidence_score * 100).toFixed(0) + "%" : "—";
-    const parts = ["Confidence: " + conf];
-    if (strengths.length) parts.push("Strengths: " + strengths.join(", "));
-    if (weaknesses.length) parts.push("Weaknesses: " + weaknesses.join(", "));
-    el("obConceptMapText").textContent = parts.join(" · ");
-    el("obConceptMapRow").style.display = "block";
+    const result = await api(`/learning/week/advance?learner_id=${learnerId}`, { method: "POST" });
+    alert(result.message);
+    loadDashboard();
   } catch (err) {
-    el("obConceptMapText").textContent = "Error: " + err.message;
-    el("obConceptMapRow").style.display = "block";
+    alert("Error: " + err.message);
+    if (btn) { btn.disabled = false; btn.textContent = "🎉 Advance to next week →"; }
   }
 }
 
-async function fetchNextWeek() {
-  try {
-    const data = await apiCallOb("/onboarding/plan/" + getObLearnerId());
-    const rough = data.rough_plan || [];
-    const next = rough[1] || rough[0];
-    if (next) {
-      el("obNextWeekText").textContent = "Week " + (next.week || "?") + ": " + (next.chapter || "—") + " — " + (next.focus || "");
-    } else {
-      el("obNextWeekText").textContent = "No next-week plan yet. Complete onboarding and get plan.";
+function renderChapters(chapters) {
+  $("chapters-grid").innerHTML = chapters.map(ch => `
+        <div class="chapter-card ${ch.status}">
+            <div class="chapter-name">Ch ${ch.chapter_number}: ${ch.title}</div>
+            <div class="chapter-status-text">${ch.status.replace("_", " ")}</div>
+        </div>
+    `).join("");
+}
+
+function renderConfidence(confData) {
+  $("confidence-grid").innerHTML = confData.map(ch => {
+    const pct = (ch.mastery_score * 100).toFixed(0);
+    const barColor = ch.mastery_band === "mastered" ? "var(--success)" :
+      ch.mastery_band === "proficient" ? "var(--info)" :
+        ch.mastery_band === "developing" ? "var(--warning)" : "var(--danger)";
+    return `
+            <div class="confidence-card">
+                <div class="confidence-header">
+                    <span class="confidence-chapter">Ch ${ch.chapter_number}</span>
+                    <span class="mastery-badge ${ch.mastery_band}">${ch.mastery_band}</span>
+                </div>
+                <div class="confidence-bar">
+                    <div class="confidence-bar-fill" style="width:${pct}%; background:${barColor}"></div>
+                </div>
+                <div class="confidence-score">Score: ${pct}% • Attempts: ${ch.attempt_count}${ch.revision_queued ? " • 🔄 Revision" : ""}</div>
+            </div>
+        `;
+  }).join("");
+}
+
+function renderPlan(plan, currentWeek) {
+  if (!plan || plan.length === 0) {
+    $("plan-timeline").innerHTML = `<p style="color:var(--text-muted)">No plan generated yet.</p>`;
+    return;
+  }
+
+  $("plan-timeline").innerHTML = plan.map(p => {
+    const statusCls = p.status || (p.week < currentWeek ? "completed" : p.week === currentWeek ? "current" : "upcoming");
+    return `
+            <div class="plan-week ${statusCls}">
+                <div class="plan-week-num">W${p.week}</div>
+                <div class="plan-week-info">
+                    <div class="plan-week-chapter">${p.chapter}</div>
+                    <div class="plan-week-focus">${p.focus || ""}</div>
+                </div>
+            </div>
+        `;
+  }).join("");
+}
+
+function renderRevision(revisions) {
+  $("revision-list").innerHTML = revisions.map(r => `
+        <div class="revision-item">
+            <div class="revision-icon">🔄</div>
+            <div class="revision-info">
+                <div class="revision-chapter">${r.chapter}</div>
+                <div class="revision-reason">${r.reason}</div>
+            </div>
+        </div>
+    `).join("");
+}
+
+
+// ── READING ─────────────────────────────────────────────────────────────────
+async function openReading(chapterNumber, taskId) {
+  showScreen("reading");
+  readingTaskId = taskId;
+  readingChapterNumber = chapterNumber;
+  readingSeconds = 0;
+
+  $("reading-chapter-title").textContent = "Loading...";
+  $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating reading material from NCERT...</p></div>`;
+  $("reading-status").className = "reading-status in-progress";
+  $("reading-status").textContent = "📖 Keep reading... (min 3 minutes)";
+
+  // Start timer
+  $("reading-timer").textContent = "Time: 0:00";
+  readingTimer = setInterval(() => {
+    readingSeconds++;
+    $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
+
+    if (readingSeconds >= 180) {
+      $("reading-status").className = "reading-status complete";
+      $("reading-status").textContent = "✅ Reading complete! You can go back to dashboard.";
+      // Auto-complete the reading task
+      completeReading();
     }
-    el("obNextWeekRow").style.display = "block";
-  } catch (err) {
-    el("obNextWeekText").textContent = "Error: " + err.message;
-    el("obNextWeekRow").style.display = "block";
-  }
-}
+  }, 1000);
 
-async function fetchForecastTrend() {
   try {
-    const data = await apiCallOb("/onboarding/forecast-history/" + getObLearnerId());
-    const history = data.history || [];
-    const lines = history.map(function(h) {
-      const d = h.generated_at ? new Date(h.generated_at).toLocaleDateString() : "";
-      return "Week " + (h.week_number || "?") + ": forecast " + (h.current_forecast_weeks != null ? h.current_forecast_weeks : "—") + " wks, delta " + (h.timeline_delta_weeks != null ? (h.timeline_delta_weeks >= 0 ? "+" : "") + h.timeline_delta_weeks : "—") + " · " + (h.pacing_status || "") + (d ? " (" + d + ")" : "");
+    const content = await api("/learning/content", {
+      method: "POST",
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber },
     });
-    el("obForecastTrendText").textContent = lines.length ? lines.join("\n") : "No forecast history yet.";
-    el("obForecastTrendRow").style.display = "block";
+
+    $("reading-chapter-title").textContent = `📖 ${content.chapter_title}`;
+    $("reading-content").innerHTML = mdToHtml(content.content);
+    renderKaTeX($("reading-content"));
   } catch (err) {
-    el("obForecastTrendText").textContent = "Error: " + err.message;
-    el("obForecastTrendRow").style.display = "block";
+    $("reading-content").innerHTML = `<p style="color:var(--danger)">Error loading content: ${err.message}</p>`;
   }
 }
 
-if (el("obStandBtn")) el("obStandBtn").addEventListener("click", fetchWhereIStand);
-if (el("obRevisionQueueBtn")) el("obRevisionQueueBtn").addEventListener("click", fetchRevisionQueue);
-if (el("obStreakBtn")) el("obStreakBtn").addEventListener("click", fetchStreakSummary);
-if (el("obChapterTrackerBtn")) el("obChapterTrackerBtn").addEventListener("click", fetchChapterTracker);
-if (el("obConceptMapBtn")) el("obConceptMapBtn").addEventListener("click", fetchConceptMap);
-if (el("obNextWeekBtn")) el("obNextWeekBtn").addEventListener("click", fetchNextWeek);
-if (el("obForecastTrendBtn")) el("obForecastTrendBtn").addEventListener("click", fetchForecastTrend);
-
-// Admin
-async function adminHealth() {
+async function completeReading() {
+  if (!readingTaskId) return;
   try {
-    const data = await apiCallAdmin("/health");
-    el("adminResult").textContent = JSON.stringify(data, null, 2);
+    await api("/learning/reading/complete", {
+      method: "POST",
+      body: {
+        learner_id: getLearnerId(),
+        task_id: readingTaskId,
+        time_spent_seconds: readingSeconds,
+      },
+    });
   } catch (err) {
-    el("adminResult").textContent = "Error: " + err.message;
+    console.warn("Reading completion failed:", err);
   }
 }
 
-async function adminMetrics() {
+function backToDashboard() {
+  if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
+  if (testTimer) { clearInterval(testTimer); testTimer = null; }
+  showScreen("dashboard");
+  loadDashboard();
+}
+
+
+// ── CHAPTER TEST ────────────────────────────────────────────────────────────
+async function openTest(chapterNumber) {
+  showScreen("test");
+  testSeconds = 1200;
+
+  $("test-chapter-title").textContent = "Loading test...";
+  $("chapter-test-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating test questions...</p></div>`;
+  $("btn-submit-chapter-test").disabled = true;
+  hide($("test-result-feedback"));
+
   try {
-    const data = await apiCallAdmin("/metrics/app");
-    el("adminResult").textContent = JSON.stringify(data, null, 2);
+    const testResp = await api("/learning/test/generate", {
+      method: "POST",
+      body: { learner_id: getLearnerId(), chapter_number: chapterNumber },
+    });
+
+    currentTestData = {
+      test_id: testResp.test_id,
+      questions: testResp.questions,
+      chapter: testResp.chapter,
+      chapter_number: chapterNumber,
+    };
+
+    $("test-chapter-title").textContent = `📝 Test: ${testResp.chapter}`;
+    renderChapterTestQuestions(testResp.questions);
+    startChapterTestTimer();
   } catch (err) {
-    el("adminResult").textContent = "Error: " + err.message;
+    $("chapter-test-questions").innerHTML = `<p style="color:var(--danger)">Error generating test: ${err.message}</p>`;
   }
 }
 
-async function adminGrounding() {
+function renderChapterTestQuestions(questions) {
+  const container = $("chapter-test-questions");
+  container.innerHTML = "";
+
+  questions.forEach((q, i) => {
+    const card = document.createElement("div");
+    card.className = "question-card";
+    card.id = `chtest-q-${q.question_id}`;
+
+    card.innerHTML = `
+            <div class="question-number">Question ${i + 1} of ${questions.length}</div>
+            <div class="question-prompt">${q.prompt}</div>
+            <div class="question-options">
+                ${q.options.map((opt, oi) => `
+                    <label class="option-label" data-qid="${q.question_id}" data-idx="${oi}">
+                        <input type="radio" name="chtest_${q.question_id}" value="${oi}">
+                        <span class="option-indicator"></span>
+                        <span>${opt}</span>
+                    </label>
+                `).join("")}
+            </div>
+        `;
+    container.appendChild(card);
+  });
+
+  container.querySelectorAll(".option-label").forEach(label => {
+    label.addEventListener("click", () => {
+      const qid = label.dataset.qid;
+      container.querySelectorAll(`[data-qid="${qid}"]`).forEach(l => l.classList.remove("selected"));
+      label.classList.add("selected");
+      label.querySelector("input").checked = true;
+      $(`chtest-q-${qid}`).classList.add("answered");
+
+      const answered = container.querySelectorAll(".question-card.answered").length;
+      $("btn-submit-chapter-test").disabled = answered === 0;
+    });
+  });
+
+  renderKaTeX(container);
+}
+
+function startChapterTestTimer() {
+  const timerEl = $("chapter-test-timer");
+  timerEl.textContent = formatTime(testSeconds);
+  timerEl.classList.remove("danger");
+
+  testTimer = setInterval(() => {
+    testSeconds--;
+    timerEl.textContent = formatTime(testSeconds);
+    if (testSeconds <= 120) timerEl.classList.add("danger");
+    if (testSeconds <= 0) {
+      clearInterval(testTimer);
+      handleSubmitChapterTest();
+    }
+  }, 1000);
+}
+
+async function handleSubmitChapterTest() {
+  if (testTimer) { clearInterval(testTimer); testTimer = null; }
+  $("btn-submit-chapter-test").disabled = true;
+  $("btn-submit-chapter-test").textContent = "Submitting...";
+
+  const answers = [];
+  currentTestData.questions.forEach(q => {
+    const selected = document.querySelector(`input[name="chtest_${q.question_id}"]:checked`);
+    answers.push({
+      question_id: q.question_id,
+      selected_index: selected ? parseInt(selected.value) : -1,
+    });
+  });
+
   try {
-    const data = await apiCallAdmin("/grounding/status");
-    el("adminResult").textContent = JSON.stringify(data, null, 2);
+    const result = await api("/learning/test/submit", {
+      method: "POST",
+      body: {
+        learner_id: getLearnerId(),
+        test_id: currentTestData.test_id,
+        answers: answers.filter(a => a.selected_index >= 0),
+      },
+    });
+
+    // Show feedback
+    const feedbackEl = $("test-result-feedback");
+    show(feedbackEl);
+
+    let cls = "passed";
+    if (result.decision === "retry") cls = "retry";
+    else if (result.decision === "move_on_revision") cls = "failed";
+
+    feedbackEl.className = `test-feedback ${cls}`;
+    feedbackEl.innerHTML = `
+            <h3>${result.score >= 0.6 ? "🎉" : "💪"} Score: ${result.correct}/${result.total} (${(result.score * 100).toFixed(0)}%)</h3>
+            <p>${result.message}</p>
+            <button class="btn btn-primary" style="margin-top:14px" onclick="backToDashboard()">Back to Dashboard</button>
+        `;
+
+    $("btn-submit-chapter-test").textContent = "Submit Test";
   } catch (err) {
-    el("adminResult").textContent = "Error: " + err.message;
+    alert("Error submitting test: " + err.message);
+    $("btn-submit-chapter-test").disabled = false;
+    $("btn-submit-chapter-test").textContent = "Submit Test";
   }
 }
 
-async function adminCohort() {
-  try {
-    const data = await apiCallAdmin("/admin/cohort?include_list=true");
-    el("adminResult").textContent = JSON.stringify(data, null, 2);
-  } catch (err) {
-    el("adminResult").textContent = "Error: " + err.message;
-  }
-}
 
-async function adminViolations() {
-  try {
-    const data = await apiCallAdmin("/admin/policy-violations");
-    el("adminResult").textContent = JSON.stringify(data, null, 2);
-  } catch (err) {
-    el("adminResult").textContent = "Error: " + err.message;
-  }
+// ── SCREEN MANAGEMENT ───────────────────────────────────────────────────────
+function showScreen(screenName) {
+  document.querySelectorAll(".screen").forEach(s => s.classList.add("hidden"));
+  const screen = $(`screen-${screenName}`);
+  if (screen) screen.classList.remove("hidden");
 }
-
-async function adminDrift() {
-  try {
-    const data = await apiCallAdmin("/admin/timeline-drift");
-    el("adminResult").textContent = JSON.stringify(data, null, 2);
-  } catch (err) {
-    el("adminResult").textContent = "Error: " + err.message;
-  }
-}
-
-if (el("adminHealthBtn")) el("adminHealthBtn").addEventListener("click", adminHealth);
-if (el("adminMetricsBtn")) el("adminMetricsBtn").addEventListener("click", adminMetrics);
-if (el("adminGroundingBtn")) el("adminGroundingBtn").addEventListener("click", adminGrounding);
-if (el("adminCohortBtn")) el("adminCohortBtn").addEventListener("click", adminCohort);
-if (el("adminViolationsBtn")) el("adminViolationsBtn").addEventListener("click", adminViolations);
-if (el("adminDriftBtn")) el("adminDriftBtn").addEventListener("click", adminDrift);

@@ -1,9 +1,10 @@
 models:
+  # Use gemini-2.5-flash for all roles to avoid "model not available" (e.g. if Pro is not enabled)
   gemini-extreme:
-    id: "gemini-2.5-pro"
+    id: "gemini-2.5-flash"
     provider: "gemini"
-    cost_per_1k: 0.002
-    context_window: 2000000
+    cost_per_1k: 0.0001
+    context_window: 1000000
 
   gemini-flash:
     id: "gemini-2.5-flash"
