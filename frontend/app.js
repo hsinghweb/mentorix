@@ -828,9 +828,14 @@ async function openTest(chapterNumber, taskId = null, regenerate = false) {
       regenerate,
     };
 
-    const sourceBadge = regenerate
-      ? `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">🔄 REGENERATED</span>`
-      : "";
+    let sourceBadge = "";
+    if (regenerate) {
+      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">🔄 REGENERATED</span>`;
+    } else if (testResp.source === "cached") {
+      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`;
+    } else {
+      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
+    }
     $("test-chapter-title").innerHTML = `📝 Test: ${testResp.chapter} ${sourceBadge}`;
     renderChapterTestQuestions(testResp.questions);
     startChapterTestTimer();
@@ -936,6 +941,31 @@ async function handleSubmitChapterTest() {
     const regenerateAction = currentTestData.section_id
       ? `openSectionTest(${currentTestData.chapter_number}, '${currentTestData.section_id}', true, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"})`
       : `openTest(${currentTestData.chapter_number}, ${currentTestData.task_id ? `'${currentTestData.task_id}'` : "null"}, true)`;
+    const questionReviewHtml = (result.question_results || []).map((q, idx) => {
+      const state = q.is_correct ? "correct" : "wrong";
+      const selectedText = (typeof q.selected_index === "number" && q.selected_index >= 0 && q.options && q.options[q.selected_index] !== undefined)
+        ? q.options[q.selected_index]
+        : "Not answered";
+      const correctText = (typeof q.correct_index === "number" && q.options && q.options[q.correct_index] !== undefined)
+        ? q.options[q.correct_index]
+        : "N/A";
+      const explainBtn = q.is_correct
+        ? `<button class="btn btn-outline" style="padding:6px 10px;font-size:0.8rem" onclick="explainQuestion('${q.question_id}', ${q.selected_index ?? -1}, false)">Explain</button>`
+        : `<button class="btn btn-primary" style="padding:6px 10px;font-size:0.8rem" onclick="explainQuestion('${q.question_id}', ${q.selected_index ?? -1}, false)">Explain</button>`;
+      return `
+        <div style="text-align:left;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-top:8px;background:var(--bg-elevated)">
+          <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+            <strong>Q${idx + 1}. ${q.prompt || q.question_id}</strong>
+            <span class="task-status-badge ${state === "correct" ? "completed" : "pending"}">${state === "correct" ? "Correct" : "Wrong"}</span>
+          </div>
+          <div style="margin-top:6px;color:var(--text-secondary);font-size:0.9rem">Your answer: <strong>${selectedText}</strong></div>
+          <div style="color:var(--text-secondary);font-size:0.9rem">Correct answer: <strong>${correctText}</strong></div>
+          <div style="margin-top:8px">${explainBtn}</div>
+          <div id="explain-${q.question_id}" style="margin-top:8px;color:var(--text-secondary);font-size:0.9rem"></div>
+        </div>
+      `;
+    }).join("");
+
     feedbackEl.innerHTML = `
             <h3>${result.score >= 0.6 ? "🎉" : "💪"} Score: ${result.correct}/${result.total} (${(result.score * 100).toFixed(0)}%)</h3>
             <p>${result.message}</p>
@@ -943,6 +973,10 @@ async function handleSubmitChapterTest() {
                 <button class="btn btn-primary" onclick="${retakeAction}">🔄 Retake Test</button>
                 <button class="btn btn-outline" onclick="${regenerateAction}">✨ Regenerate</button>
                 <button class="btn btn-secondary" onclick="backToDashboard()">← Dashboard</button>
+            </div>
+            <div style="margin-top:14px;text-align:left">
+              <h4 style="margin-bottom:8px">Question Review</h4>
+              ${questionReviewHtml || `<p style="color:var(--text-muted)">Question-wise review is unavailable for this attempt.</p>`}
             </div>
         `;
 
@@ -1197,6 +1231,38 @@ async function regenerateChapterReading(chapterNumber, taskId) {
     renderKaTeX($("reading-content"));
   } catch (err) {
     $("reading-content").innerHTML = `<p style="color:var(--danger)">Error regenerating content: ${err.message}</p>`;
+  }
+}
+
+async function explainQuestion(questionId, selectedIndex = -1, regenerate = false) {
+  if (!currentTestData || !currentTestData.test_id) return;
+  const target = document.getElementById(`explain-${questionId}`);
+  if (!target) return;
+  target.innerHTML = `<span style="color:var(--text-muted)">Loading explanation...</span>`;
+  try {
+    const resp = await api("/learning/test/question/explain", {
+      method: "POST",
+      body: {
+        learner_id: getLearnerId(),
+        test_id: currentTestData.test_id,
+        question_id: questionId,
+        selected_index: selectedIndex >= 0 ? selectedIndex : null,
+        regenerate: !!regenerate,
+      },
+    });
+    const source = resp.source === "cached" ? "📦 cached" : "✨ generated";
+    target.innerHTML = `
+      <div style="border-left:3px solid var(--info);padding-left:10px">
+        <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:6px">${source}</div>
+        ${mdToHtml(resp.explanation || "")}
+      </div>
+      <div style="margin-top:6px">
+        <button class="btn btn-outline" style="padding:4px 10px;font-size:0.75rem" onclick="explainQuestion('${questionId}', ${selectedIndex}, true)">Regenerate explanation</button>
+      </div>
+    `;
+    renderKaTeX(target);
+  } catch (err) {
+    target.innerHTML = `<span style="color:var(--danger)">Error: ${err.message}</span>`;
   }
 }
 

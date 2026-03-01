@@ -79,6 +79,7 @@ class GenerateTestResponse(BaseModel):
     test_id: str
     questions: list[TestQuestion]
     time_limit_minutes: int = 20
+    source: str = "llm"
 
 
 class TestAnswer(BaseModel):
@@ -104,6 +105,7 @@ class SubmitTestResponse(BaseModel):
     max_attempts: int
     decision: str  # "chapter_completed" | "retry" | "move_on_revision"
     message: str
+    question_results: list[dict] = Field(default_factory=list)
 
 
 class CompleteReadingRequest(BaseModel):
@@ -158,6 +160,25 @@ class DashboardResponse(BaseModel):
     chapter_confidence: list[dict]
     current_week_tasks: list[dict]
     revision_queue: list[dict]
+
+
+class ExplainQuestionRequest(BaseModel):
+    learner_id: UUID
+    test_id: str
+    question_id: str
+    selected_index: int | None = None
+    regenerate: bool = False
+
+
+class ExplainQuestionResponse(BaseModel):
+    learner_id: str
+    test_id: str
+    question_id: str
+    chapter_number: int
+    chapter: str
+    section_id: str | None = None
+    explanation: str
+    source: str  # "cached" | "llm" | "fallback"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -227,6 +248,42 @@ async def _retrieve_chapter_chunks(db: AsyncSession, chapter_number: int, top_k:
         return []
 
 
+async def _get_canonical_section_context(
+    db: AsyncSession,
+    chapter_number: int,
+    section_id: str,
+    section_title: str,
+    *,
+    top_k: int = 8,
+) -> str:
+    """
+    Deterministic subsection source fetch:
+    1) canonical_sections Mongo cache
+    2) DB chunks filtered by exact chapter+section_id, then persisted in canonical_sections
+    """
+    from app.memory.content_cache import get_canonical_section, save_canonical_section
+
+    cached = get_canonical_section(chapter_number, section_id)
+    if cached and isinstance(cached.get("source_text"), str) and cached.get("source_text"):
+        return str(cached["source_text"])
+
+    stmt = (
+        select(EmbeddingChunk.content)
+        .where(
+            EmbeddingChunk.chapter_number == chapter_number,
+            EmbeddingChunk.section_id == section_id,
+        )
+        .limit(top_k * 2)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    text_parts = [str(r).strip() for r in rows if isinstance(r, str) and r.strip()]
+    if text_parts:
+        source_text = "\n\n".join(text_parts[:top_k])
+        save_canonical_section(chapter_number, section_id, section_title, source_text)
+        return source_text
+    return ""
+
+
 # ── In-memory test store (for simplicity; keyed by test_id) ─────────────────
 _test_store: dict[str, dict] = {}
 
@@ -250,10 +307,23 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     combined_ability = (ability + mastery) / 2
     tone_config = _tone_for_ability(combined_ability)
     cache_section_id = "__chapter__"
+    if payload.regenerate:
+        logger.info(
+            "event=regenerate_triggered kind=chapter_content learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            cache_section_id,
+        )
 
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached and cached.get("content"):
+            logger.info(
+                "event=cache_hit kind=chapter_content learner_id=%s chapter=%s section=%s",
+                payload.learner_id,
+                payload.chapter_number,
+                cache_section_id,
+            )
             return ContentResponse(
                 chapter_number=payload.chapter_number,
                 chapter_title=chapter_name,
@@ -355,15 +425,30 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
     chapter_name = ch_info["title"]
     chapter_key = chapter_display_name(payload.chapter_number)
     cache_section_id = "__chapter__"
+    if payload.regenerate:
+        logger.info(
+            "event=regenerate_triggered kind=chapter_test learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            cache_section_id,
+        )
 
     if not payload.regenerate:
         cached = get_cached_test(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached:
+            logger.info(
+                "event=cache_hit kind=chapter_test learner_id=%s chapter=%s section=%s",
+                payload.learner_id,
+                payload.chapter_number,
+                cache_section_id,
+            )
             _test_store[cached["test_id"]] = {
                 "learner_id": str(payload.learner_id),
                 "chapter_number": payload.chapter_number,
                 "chapter": chapter_key,
                 "chapter_level": True,
+                "section_id": None,
+                "questions": cached.get("questions", []),
                 "answer_key": cached["answer_key"],
                 "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
             }
@@ -374,6 +459,7 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                 test_id=cached["test_id"],
                 questions=[TestQuestion(**q) for q in cached["questions"]],
                 time_limit_minutes=20,
+                source="cached",
             )
 
     # Retrieve chunks for question generation
@@ -452,9 +538,20 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
         "chapter_number": payload.chapter_number,
         "chapter": chapter_key,
         "chapter_level": True,
+        "section_id": None,
+        "questions": [q.model_dump() for q in questions],
         "answer_key": answer_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    save_test_cache(
+        str(payload.learner_id),
+        payload.chapter_number,
+        cache_section_id,
+        chapter_name,
+        test_id,
+        [q.model_dump() for q in questions],
+        answer_key,
+    )
 
     return GenerateTestResponse(
         learner_id=str(payload.learner_id),
@@ -463,6 +560,7 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
         test_id=test_id,
         questions=questions,
         time_limit_minutes=20,
+        source="llm",
     )
 
 
@@ -480,12 +578,35 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
     chapter_level = bool(test_data.get("chapter_level", False))
     chapter_number = int(test_data.get("chapter_number") or 1)
 
+    question_results: list[dict] = []
+    answer_map = {a.question_id: a.selected_index for a in payload.answers}
+
     correct = 0
     total = len(answer_key)
+    questions = test_data.get("questions", [])
+    question_meta = {
+        str(q.get("question_id")): q
+        for q in questions
+        if isinstance(q, dict) and q.get("question_id")
+    }
     for ans in payload.answers:
         expected = answer_key.get(ans.question_id)
         if expected is not None and ans.selected_index == expected:
             correct += 1
+    for qid, expected in answer_key.items():
+        selected = answer_map.get(qid)
+        q = question_meta.get(qid, {})
+        options = q.get("options", [])
+        question_results.append(
+            {
+                "question_id": qid,
+                "prompt": q.get("prompt"),
+                "options": options,
+                "selected_index": selected,
+                "correct_index": expected,
+                "is_correct": selected == expected if selected is not None else False,
+            }
+        )
 
     score = correct / max(total, 1)
     passed = score >= COMPLETION_THRESHOLD
@@ -555,6 +676,19 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
             if selected_task:
                 final_task_week = int(selected_task.week_number)
         if final_task_week is None:
+            final_task = (await db.execute(
+                select(Task).where(
+                    Task.learner_id == payload.learner_id,
+                    Task.chapter == chapter,
+                    Task.task_type == "test",
+                    Task.proof_policy["chapter_level"].as_boolean() == True,
+                ).order_by(Task.week_number.asc(), Task.sort_order.asc(), Task.created_at.asc())
+            )).scalars().first()
+            if final_task is not None:
+                final_task_week = int(final_task.week_number)
+                if selected_task_id is None:
+                    selected_task_id = final_task.id
+        if final_task_week is None:
             plan = await _get_plan(db, payload.learner_id)
             final_task_week = int(plan.current_week if plan else 1)
 
@@ -569,9 +703,30 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
             )
         )).scalar_one()
         if int(pending_section_tasks or 0) > 0:
+            pending_rows = (await db.execute(
+                select(Task.title).where(
+                    Task.learner_id == payload.learner_id,
+                    Task.chapter == chapter,
+                    Task.week_number == final_task_week,
+                    Task.task_type.in_(["read", "test"]),
+                    Task.proof_policy["section_id"].is_not(None),
+                    Task.status != "completed",
+                ).order_by(Task.sort_order.asc(), Task.created_at.asc()).limit(5)
+            )).scalars().all()
+            logger.warning(
+                "event=final_test_submit_failed reason=pending_subsection_tasks learner=%s chapter=%s week=%s pending_tasks=%s test_id=%s",
+                payload.learner_id,
+                chapter,
+                final_task_week,
+                pending_rows,
+                payload.test_id,
+            )
             raise HTTPException(
                 status_code=400,
-                detail="Complete all subsection read/test tasks before attempting final chapter test.",
+                detail=(
+                    "Complete all subsection read/test tasks before attempting final chapter test. "
+                    f"Pending: {', '.join(pending_rows) if pending_rows else 'subsection tasks'}"
+                ),
             )
 
         cp = (await db.execute(
@@ -675,6 +830,12 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
             ).order_by(desc(Task.created_at))
         )).scalar_one_or_none()
     if not selected_task_id:
+        logger.warning(
+            "event=final_test_submit_failed reason=no_matching_task learner=%s chapter=%s test_id=%s",
+            payload.learner_id,
+            chapter,
+            payload.test_id,
+        )
         raise HTTPException(status_code=404, detail="No matching test task found for this attempt.")
 
     db.add(TaskAttempt(
@@ -736,6 +897,156 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
         max_attempts=max_attempts,
         decision=decision,
         message=message,
+        question_results=question_results,
+    )
+
+
+@router.post("/test/question/explain", response_model=ExplainQuestionResponse)
+async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSession = Depends(get_db)):
+    """Return grounded explanation for a single test question (cache-first)."""
+    from app.memory.content_cache import get_cached_explanation, save_explanation_cache
+
+    test_data = _test_store.get(payload.test_id)
+    if not test_data:
+        raise HTTPException(status_code=404, detail="Test not found or expired.")
+
+    chapter_number = int(test_data.get("chapter_number") or 1)
+    chapter = str(test_data.get("chapter") or chapter_display_name(chapter_number))
+    section_id = test_data.get("section_id")
+
+    if not payload.regenerate:
+        cached = get_cached_explanation(str(payload.learner_id), payload.test_id, payload.question_id)
+        if cached and cached.get("explanation"):
+            logger.info(
+                "event=cache_hit kind=question_explain learner_id=%s test_id=%s question_id=%s",
+                payload.learner_id,
+                payload.test_id,
+                payload.question_id,
+            )
+            return ExplainQuestionResponse(
+                learner_id=str(payload.learner_id),
+                test_id=payload.test_id,
+                question_id=payload.question_id,
+                chapter_number=chapter_number,
+                chapter=chapter,
+                section_id=section_id,
+                explanation=str(cached["explanation"]),
+                source="cached",
+            )
+
+    question_items = test_data.get("questions", [])
+    question = None
+    for q in question_items:
+        if isinstance(q, dict) and q.get("question_id") == payload.question_id:
+            question = q
+            break
+    if not question:
+        raise HTTPException(status_code=404, detail="Question not found in test.")
+    logger.info(
+        "event=explain_requested learner_id=%s test_id=%s question_id=%s regenerate=%s",
+        payload.learner_id,
+        payload.test_id,
+        payload.question_id,
+        payload.regenerate,
+    )
+
+    answer_key = test_data.get("answer_key", {})
+    correct_index = answer_key.get(payload.question_id)
+    selected_index = payload.selected_index
+    if selected_index is None:
+        # Best-effort fallback for callers that omit selected option.
+        selected_index = -1
+
+    ch_info = _chapter_info(chapter_number)
+    section_title = section_id or ch_info["title"]
+    if section_id:
+        for s in ch_info.get("subtopics", []):
+            if s.get("id") == section_id:
+                section_title = s.get("title", section_id)
+                break
+
+    context = ""
+    if section_id:
+        context = await _get_canonical_section_context(
+            db,
+            chapter_number,
+            str(section_id),
+            str(section_title),
+            top_k=6,
+        )
+    if not context:
+        chunks = await _retrieve_chapter_chunks(db, chapter_number, top_k=5)
+        context = "\n\n".join(chunks[:4]) if chunks else ""
+
+    options = question.get("options", [])
+    prompt = (
+        "You are a Class 10 CBSE math tutor.\n"
+        "Explain the question outcome in a concise and clear way.\n"
+        "Use ONLY the NCERT source context below.\n\n"
+        f"Chapter: {chapter_number}\n"
+        f"Section: {section_id or 'chapter-level final'}\n"
+        f"Question: {question.get('prompt', '')}\n"
+        f"Options: {json.dumps(options, ensure_ascii=True)}\n"
+        f"Student selected index: {selected_index}\n"
+        f"Correct index: {correct_index}\n\n"
+        f"NCERT source context:\n{context}\n\n"
+        "Output format (Markdown):\n"
+        "1) Correct answer\n"
+        "2) Why this is correct\n"
+        "3) Why student's choice is wrong (if wrong)\n"
+        "4) One quick remediation tip\n"
+    )
+
+    explanation = ""
+    source = "fallback"
+    if context:
+        try:
+            provider = get_llm_provider(role="content_generator")
+            llm_text, _ = await provider.generate(prompt)
+            if llm_text and llm_text.strip():
+                explanation = llm_text.strip()
+                source = "llm"
+        except Exception as exc:
+            logger.warning("Question explain generation failed: %s", exc)
+
+    if not explanation:
+        correct_text = (
+            options[int(correct_index)]
+            if isinstance(correct_index, int) and 0 <= int(correct_index) < len(options)
+            else "See solution key"
+        )
+        chosen_text = (
+            options[int(selected_index)]
+            if isinstance(selected_index, int) and 0 <= int(selected_index) < len(options)
+            else "No option selected"
+        )
+        explanation = (
+            f"Correct answer: **{correct_text}**\n\n"
+            f"Your choice: **{chosen_text}**\n\n"
+            "Review the related concept from the section and retry a similar problem."
+        )
+
+    save_explanation_cache(
+        str(payload.learner_id),
+        payload.test_id,
+        payload.question_id,
+        {
+            "chapter_number": chapter_number,
+            "chapter": chapter,
+            "section_id": section_id,
+            "explanation": explanation,
+        },
+    )
+
+    return ExplainQuestionResponse(
+        learner_id=str(payload.learner_id),
+        test_id=payload.test_id,
+        question_id=payload.question_id,
+        chapter_number=chapter_number,
+        chapter=chapter,
+        section_id=section_id,
+        explanation=explanation,
+        source=source,
     )
 # 4. Complete reading task
 @router.post("/reading/complete", response_model=CompleteReadingResponse)
@@ -801,10 +1112,10 @@ async def complete_reading(payload: CompleteReadingRequest, db: AsyncSession = D
 # ── SUBSECTION ENDPOINTS ─────────────────────────────────────────────────────
 
 async def _ensure_subsection_rows(db: AsyncSession, learner_id: UUID, chapter_number: int):
-    """Lazily create SubsectionProgression rows for all non-Summary subsections of a chapter."""
+    """Lazily create SubsectionProgression rows for all subsections of a chapter."""
     ch_info = _chapter_info(chapter_number)
     chapter_key = chapter_display_name(chapter_number)
-    subtopics = [s for s in ch_info.get("subtopics", []) if "Summary" not in s["title"]]
+    subtopics = list(ch_info.get("subtopics", []))
 
     existing = (await db.execute(
         select(SubsectionProgression.section_id).where(
@@ -879,9 +1190,22 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
             break
 
     # Check cache first (unless regenerate requested)
+    if payload.regenerate:
+        logger.info(
+            "event=regenerate_triggered kind=section_content learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            payload.section_id,
+        )
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, payload.section_id)
         if cached:
+            logger.info(
+                "event=cache_hit kind=section_content learner_id=%s chapter=%s section=%s",
+                payload.learner_id,
+                payload.chapter_number,
+                payload.section_id,
+            )
             logger.info("Serving cached content for %s section %s", payload.chapter_number, payload.section_id)
             # Still mark reading done
             chapter_key = chapter_display_name(payload.chapter_number)
@@ -914,9 +1238,14 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
     combined_ability = (ability + mastery) / 2
     tone_config = _tone_for_ability(combined_ability)
 
-    # Retrieve section-scoped NCERT chunks
-    chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5, section_id=payload.section_id)
-    context = "\n\n".join(chunks[:4]) if chunks else ""
+    # Deterministic subsection source fetch from canonical store.
+    context = await _get_canonical_section_context(
+        db,
+        payload.chapter_number,
+        payload.section_id,
+        section_title,
+        top_k=6,
+    )
 
     if not context:
         # Try chapter-level fallback
@@ -1016,9 +1345,22 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
             break
 
     # Check cache first (unless regenerate requested)
+    if payload.regenerate:
+        logger.info(
+            "event=regenerate_triggered kind=section_test learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            payload.section_id,
+        )
     if not payload.regenerate:
         cached = get_cached_test(str(payload.learner_id), payload.chapter_number, payload.section_id)
         if cached:
+            logger.info(
+                "event=cache_hit kind=section_test learner_id=%s chapter=%s section=%s",
+                payload.learner_id,
+                payload.chapter_number,
+                payload.section_id,
+            )
             logger.info("Serving cached test for %s section %s", payload.chapter_number, payload.section_id)
             # Re-register in _test_store for scoring
             _test_store[cached["test_id"]] = {
@@ -1027,6 +1369,7 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 "chapter": chapter_key,
                 "section_id": payload.section_id,
                 "chapter_level": False,
+                "questions": cached.get("questions", []),
                 "answer_key": cached["answer_key"],
                 "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
             }
@@ -1041,9 +1384,14 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 "source": "cached",
             }
 
-    # Retrieve section-scoped chunks
-    chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5, section_id=payload.section_id)
-    context = "\n\n".join(chunks[:4]) if chunks else ""
+    # Deterministic subsection source fetch from canonical store.
+    context = await _get_canonical_section_context(
+        db,
+        payload.chapter_number,
+        payload.section_id,
+        section_title,
+        top_k=6,
+    )
 
     if not context:
         chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5)
@@ -1117,20 +1465,10 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         "chapter": chapter_key,
         "section_id": payload.section_id,
         "chapter_level": False,
+        "questions": [q.model_dump() for q in questions],
         "answer_key": answer_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    save_test_cache(
-        str(payload.learner_id),
-        payload.chapter_number,
-        cache_section_id,
-        chapter_name,
-        test_id,
-        [q.model_dump() for q in questions],
-        answer_key,
-    )
-
-    # Save to MongoDB cache
     questions_dicts = [q.model_dump() for q in questions]
     save_test_cache(
         str(payload.learner_id), payload.chapter_number, payload.section_id,
@@ -1279,7 +1617,6 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             sort = 0
             for st in subtopics:
                 sort += 1
-                is_summary = st["title"].lower().strip() == "summary"
                 # Reading task for every subsection
                 db.add(Task(
                     learner_id=learner_id,
@@ -1292,20 +1629,19 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
                     is_locked=False,
                     proof_policy={"type": "reading_time", "min_seconds": 120, "section_id": st["id"]},
                 ))
-                # Test task for every subsection EXCEPT Summary
-                if not is_summary:
-                    sort += 1
-                    db.add(Task(
-                        learner_id=learner_id,
-                        week_number=new_week,
-                        chapter=next_ch_key,
-                        task_type="test",
-                        title=f"Test: {st['id']} {st['title']}",
-                        sort_order=sort,
-                        status="pending",
-                        is_locked=False,
-                        proof_policy={"type": "section_test", "threshold": COMPLETION_THRESHOLD, "section_id": st["id"]},
-                    ))
+                # Test task for every subsection, including Summary.
+                sort += 1
+                db.add(Task(
+                    learner_id=learner_id,
+                    week_number=new_week,
+                    chapter=next_ch_key,
+                    task_type="test",
+                    title=f"Test: {st['id']} {st['title']}",
+                    sort_order=sort,
+                    status="pending",
+                    is_locked=False,
+                    proof_policy={"type": "section_test", "threshold": COMPLETION_THRESHOLD, "section_id": st["id"]},
+                ))
             # Final chapter-level test (unlocked after all subsections done)
             sort += 1
             db.add(Task(

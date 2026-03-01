@@ -40,7 +40,7 @@ def auth(client):
         return data["token"], data["learner_id"]
 
     # Register
-    resp = client.post("/auth/register", json=TEST_USER)
+    resp = client.post("/auth/signup", json=TEST_USER)
     assert resp.status_code in (200, 201), f"Registration failed: {resp.text}"
     data = resp.json()
     return data["token"], data["learner_id"]
@@ -129,6 +129,77 @@ class TestLearningFlow:
         assert resp.status_code == 200
         data = resp.json()
         assert "sections" in data
+
+    def test_07b_week_tasks_are_subsection_first(self, client, auth):
+        token, learner_id = auth
+        resp = client.get(f"/learning/dashboard/{learner_id}", headers=_headers(token))
+        assert resp.status_code == 200
+        data = resp.json()
+        tasks = data.get("current_week_tasks", [])
+        assert all("Practice worksheet" not in (t.get("title") or "") for t in tasks)
+        # Subsection tasks should carry section_id and chapter final test should exist.
+        assert any(t.get("section_id") for t in tasks), "Expected subsection tasks with section_id."
+        assert any(bool(t.get("chapter_level")) for t in tasks), "Expected one chapter-level final test task."
+
+    def test_07c_chapter_test_generation_cache(self, client, auth):
+        token, learner_id = auth
+        payload = {"learner_id": learner_id, "chapter_number": 1, "regenerate": False}
+
+        first = client.post("/learning/test/generate", json=payload, headers=_headers(token))
+        assert first.status_code == 200, first.text
+        first_data = first.json()
+        assert "test_id" in first_data
+        assert "questions" in first_data
+        assert first_data.get("source") in ("llm", "cached")
+
+        second = client.post("/learning/test/generate", json=payload, headers=_headers(token))
+        assert second.status_code == 200, second.text
+        second_data = second.json()
+        assert second_data.get("source") == "cached"
+        assert second_data.get("test_id") == first_data.get("test_id")
+
+    def test_07d_question_explain_cache(self, client, auth):
+        token, learner_id = auth
+        gen = client.post("/learning/test/section/generate", json={
+            "learner_id": learner_id,
+            "chapter_number": 1,
+            "section_id": "1.2",
+            "regenerate": False,
+        }, headers=_headers(token))
+        assert gen.status_code == 200, gen.text
+        gen_data = gen.json()
+        test_id = gen_data["test_id"]
+        questions = gen_data["questions"]
+        assert questions
+
+        # Submit one answer to ensure attempt metadata exists; explanation endpoint uses test store.
+        submit = client.post("/learning/test/submit", json={
+            "learner_id": learner_id,
+            "test_id": test_id,
+            "answers": [{"question_id": questions[0]["question_id"], "selected_index": 0}],
+            "task_id": None,
+        }, headers=_headers(token))
+        assert submit.status_code == 200, submit.text
+        submit_data = submit.json()
+        assert "question_results" in submit_data
+
+        explain_payload = {
+            "learner_id": learner_id,
+            "test_id": test_id,
+            "question_id": questions[0]["question_id"],
+            "selected_index": 0,
+            "regenerate": False,
+        }
+        first = client.post("/learning/test/question/explain", json=explain_payload, headers=_headers(token))
+        assert first.status_code == 200, first.text
+        first_data = first.json()
+        assert first_data.get("explanation")
+        assert first_data.get("source") in ("llm", "cached", "fallback")
+
+        second = client.post("/learning/test/question/explain", json=explain_payload, headers=_headers(token))
+        assert second.status_code == 200, second.text
+        second_data = second.json()
+        assert second_data.get("source") == "cached"
 
     def test_08_plan_history(self, client, auth):
         token, learner_id = auth

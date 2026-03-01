@@ -175,3 +175,115 @@ def invalidate_test(learner_id: str, chapter_number: int, section_id: str) -> bo
         return result.deleted_count > 0
     except Exception:
         return False
+
+
+def get_canonical_section(chapter_number: int, section_id: str) -> dict | None:
+    """Return canonical subsection source text stored in MongoDB."""
+    db = _get_db()
+    if db is None:
+        return None
+    try:
+        doc = db["canonical_sections"].find_one({
+            "chapter_number": chapter_number,
+            "section_id": section_id,
+        })
+        if doc:
+            doc.pop("_id", None)
+            return doc
+    except Exception as exc:
+        logger.warning("Canonical section read failed: %s", exc)
+    return None
+
+
+def save_canonical_section(
+    chapter_number: int,
+    section_id: str,
+    section_title: str,
+    source_text: str,
+    source_kind: str = "embedding_chunks",
+) -> None:
+    """Persist deterministic canonical subsection source text."""
+    db = _get_db()
+    if db is None:
+        return
+    try:
+        db["canonical_sections"].create_index(
+            [("chapter_number", 1), ("section_id", 1)],
+            unique=True,
+            name="ux_canonical_chapter_section",
+        )
+        db["canonical_sections"].replace_one(
+            {
+                "chapter_number": chapter_number,
+                "section_id": section_id,
+            },
+            {
+                "chapter_number": chapter_number,
+                "section_id": section_id,
+                "section_title": section_title,
+                "source_text": source_text,
+                "source_kind": source_kind,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.warning("Canonical section write failed: %s", exc)
+
+
+def get_cached_explanation(
+    learner_id: str,
+    test_id: str,
+    question_id: str,
+) -> dict | None:
+    """Return cached per-question explanation."""
+    db = _get_db()
+    if db is None:
+        return None
+    try:
+        doc = db["question_explanations"].find_one({
+            "learner_id": str(learner_id),
+            "test_id": test_id,
+            "question_id": question_id,
+        })
+        if doc:
+            doc.pop("_id", None)
+            return doc
+    except Exception as exc:
+        logger.warning("Explanation cache read failed: %s", exc)
+    return None
+
+
+def save_explanation_cache(
+    learner_id: str,
+    test_id: str,
+    question_id: str,
+    payload: dict,
+) -> None:
+    """Save per-question explanation payload."""
+    db = _get_db()
+    if db is None:
+        return
+    try:
+        db["question_explanations"].create_index(
+            [("learner_id", 1), ("test_id", 1), ("question_id", 1)],
+            unique=True,
+            name="ux_explain_learner_test_question",
+        )
+        db["question_explanations"].replace_one(
+            {
+                "learner_id": str(learner_id),
+                "test_id": test_id,
+                "question_id": question_id,
+            },
+            {
+                "learner_id": str(learner_id),
+                "test_id": test_id,
+                "question_id": question_id,
+                **payload,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            },
+            upsert=True,
+        )
+    except Exception as exc:
+        logger.warning("Explanation cache write failed: %s", exc)

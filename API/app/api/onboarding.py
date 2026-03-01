@@ -584,7 +584,6 @@ def _default_week_tasks(*, learner_id: UUID, chapter: str, week_number: int) -> 
     for st in ch_info.get("subtopics", []):
         section_id = st.get("id")
         section_title = st.get("title", "Section")
-        is_summary = section_title.lower().strip() == "summary"
 
         sort += 1
         tasks.append(
@@ -601,21 +600,20 @@ def _default_week_tasks(*, learner_id: UUID, chapter: str, week_number: int) -> 
             )
         )
 
-        if not is_summary:
-            sort += 1
-            tasks.append(
-                Task(
-                    learner_id=learner_id,
-                    week_number=week_number,
-                    chapter=chapter_label,
-                    task_type="test",
-                    title=f"Test: {section_id} {section_title}",
-                    sort_order=sort,
-                    status="pending",
-                    is_locked=True,
-                    proof_policy={"require_test_attempt_id": True, "section_id": section_id},
-                )
+        sort += 1
+        tasks.append(
+            Task(
+                learner_id=learner_id,
+                week_number=week_number,
+                chapter=chapter_label,
+                task_type="test",
+                title=f"Test: {section_id} {section_title}",
+                sort_order=sort,
+                status="pending",
+                is_locked=True,
+                proof_policy={"require_test_attempt_id": True, "section_id": section_id},
             )
+        )
 
     sort += 1
     tasks.append(
