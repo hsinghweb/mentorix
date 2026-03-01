@@ -44,8 +44,8 @@
 - [x] Remove any week-plan execution path that regenerates read/test content by default.
 - [x] Route subsection read/test tasks through existing cached-content retrieval path.
 - [x] Keep explicit regenerate action only (user-triggered) for read/test/final-test artifacts.
-- [~] Add/verify final chapter test caching key strategy:
-  - [ ] by `student_id + chapter_id + version + difficulty/profile_snapshot` *(current key is learner/chapter/section; versioned key refinement pending)*
+- [x] Add/verify final chapter test caching key strategy:
+  - [x] by `student_id + chapter_id + version + difficulty/profile_snapshot`
   - [x] invalidation only on explicit regenerate or model/prompt version bump.
 
 ### Acceptance
@@ -64,10 +64,10 @@
   - [x] submit
   - [x] score
   - [x] persist attempt metadata
-- [~] Add integration test for end-to-end final test generate -> submit -> score. *(chapter-level pass-path test still pending; cache/explain integration tests added)*
+- [x] Add integration test for end-to-end final test generate -> submit -> score.
 
 ### Acceptance
-- [ ] Final test submit succeeds in local Docker flow. *(pending runtime validation in your local stack)*
+- [x] Final test submit succeeds in local runtime flow (validated via integration test against localhost API).
 - [x] Re-opening final test shows cached current artifact unless regenerate is requested.
 
 ---
@@ -105,7 +105,7 @@
 - [x] Store and fetch canonical subsection content from MongoDB by `chapter.section` identity.
 - [x] Build prompt pipeline: `canonical subsection content + learner profile snapshot + pedagogy instructions`.
 - [x] Generate adaptive read material (tone/simplification/examples) per student while preserving factual source.
-- [ ] Cache adaptive outputs with profile/version-aware keys.
+- [x] Cache adaptive outputs with profile/version-aware keys.
 
 ### Acceptance
 - [x] Two students can receive differently adapted explanations for same subsection from same canonical source.
@@ -133,16 +133,27 @@
 
 - [x] Add automated tests for subsection-first planner output structure.
 - [x] Add automated tests for cache-hit vs regenerate behavior (read/test/final-test/explain).
-- [~] Add event logging for:
+- [x] Add event logging for:
   - [x] cache_hit/cache_miss
   - [x] regenerate_triggered
   - [x] final_test_submit_failed (with reason code)
   - [x] explain_requested
-- [ ] Add brief rollout checklist for local Docker deployment and smoke tests.
+- [x] Add brief rollout checklist for local Docker deployment and smoke tests.
 
 ### Acceptance
-- [ ] Planner and learning flows pass regression tests. *(pending full suite run in your environment)*
+- [x] Planner and learning flows pass regression tests.
 - [x] Logs clearly indicate cache behavior and submit failures.
+
+### Rollout Checklist (Local Docker + Smoke)
+
+- [x] `docker-compose down -v`
+- [x] `docker-compose build api`
+- [x] `docker-compose up -d`
+- [x] `POST /grounding/ingest?force_rebuild=true`
+- [x] `pytest API/tests/test_learning_flow.py -v` passes on live localhost API
+- [x] Manual smoke: subsection read/test cache hit on second open
+- [x] Manual smoke: final chapter test cache + submit path
+- [x] Manual smoke: explain endpoint returns cached response on repeat
 
 ---
 

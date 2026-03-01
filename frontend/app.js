@@ -79,32 +79,70 @@ function renderKaTeX(container) {
   }
 }
 
+function normalizeMathDelimiters(text) {
+  if (!text) return "";
+  return String(text)
+    .replace(/\\\\\(/g, "\\(")
+    .replace(/\\\\\)/g, "\\)")
+    .replace(/\\\\\[/g, "\\[")
+    .replace(/\\\\\]/g, "\\]")
+    .replace(/\r\n/g, "\n");
+}
+
 function formatTime(seconds) {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
-// Simple markdown-to-HTML conversion
 function mdToHtml(md) {
-  if (!md) return "";
-  return md
-    .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-    .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-    .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\*(.+?)\*/g, "<em>$1</em>")
-    .replace(/^- (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>)/s, "<ul>$1</ul>")
-    .replace(/\n\n/g, "</p><p>")
-    .replace(/\n/g, "<br>")
-    .replace(/^/, "<p>")
-    .replace(/$/, "</p>")
-    .replace(/<p><h/g, "<h")
-    .replace(/<\/h(\d)><\/p>/g, "</h$1>")
-    .replace(/<p><ul>/g, "<ul>")
-    .replace(/<\/ul><\/p>/g, "</ul>")
-    .replace(/<p><\/p>/g, "");
+  const normalized = normalizeMathDelimiters(md);
+  if (!normalized) return "";
+  if (typeof marked !== "undefined" && typeof marked.parse === "function") {
+    return marked.parse(normalized, { breaks: true, gfm: true });
+  }
+  return normalized
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\n/g, "<br>");
+}
+
+function mdInlineToHtml(md) {
+  const normalized = normalizeMathDelimiters(md);
+  if (!normalized) return "";
+  if (typeof marked !== "undefined" && typeof marked.parseInline === "function") {
+    return marked.parseInline(normalized);
+  }
+  return normalized
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function showFinalTestBlockedModal(chapterNumber, reasonCode, pendingTasks = []) {
+  const existing = document.getElementById("final-test-blocked-overlay");
+  if (existing) existing.remove();
+  const overlay = document.createElement("div");
+  overlay.id = "final-test-blocked-overlay";
+  overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.72);z-index:1200;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px);";
+  const pendingHtml = (pendingTasks || []).slice(0, 8).map(t => `<li style=\"margin:4px 0\">${mdInlineToHtml(t)}</li>`).join("");
+  const reasonText = reasonCode === "pending_subsection_tasks"
+    ? "Complete subsection reading and subsection tests first."
+    : "Prerequisites are not complete yet.";
+  overlay.innerHTML = `
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);max-width:640px;width:92%;padding:24px;box-shadow:var(--shadow)">
+      <h3 style="margin-bottom:8px">Final Test Locked • Chapter ${chapterNumber}</h3>
+      <p style="color:var(--text-secondary);margin-bottom:12px">${reasonText}</p>
+      ${pendingHtml ? `<div style="background:var(--bg-elevated);border:1px solid var(--border);border-radius:10px;padding:10px 12px;max-height:200px;overflow:auto"><div style="font-weight:600;margin-bottom:6px">Pending tasks</div><ul style="margin-left:18px">${pendingHtml}</ul></div>` : ""}
+      <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px">
+        <button class="btn btn-outline" onclick="document.getElementById('final-test-blocked-overlay').remove()">Close</button>
+        <button class="btn btn-primary" onclick="document.getElementById('final-test-blocked-overlay').remove();showScreen('dashboard');loadDashboard();">Go to Week Tasks</button>
+      </div>
+    </div>
+  `;
+  overlay.addEventListener("click", e => { if (e.target === overlay) overlay.remove(); });
+  document.body.appendChild(overlay);
 }
 
 
@@ -438,11 +476,11 @@ function renderDashboard(data) {
         </div>
         <div class="profile-stat">
             <div class="stat-value">${data.diagnostic_score !== null ? (data.diagnostic_score * 100).toFixed(0) + "%" : "—"}</div>
-            <div class="stat-label">Diagnostic</div>
+            <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline onboarding assessment score used to personalize your plan. This is not your weekly performance score.">ⓘ</span></div>
         </div>
         <div class="profile-stat">
             <div class="stat-value">${data.selected_weeks || "—"}/${data.suggested_weeks || "—"}</div>
-            <div class="stat-label">Chosen / Suggested Wks</div>
+            <div class="stat-label">Chosen / Suggested Wks <span class="help-tip" title="Chosen weeks are your preferred timeline. Suggested weeks are adaptive and can increase or decrease with your consistency and scores.">ⓘ</span></div>
         </div>
     `;
 
@@ -819,6 +857,13 @@ async function openTest(chapterNumber, taskId = null, regenerate = false) {
       body: { learner_id: getLearnerId(), chapter_number: chapterNumber, regenerate },
     });
 
+    if (testResp.blocked) {
+      showScreen("dashboard");
+      loadDashboard();
+      showFinalTestBlockedModal(chapterNumber, testResp.reason_code, testResp.pending_tasks || []);
+      return;
+    }
+
     currentTestData = {
       test_id: testResp.test_id,
       questions: testResp.questions,
@@ -855,13 +900,13 @@ function renderChapterTestQuestions(questions) {
 
     card.innerHTML = `
             <div class="question-number">Question ${i + 1} of ${questions.length}</div>
-            <div class="question-prompt">${q.prompt}</div>
+            <div class="question-prompt">${mdInlineToHtml(q.prompt || "")}</div>
             <div class="question-options">
                 ${q.options.map((opt, oi) => `
                     <label class="option-label" data-qid="${q.question_id}" data-idx="${oi}">
                         <input type="radio" name="chtest_${q.question_id}" value="${oi}">
                         <span class="option-indicator"></span>
-                        <span>${opt}</span>
+                        <span>${mdInlineToHtml(opt || "")}</span>
                     </label>
                 `).join("")}
             </div>
@@ -955,11 +1000,11 @@ async function handleSubmitChapterTest() {
       return `
         <div style="text-align:left;border:1px solid var(--border);border-radius:10px;padding:10px 12px;margin-top:8px;background:var(--bg-elevated)">
           <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
-            <strong>Q${idx + 1}. ${q.prompt || q.question_id}</strong>
+            <strong>Q${idx + 1}. ${mdInlineToHtml(q.prompt || q.question_id)}</strong>
             <span class="task-status-badge ${state === "correct" ? "completed" : "pending"}">${state === "correct" ? "Correct" : "Wrong"}</span>
           </div>
-          <div style="margin-top:6px;color:var(--text-secondary);font-size:0.9rem">Your answer: <strong>${selectedText}</strong></div>
-          <div style="color:var(--text-secondary);font-size:0.9rem">Correct answer: <strong>${correctText}</strong></div>
+          <div style="margin-top:6px;color:var(--text-secondary);font-size:0.9rem">Your answer: <strong>${mdInlineToHtml(selectedText)}</strong></div>
+          <div style="color:var(--text-secondary);font-size:0.9rem">Correct answer: <strong>${mdInlineToHtml(correctText)}</strong></div>
           <div style="margin-top:8px">${explainBtn}</div>
           <div id="explain-${q.question_id}" style="margin-top:8px;color:var(--text-secondary);font-size:0.9rem"></div>
         </div>
@@ -979,6 +1024,7 @@ async function handleSubmitChapterTest() {
               ${questionReviewHtml || `<p style="color:var(--text-muted)">Question-wise review is unavailable for this attempt.</p>`}
             </div>
         `;
+    renderKaTeX(feedbackEl);
 
     $("btn-submit-chapter-test").textContent = "Submit Test";
   } catch (err) {

@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import logging
 import random
+import re
+from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
 
@@ -46,6 +48,8 @@ COMPLETION_THRESHOLD = 0.60  # 60%
 MAX_CHAPTER_ATTEMPTS = 2
 TIMELINE_MIN_WEEKS = 14
 TIMELINE_MAX_WEEKS = 28
+CONTENT_PROMPT_VERSION = "v2"
+TEST_PROMPT_VERSION = "v2"
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -76,10 +80,13 @@ class GenerateTestResponse(BaseModel):
     learner_id: str
     week_number: int
     chapter: str
-    test_id: str
-    questions: list[TestQuestion]
+    test_id: str | None = None
+    questions: list[TestQuestion] = Field(default_factory=list)
     time_limit_minutes: int = 20
     source: str = "llm"
+    blocked: bool = False
+    reason_code: str | None = None
+    pending_tasks: list[str] = Field(default_factory=list)
 
 
 class TestAnswer(BaseModel):
@@ -208,6 +215,113 @@ def _tone_for_ability(ability: float) -> dict:
     return {"tone": "concise_challenging", "pace": "fast", "depth": "advanced", "examples": 1}
 
 
+def _bucket(value: float, scale: int = 10) -> int:
+    return max(0, min(scale, int(round(float(value or 0.0) * scale))))
+
+
+def _profile_snapshot_key(profile: LearnerProfile, chapter_key: str) -> str:
+    cog = _bucket(profile.cognitive_depth or 0.5)
+    mastery = _bucket((profile.concept_mastery or {}).get(chapter_key, 0.5))
+    return f"c{cog}m{mastery}"
+
+
+def _section_content_cache_key(section_id: str, tone: str, profile_snapshot: str) -> str:
+    return f"{section_id}::pv={CONTENT_PROMPT_VERSION}::tone={tone}::p={profile_snapshot}"
+
+
+def _chapter_test_cache_key(chapter_base: str, difficulty: str, profile_snapshot: str) -> str:
+    return f"{chapter_base}::pv={TEST_PROMPT_VERSION}::difficulty={difficulty}::p={profile_snapshot}"
+
+
+def _normalized_question_text(text: str) -> str:
+    """Normalize question text for de-dup checks."""
+    txt = re.sub(r"\\\(|\\\)|\\\[|\\\]", " ", str(text or ""))
+    txt = re.sub(r"[^a-zA-Z0-9]+", " ", txt).strip().lower()
+    return re.sub(r"\s+", " ", txt)
+
+
+def _is_near_duplicate(candidate: str, existing: list[str], threshold: float = 0.9) -> bool:
+    return any(SequenceMatcher(a=candidate, b=prev).ratio() >= threshold for prev in existing)
+
+
+def _dedupe_generated_questions(raw_items: list[dict], target_count: int) -> tuple[list[dict], int]:
+    """Drop exact/normalized/near-duplicate question stems from LLM output."""
+    out: list[dict] = []
+    seen_norm: list[str] = []
+    duplicates_removed = 0
+    for item in raw_items:
+        if not isinstance(item, dict):
+            duplicates_removed += 1
+            continue
+        q = str(item.get("q", "")).strip()
+        options = item.get("options", [])
+        if not q or not isinstance(options, list) or len(options) < 4:
+            duplicates_removed += 1
+            continue
+        norm = _normalized_question_text(q)
+        if not norm:
+            duplicates_removed += 1
+            continue
+        if norm in seen_norm or _is_near_duplicate(norm, seen_norm):
+            duplicates_removed += 1
+            continue
+        seen_norm.append(norm)
+        out.append(item)
+        if len(out) >= target_count:
+            break
+    return out, duplicates_removed
+
+
+async def _pending_subsection_tasks_for_final_test(
+    db: AsyncSession,
+    learner_id: UUID,
+    chapter_number: int,
+    chapter: str,
+) -> tuple[int, list[str]]:
+    """
+    Return pending subsection task count/list for the chapter's final test week.
+    If no chapter-level task exists, treat as unblocked for ad-hoc generation.
+    """
+    final_task = (await db.execute(
+        select(Task).where(
+            Task.learner_id == learner_id,
+            Task.chapter == chapter,
+            Task.task_type == "test",
+            Task.proof_policy["chapter_level"].as_boolean() == True,
+        ).order_by(Task.week_number.asc(), Task.sort_order.asc(), Task.created_at.asc())
+    )).scalars().first()
+    if final_task is None:
+        # Fallback gate when no final-task row exists: enforce subsection progression completeness.
+        await _ensure_subsection_rows(db, learner_id, chapter_number)
+        rows = (await db.execute(
+            select(SubsectionProgression.section_id, SubsectionProgression.section_title, SubsectionProgression.status)
+            .where(
+                SubsectionProgression.learner_id == learner_id,
+                SubsectionProgression.chapter == chapter,
+            )
+        )).all()
+        pending = [
+            f"{sid} {title}"
+            for sid, title, status in rows
+            if str(status) != "completed"
+        ]
+        return len(pending), pending
+
+    week_number = int(final_task.week_number)
+    pending_rows = (await db.execute(
+        select(Task.title).where(
+            Task.learner_id == learner_id,
+            Task.chapter == chapter,
+            Task.week_number == week_number,
+            Task.task_type.in_(["read", "test"]),
+            Task.proof_policy["section_id"].is_not(None),
+            Task.status != "completed",
+        ).order_by(Task.sort_order.asc(), Task.created_at.asc())
+    )).scalars().all()
+    pending_tasks = [str(t) for t in pending_rows if isinstance(t, str)]
+    return len(pending_tasks), pending_tasks
+
+
 async def _get_profile(db: AsyncSession, learner_id: UUID) -> LearnerProfile:
     profile = (await db.execute(
         select(LearnerProfile).where(LearnerProfile.learner_id == learner_id)
@@ -332,6 +446,12 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
                 tone=str(cached.get("tone") or tone_config["tone"]),
                 examples_count=tone_config["examples"],
             )
+        logger.info(
+            "event=cache_miss kind=chapter_content learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            cache_section_id,
+        )
 
     # Retrieve NCERT chunks
     chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=6)
@@ -419,12 +539,19 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
     """Generate an MCQ test for a chapter using NCERT embeddings + LLM."""
     from app.memory.content_cache import get_cached_test, save_test_cache
 
+    profile = await _get_profile(db, payload.learner_id)
     plan = await _get_plan(db, payload.learner_id)
     week_number = plan.current_week if plan else 1
     ch_info = _chapter_info(payload.chapter_number)
     chapter_name = ch_info["title"]
     chapter_key = chapter_display_name(payload.chapter_number)
-    cache_section_id = "__chapter__"
+    combined_ability = (
+        float(profile.cognitive_depth or 0.5)
+        + float((profile.concept_mastery or {}).get(chapter_key, 0.5))
+    ) / 2.0
+    difficulty = "foundational" if combined_ability < 0.4 else ("standard" if combined_ability < 0.7 else "advanced")
+    profile_snapshot = _profile_snapshot_key(profile, chapter_key)
+    cache_section_id = _chapter_test_cache_key("__chapter__", difficulty, profile_snapshot)
     if payload.regenerate:
         logger.info(
             "event=regenerate_triggered kind=chapter_test learner_id=%s chapter=%s section=%s",
@@ -461,6 +588,37 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                 time_limit_minutes=20,
                 source="cached",
             )
+        logger.info(
+            "event=cache_miss kind=chapter_test learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            cache_section_id,
+        )
+
+    # Pre-generation gate: do not spend tokens for final test when subsection tasks are pending.
+    pending_count, pending_tasks = await _pending_subsection_tasks_for_final_test(
+        db,
+        payload.learner_id,
+        payload.chapter_number,
+        chapter_key,
+    )
+    if pending_count > 0:
+        logger.warning(
+            "event=final_test_generation_blocked reason=pending_subsection_tasks learner=%s chapter=%s pending_count=%s pending_tasks=%s",
+            payload.learner_id,
+            chapter_key,
+            pending_count,
+            pending_tasks[:5],
+        )
+        return GenerateTestResponse(
+            learner_id=str(payload.learner_id),
+            week_number=week_number,
+            chapter=chapter_key,
+            source="blocked",
+            blocked=True,
+            reason_code="pending_subsection_tasks",
+            pending_tasks=pending_tasks[:8],
+        )
 
     # Retrieve chunks for question generation
     chunks = await _retrieve_chapter_chunks(db, payload.chapter_number, top_k=5)
@@ -476,6 +634,10 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
             f"Generate exactly 10 multiple-choice questions for:\n"
             f"Chapter: {chapter_name}\n\n"
             f"Use ONLY the following NCERT content:\n{context}\n\n"
+            f"Rules:\n"
+            f"- All 10 question stems MUST be unique.\n"
+            f"- Do NOT repeat or lightly paraphrase the same stem.\n"
+            f"- Cover different ideas/skills from the chapter.\n"
             f"Format: Return a JSON array of 10 objects, each with:\n"
             f'  {{"q": "question text", "options": ["A", "B", "C", "D"], "correct": 0}}\n'
             f"where correct is 0-3 (index of correct option).\n"
@@ -494,7 +656,8 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                 end = text.rfind("]") + 1
                 if start >= 0 and end > start:
                     parsed = json.loads(text[start:end])
-                    for i, item in enumerate(parsed[:10]):
+                    deduped, duplicates_removed = _dedupe_generated_questions(parsed, target_count=10)
+                    for i, item in enumerate(deduped):
                         qid = f"t_{test_id}_q{i+1}"
                         options = item.get("options", ["A", "B", "C", "D"])
                         correct = int(item.get("correct", 0))
@@ -507,21 +670,49 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                             chapter_number=payload.chapter_number,
                         ))
                         answer_key[qid] = correct
+                    logger.info(
+                        "event=test_generation_diagnostics kind=chapter requested=%s unique_count=%s duplicates_removed=%s chapter=%s",
+                        10,
+                        len(questions),
+                        duplicates_removed,
+                        payload.chapter_number,
+                    )
         except Exception as exc:
             logger.warning("LLM test generation failed: %s", exc)
 
-    # Fallback: generate simple questions if LLM failed
+    # Refill missing unique slots with deterministic fallback stems.
+    subtopics = [s["title"] for s in ch_info.get("subtopics", [])
+                 if "Summary" not in s["title"] and "Introduction" not in s["title"]]
+    while len(questions) < 10:
+        i = len(questions)
+        qid = f"t_{test_id}_q{i+1}"
+        topic = subtopics[i % len(subtopics)] if subtopics else chapter_name
+        prompt_text = f"[Q{i+1}] Which of the following best describes a key concept in '{topic}'?"
+        if _is_near_duplicate(_normalized_question_text(prompt_text), [_normalized_question_text(q.prompt) for q in questions]):
+            prompt_text = f"[Q{i+1}] Identify the most accurate statement about '{topic}'."
+        questions.append(TestQuestion(
+            question_id=qid,
+            prompt=prompt_text,
+            options=[
+                f"Correct definition of {topic}",
+                f"Incorrect variant A of {topic}",
+                f"Incorrect variant B of {topic}",
+                f"Unrelated concept",
+            ],
+            chapter_number=payload.chapter_number,
+        ))
+        answer_key[qid] = 0
+
+    # Safety fallback if generation returned very low quality.
     if len(questions) < 5:
         questions = []
         answer_key = {}
-        subtopics = [s["title"] for s in ch_info.get("subtopics", [])
-                     if "Summary" not in s["title"] and "Introduction" not in s["title"]]
         for i in range(10):
             qid = f"t_{test_id}_q{i+1}"
             topic = subtopics[i % len(subtopics)] if subtopics else chapter_name
             questions.append(TestQuestion(
                 question_id=qid,
-                prompt=f"Which of the following best describes a key concept in '{topic}'?",
+                prompt=f"[Q{i+1}] Which of the following best describes a key concept in '{topic}'?",
                 options=[
                     f"Correct definition of {topic}",
                     f"Incorrect variant A of {topic}",
@@ -934,6 +1125,12 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
                 explanation=str(cached["explanation"]),
                 source="cached",
             )
+        logger.info(
+            "event=cache_miss kind=question_explain learner_id=%s test_id=%s question_id=%s",
+            payload.learner_id,
+            payload.test_id,
+            payload.question_id,
+        )
 
     question_items = test_data.get("questions", [])
     question = None
@@ -1190,26 +1387,34 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
             section_title = s["title"]
             break
 
+    # Determine ability and tone (used for adaptive prompt + profile-aware cache key).
+    ability = profile.cognitive_depth or 0.5
+    chapter_key = chapter_display_name(payload.chapter_number)
+    mastery = (profile.concept_mastery or {}).get(chapter_key, 0.5)
+    combined_ability = (ability + mastery) / 2
+    tone_config = _tone_for_ability(combined_ability)
+    profile_snapshot = _profile_snapshot_key(profile, chapter_key)
+    cache_section_id = _section_content_cache_key(payload.section_id, tone_config["tone"], profile_snapshot)
+
     # Check cache first (unless regenerate requested)
     if payload.regenerate:
         logger.info(
             "event=regenerate_triggered kind=section_content learner_id=%s chapter=%s section=%s",
             payload.learner_id,
             payload.chapter_number,
-            payload.section_id,
+            cache_section_id,
         )
     if not payload.regenerate:
-        cached = get_cached_content(str(payload.learner_id), payload.chapter_number, payload.section_id)
+        cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached:
             logger.info(
                 "event=cache_hit kind=section_content learner_id=%s chapter=%s section=%s",
                 payload.learner_id,
                 payload.chapter_number,
-                payload.section_id,
+                cache_section_id,
             )
             logger.info("Serving cached content for %s section %s", payload.chapter_number, payload.section_id)
             # Still mark reading done
-            chapter_key = chapter_display_name(payload.chapter_number)
             await _ensure_subsection_rows(db, payload.learner_id, payload.chapter_number)
             sp = (await db.execute(
                 select(SubsectionProgression).where(
@@ -1231,13 +1436,12 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 "source": "cached",
                 "tone": cached.get("tone", "normal"),
             }
-
-    # Determine ability and tone
-    ability = profile.cognitive_depth or 0.5
-    chapter_key = chapter_display_name(payload.chapter_number)
-    mastery = (profile.concept_mastery or {}).get(chapter_key, 0.5)
-    combined_ability = (ability + mastery) / 2
-    tone_config = _tone_for_ability(combined_ability)
+        logger.info(
+            "event=cache_miss kind=section_content learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            cache_section_id,
+        )
 
     # Deterministic subsection source fetch from canonical store.
     context = await _get_canonical_section_context(
@@ -1306,7 +1510,7 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
             generated_content = llm_text.strip()
             # Save to cache
             save_content_cache(
-                str(payload.learner_id), payload.chapter_number, payload.section_id,
+                str(payload.learner_id), payload.chapter_number, cache_section_id,
                 section_title, generated_content, tone_config["tone"],
             )
             return {
@@ -1384,6 +1588,12 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 "time_limit_minutes": 10,
                 "source": "cached",
             }
+        logger.info(
+            "event=cache_miss kind=section_test learner_id=%s chapter=%s section=%s",
+            payload.learner_id,
+            payload.chapter_number,
+            payload.section_id,
+        )
 
     # Deterministic subsection source fetch from canonical store.
     context = await _get_canonical_section_context(
@@ -1409,6 +1619,10 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
             f"Chapter: {chapter_name}\n"
             f"Section: {payload.section_id} - {section_title}\n\n"
             f"Use ONLY the following NCERT content:\n{context}\n\n"
+            f"Rules:\n"
+            f"- All 5 question stems MUST be unique.\n"
+            f"- Do NOT repeat or lightly paraphrase the same stem.\n"
+            f"- Cover distinct points from this section.\n"
             f"Format: Return a JSON array of 5 objects, each with:\n"
             f'  {{"q": "question text", "options": ["A", "B", "C", "D"], "correct": 0}}\n'
             f"where correct is 0-3 (index of correct option).\n"
@@ -1425,7 +1639,8 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 end = text.rfind("]") + 1
                 if start >= 0 and end > start:
                     parsed = json.loads(text[start:end])
-                    for i, item in enumerate(parsed[:5]):
+                    deduped, duplicates_removed = _dedupe_generated_questions(parsed, target_count=5)
+                    for i, item in enumerate(deduped):
                         qid = f"st_{test_id}_q{i+1}"
                         options = item.get("options", ["A", "B", "C", "D"])
                         correct_idx = int(item.get("correct", 0))
@@ -1438,27 +1653,36 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                             chapter_number=payload.chapter_number,
                         ))
                         answer_key[qid] = correct_idx
+                    logger.info(
+                        "event=test_generation_diagnostics kind=section requested=%s unique_count=%s duplicates_removed=%s chapter=%s section=%s",
+                        5,
+                        len(questions),
+                        duplicates_removed,
+                        payload.chapter_number,
+                        payload.section_id,
+                    )
         except Exception as exc:
             logger.warning("LLM section test generation failed: %s", exc)
 
-    # Fallback
-    if len(questions) < 3:
-        questions = []
-        answer_key = {}
-        for i in range(5):
-            qid = f"st_{test_id}_q{i+1}"
-            questions.append(TestQuestion(
-                question_id=qid,
-                prompt=f"Which concept is central to '{section_title}'?",
-                options=[
-                    f"Correct definition of {section_title}",
-                    f"Incorrect variant A",
-                    f"Incorrect variant B",
-                    f"Unrelated concept",
-                ],
-                chapter_number=payload.chapter_number,
-            ))
-            answer_key[qid] = 0
+    # Refill missing unique slots with deterministic fallback stems.
+    while len(questions) < 5:
+        i = len(questions)
+        qid = f"st_{test_id}_q{i+1}"
+        prompt_text = f"[Q{i+1}] Which concept is central to '{section_title}'?"
+        if _is_near_duplicate(_normalized_question_text(prompt_text), [_normalized_question_text(q.prompt) for q in questions]):
+            prompt_text = f"[Q{i+1}] Select the statement that best matches '{section_title}'."
+        questions.append(TestQuestion(
+            question_id=qid,
+            prompt=prompt_text,
+            options=[
+                f"Correct definition of {section_title}",
+                f"Incorrect variant A",
+                f"Incorrect variant B",
+                f"Unrelated concept",
+            ],
+            chapter_number=payload.chapter_number,
+        ))
+        answer_key[qid] = 0
 
     _test_store[test_id] = {
         "learner_id": str(payload.learner_id),
