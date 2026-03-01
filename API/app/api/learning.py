@@ -830,29 +830,30 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
             ).order_by(desc(Task.created_at))
         )).scalar_one_or_none()
     if not selected_task_id:
-        logger.warning(
-            "event=final_test_submit_failed reason=no_matching_task learner=%s chapter=%s test_id=%s",
+        logger.info(
+            "event=ad_hoc_test_submit learner=%s chapter=%s test_id=%s section_id=%s chapter_level=%s",
             payload.learner_id,
             chapter,
             payload.test_id,
+            section_id,
+            chapter_level,
         )
-        raise HTTPException(status_code=404, detail="No matching test task found for this attempt.")
-
-    db.add(TaskAttempt(
-        task_id=selected_task_id,
-        learner_id=payload.learner_id,
-        proof_payload={
-            "score": score,
-            "correct": correct,
-            "total": total,
-            "test_id": payload.test_id,
-            "attempt": attempt_number,
-            "section_id": section_id,
-            "chapter_level": chapter_level,
-        },
-        accepted=accepted_attempt,
-        reason=decision,
-    ))
+    else:
+        db.add(TaskAttempt(
+            task_id=selected_task_id,
+            learner_id=payload.learner_id,
+            proof_payload={
+                "score": score,
+                "correct": correct,
+                "total": total,
+                "test_id": payload.test_id,
+                "attempt": attempt_number,
+                "section_id": section_id,
+                "chapter_level": chapter_level,
+            },
+            accepted=accepted_attempt,
+            reason=decision,
+        ))
     try:
         await log_agent_decision(
             db=db,
