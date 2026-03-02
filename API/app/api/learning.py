@@ -433,6 +433,43 @@ async def _enforce_math_format(text: str, provider=None) -> str:
     return repaired
 
 
+def _format_math_for_display(text: str) -> str:
+    """Deterministic pass for cached/review/fallback text shown in UI."""
+    return _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(str(text or "")))
+
+
+async def _format_mcq_item_math(item: dict, provider=None) -> dict:
+    """Apply reading-content math formatting to MCQ stem + options."""
+    if not isinstance(item, dict):
+        return item
+    stem = await _enforce_math_format(str(item.get("q", "")), provider=provider)
+    raw_options = item.get("options", [])
+    options: list[str] = []
+    if isinstance(raw_options, list):
+        for opt in raw_options:
+            options.append(await _enforce_math_format(str(opt), provider=provider))
+    return {
+        **item,
+        "q": stem,
+        "options": options if options else ["A", "B", "C", "D"],
+    }
+
+
+def _sanitize_question_payload(question: dict) -> dict:
+    """Normalize prompt/options for KaTeX rendering in all test UI surfaces."""
+    if not isinstance(question, dict):
+        return question
+    raw_options = question.get("options", [])
+    options = []
+    if isinstance(raw_options, list):
+        options = [_format_math_for_display(str(o)) for o in raw_options]
+    return {
+        **question,
+        "prompt": _format_math_for_display(str(question.get("prompt", ""))),
+        "options": options,
+    }
+
+
 def _is_near_duplicate(candidate: str, existing: list[str], threshold: float = 0.9) -> bool:
     return any(SequenceMatcher(a=candidate, b=prev).ratio() >= threshold for prev in existing)
 
@@ -781,6 +818,11 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
     if not payload.regenerate:
         cached = get_cached_test(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached:
+            cached_questions = [
+                _sanitize_question_payload(q)
+                for q in (cached.get("questions") or [])
+                if isinstance(q, dict)
+            ]
             logger.info(
                 "event=cache_hit kind=chapter_test learner_id=%s chapter=%s section=%s",
                 payload.learner_id,
@@ -793,7 +835,7 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                 "chapter": chapter_key,
                 "chapter_level": True,
                 "section_id": None,
-                "questions": cached.get("questions", []),
+                "questions": cached_questions,
                 "answer_key": cached["answer_key"],
                 "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
             }
@@ -802,7 +844,7 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                 week_number=week_number,
                 chapter=chapter_key,
                 test_id=cached["test_id"],
-                questions=[TestQuestion(**q) for q in cached["questions"]],
+                questions=[TestQuestion(**q) for q in cached_questions],
                 time_limit_minutes=20,
                 source="cached",
             )
@@ -874,7 +916,11 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                 end = text.rfind("]") + 1
                 if start >= 0 and end > start:
                     parsed = json.loads(text[start:end])
-                    deduped, duplicates_removed = _dedupe_generated_questions(parsed, target_count=10)
+                    formatted_parsed: list[dict] = []
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            formatted_parsed.append(await _format_mcq_item_math(item, provider=provider))
+                    deduped, duplicates_removed = _dedupe_generated_questions(formatted_parsed, target_count=10)
                     for i, item in enumerate(deduped):
                         qid = f"t_{test_id}_q{i+1}"
                         options = item.get("options", ["A", "B", "C", "D"])
@@ -942,23 +988,25 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
             answer_key[qid] = 0
 
     # Store test for scoring
+    questions_dicts = [_sanitize_question_payload(q.model_dump()) for q in questions]
     _test_store[test_id] = {
         "learner_id": str(payload.learner_id),
         "chapter_number": payload.chapter_number,
         "chapter": chapter_key,
         "chapter_level": True,
         "section_id": None,
-        "questions": [q.model_dump() for q in questions],
+        "questions": questions_dicts,
         "answer_key": answer_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    response_questions = [TestQuestion(**q) for q in questions_dicts]
     save_test_cache(
         str(payload.learner_id),
         payload.chapter_number,
         cache_section_id,
         chapter_name,
         test_id,
-        [q.model_dump() for q in questions],
+        questions_dicts,
         answer_key,
     )
 
@@ -967,7 +1015,7 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
         week_number=week_number,
         chapter=chapter_key,
         test_id=test_id,
-        questions=questions,
+        questions=response_questions,
         time_limit_minutes=20,
         source="llm",
     )
@@ -1005,11 +1053,11 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
     for qid, expected in answer_key.items():
         selected = answer_map.get(qid)
         q = question_meta.get(qid, {})
-        options = q.get("options", [])
+        options = [_format_math_for_display(str(o)) for o in (q.get("options", []) or [])]
         question_results.append(
             {
                 "question_id": qid,
-                "prompt": q.get("prompt"),
+                "prompt": _format_math_for_display(str(q.get("prompt", ""))),
                 "options": options,
                 "selected_index": selected,
                 "correct_index": expected,
@@ -1394,14 +1442,14 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
         chunks = await _retrieve_chapter_chunks(db, chapter_number, top_k=5)
         context = "\n\n".join(chunks[:4]) if chunks else ""
 
-    options = question.get("options", [])
+    options = [_format_math_for_display(str(o)) for o in (question.get("options", []) or [])]
     prompt = (
         "You are a Class 10 CBSE math tutor.\n"
         "Explain the question outcome in a concise and clear way.\n"
         "Use ONLY the NCERT source context below.\n\n"
         f"Chapter: {chapter_number}\n"
         f"Section: {section_id or 'chapter-level final'}\n"
-        f"Question: {question.get('prompt', '')}\n"
+        f"Question: {_format_math_for_display(str(question.get('prompt', '')))}\n"
         f"Options: {json.dumps(options, ensure_ascii=True)}\n"
         f"Student selected index: {selected_index}\n"
         f"Correct index: {correct_index}\n\n"
@@ -1437,8 +1485,8 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
             else "No option selected"
         )
         explanation = (
-            f"Correct answer: **{correct_text}**\n\n"
-            f"Your choice: **{chosen_text}**\n\n"
+            f"Correct answer: **{_format_math_for_display(str(correct_text))}**\n\n"
+            f"Your choice: **{_format_math_for_display(str(chosen_text))}**\n\n"
             "Review the related concept from the section and retry a similar problem."
         )
 
@@ -1810,6 +1858,11 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
     if not payload.regenerate:
         cached = get_cached_test(str(payload.learner_id), payload.chapter_number, payload.section_id)
         if cached:
+            cached_questions = [
+                _sanitize_question_payload(q)
+                for q in (cached.get("questions") or [])
+                if isinstance(q, dict)
+            ]
             logger.info(
                 "event=cache_hit kind=section_test learner_id=%s chapter=%s section=%s",
                 payload.learner_id,
@@ -1824,7 +1877,7 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 "chapter": chapter_key,
                 "section_id": payload.section_id,
                 "chapter_level": False,
-                "questions": cached.get("questions", []),
+                "questions": cached_questions,
                 "answer_key": cached["answer_key"],
                 "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
             }
@@ -1834,7 +1887,7 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 "section_id": payload.section_id,
                 "section_title": cached.get("section_title", section_title),
                 "test_id": cached["test_id"],
-                "questions": cached["questions"],
+                "questions": cached_questions,
                 "time_limit_minutes": 10,
                 "source": "cached",
             }
@@ -1889,7 +1942,11 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 end = text.rfind("]") + 1
                 if start >= 0 and end > start:
                     parsed = json.loads(text[start:end])
-                    deduped, duplicates_removed = _dedupe_generated_questions(parsed, target_count=5)
+                    formatted_parsed: list[dict] = []
+                    for item in parsed:
+                        if isinstance(item, dict):
+                            formatted_parsed.append(await _format_mcq_item_math(item, provider=provider))
+                    deduped, duplicates_removed = _dedupe_generated_questions(formatted_parsed, target_count=5)
                     for i, item in enumerate(deduped):
                         qid = f"st_{test_id}_q{i+1}"
                         options = item.get("options", ["A", "B", "C", "D"])
@@ -1934,17 +1991,17 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         ))
         answer_key[qid] = 0
 
+    questions_dicts = [_sanitize_question_payload(q.model_dump()) for q in questions]
     _test_store[test_id] = {
         "learner_id": str(payload.learner_id),
         "chapter_number": payload.chapter_number,
         "chapter": chapter_key,
         "section_id": payload.section_id,
         "chapter_level": False,
-        "questions": [q.model_dump() for q in questions],
+        "questions": questions_dicts,
         "answer_key": answer_key,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    questions_dicts = [q.model_dump() for q in questions]
     save_test_cache(
         str(payload.learner_id), payload.chapter_number, payload.section_id,
         section_title, test_id, questions_dicts, answer_key,
