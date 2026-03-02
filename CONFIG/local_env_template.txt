@@ -1,3 +1,4 @@
+# Copy this file local.env and <ADD_YOUR_GEMINI_API_KEY>
 # API
 APP_ENV=dev
 APP_HOST=0.0.0.0
@@ -9,8 +10,8 @@ POSTGRES_HOST=postgres
 POSTGRES_PORT=5432
 POSTGRES_DB=mentorix
 POSTGRES_USER=mentorix
-POSTGRES_PASSWORD=change_me
-DATABASE_URL=postgresql+asyncpg://mentorix:change_me@postgres:5432/mentorix
+POSTGRES_PASSWORD=mentorix
+DATABASE_URL=postgresql+asyncpg://mentorix:mentorix@postgres:5432/mentorix
 
 # Redis
 REDIS_URL=redis://redis:6379/0
@@ -25,8 +26,8 @@ RETENTION_CLEANUP_ENABLED=true
 SESSION_RETENTION_DAYS=30
 
 # LLM
-GEMINI_API_KEY=
-GEMINI_API_URL=
+GEMINI_API_KEY=<ADD_YOUR_GEMINI_API_KEY>
+GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent 
 LLM_PROVIDER=gemini
 LLM_MODEL=gemini-2.5-flash
 OLLAMA_BASE_URL=http://host.docker.internal:11434
@@ -42,9 +43,9 @@ GENERATED_ARTIFACTS_TOP_K=2
 
 # Grounding Ingestion
 GROUNDING_DATA_DIR=class-10-maths
-GROUNDING_SYLLABUS_RELATIVE_PATH=syllabus/syllabus.pdf
+GROUNDING_SYLLABUS_RELATIVE_PATH=syllabus/syllabus.txt
 GROUNDING_CHAPTERS_DIR=chapters
-GROUNDING_CHAPTER_COUNT=3
+GROUNDING_CHAPTER_COUNT=5
 GROUNDING_CHUNK_SIZE=900
 GROUNDING_CHUNK_OVERLAP=120
 GROUNDING_PREPARE_ON_START=false
