@@ -240,19 +240,28 @@ def _chapter_test_cache_key(chapter_base: str, difficulty: str, profile_snapshot
 def _estimate_read_seconds(content: str, ability: float = 0.5) -> int:
     """
     Estimate minimum reading time from content length.
-    Rule: dynamic between 1 and 5 minutes (inclusive).
+    Rule: estimate by words / human reading speed, then clamp to configured bounds.
+    Default bounds: 1 to 5 minutes.
     """
+    min_seconds = max(30, int(getattr(settings, "reading_min_seconds", 60) or 60))
+    max_seconds = max(min_seconds, int(getattr(settings, "reading_max_seconds", 300) or 300))
+    wpm = max(80.0, float(getattr(settings, "reading_estimate_wpm", 150) or 150))
     words = len(re.findall(r"\b\w+\b", str(content or "")))
     if words <= 0:
-        return 60
-    if ability < 0.4:
-        wpm = 110.0
-    elif ability < 0.7:
-        wpm = 140.0
-    else:
-        wpm = 170.0
+        return min_seconds
+    _ = ability  # kept in signature for compatibility with existing call sites
     estimated = int(math.ceil((words / wpm) * 60.0))
-    return max(60, min(300, estimated))
+    return max(min_seconds, min(max_seconds, estimated))
+
+
+def _clamp_read_seconds(value: int | float | None) -> int:
+    min_seconds = max(30, int(getattr(settings, "reading_min_seconds", 60) or 60))
+    max_seconds = max(min_seconds, int(getattr(settings, "reading_max_seconds", 300) or 300))
+    try:
+        raw = int(value or 0)
+    except Exception:
+        raw = min_seconds
+    return max(min_seconds, min(max_seconds, raw))
 
 
 async def _apply_dynamic_reading_requirement(
@@ -268,6 +277,7 @@ async def _apply_dynamic_reading_requirement(
     )).scalar_one_or_none()
     if not task:
         return
+    required_seconds = _clamp_read_seconds(required_seconds)
     policy = dict(task.proof_policy or {})
     policy["min_seconds"] = int(required_seconds)
     # Keep a denormalized minutes value for backward compatibility in older consumers.
@@ -615,7 +625,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached and cached.get("content"):
-            required_read_seconds = int(
+            required_read_seconds = _clamp_read_seconds(
                 cached.get("required_read_seconds")
                 or _estimate_read_seconds(str(cached.get("content") or ""), combined_ability)
             )
@@ -1623,7 +1633,7 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached:
-            required_read_seconds = int(
+            required_read_seconds = _clamp_read_seconds(
                 cached.get("required_read_seconds")
                 or _estimate_read_seconds(str(cached.get("content") or ""), combined_ability)
             )
@@ -2294,6 +2304,12 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     current_tasks = []
     for t in tasks:
         policy = t.proof_policy or {}
+        min_seconds = policy.get("min_seconds")
+        if not isinstance(min_seconds, int):
+            try:
+                min_seconds = int(float(policy.get("min_reading_minutes", 0)) * 60) if policy.get("min_reading_minutes") is not None else None
+            except Exception:
+                min_seconds = None
         current_tasks.append({
             "task_id": str(t.id),
             "chapter": t.chapter,
@@ -2303,6 +2319,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             "is_locked": t.is_locked,
             "section_id": policy.get("section_id"),
             "chapter_level": policy.get("chapter_level", False),
+            "min_seconds": min_seconds,
             "scheduled_day": t.scheduled_day.isoformat() if t.scheduled_day else None,
         })
 

@@ -31,6 +31,9 @@ GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.
 LLM_PROVIDER=gemini
 LLM_MODEL=gemini-2.5-flash
 MATH_FORMAT_FIX_SECOND_PASS_ENABLED=false
+READING_MIN_SECONDS=60
+READING_MAX_SECONDS=300
+READING_ESTIMATE_WPM=150
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen2.5:3b
 

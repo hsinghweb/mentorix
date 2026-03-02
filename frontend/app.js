@@ -121,6 +121,45 @@ function mdInlineToHtml(md) {
     .replace(/>/g, "&gt;");
 }
 
+function extractChapterNumber(chapterLabel) {
+  if (!chapterLabel) return null;
+  const match = String(chapterLabel).match(/(\d+)/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+async function resolveCurrentWeekTask(taskType, chapterNumber, sectionId = null) {
+  const learnerId = getLearnerId();
+  if (!learnerId) return null;
+  try {
+    const dash = await api(`/learning/dashboard/${learnerId}`);
+    const tasks = dash.current_week_tasks || [];
+    const found = tasks.find(t => {
+      if (t.task_type !== taskType) return false;
+      const taskChapter = extractChapterNumber(t.chapter);
+      if (taskChapter !== chapterNumber) return false;
+      if (sectionId) return (t.section_id || "") === sectionId;
+      return !t.section_id;
+    });
+    if (!found) return null;
+    return {
+      task_id: found.task_id || null,
+      min_seconds: Number.isFinite(parseInt(found.min_seconds, 10)) ? parseInt(found.min_seconds, 10) : null,
+    };
+  } catch (err) {
+    console.warn("Task id resolution failed:", err);
+    return null;
+  }
+}
+
+function parseMinSecondsFromReason(reasonText) {
+  const text = String(reasonText || "");
+  const m = text.match(/at least\s+(\d+)\s+minute/i);
+  if (!m) return null;
+  const mins = parseInt(m[1], 10);
+  if (!Number.isFinite(mins) || mins <= 0) return null;
+  return mins * 60;
+}
+
 function showFinalTestBlockedModal(chapterNumber, reasonCode, pendingTasks = []) {
   const existing = document.getElementById("final-test-blocked-overlay");
   if (existing) existing.remove();
@@ -770,29 +809,51 @@ function renderRevision(revisions) {
 // ── READING ─────────────────────────────────────────────────────────────────
 async function openReading(chapterNumber, taskId) {
   showScreen("reading");
+  if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
   readingTaskId = taskId;
+  if (!readingTaskId) {
+    const resolvedTaskMeta = await resolveCurrentWeekTask("read", chapterNumber, null);
+    readingTaskId = resolvedTaskMeta?.task_id || null;
+  }
   readingChapterNumber = chapterNumber;
   readingSeconds = 0;
-  let requiredReadingSeconds = 300;
+  let requiredReadingSeconds = 60;
   let readingTaskCompleted = false;
+  let completionInFlight = false;
+  let contentLoaded = false;
+
+  const attemptMarkReadingComplete = async () => {
+    if (readingTaskCompleted || completionInFlight) return;
+    completionInFlight = true;
+    const completion = await completeReading();
+    completionInFlight = false;
+    if (completion.ok) {
+      readingTaskCompleted = true;
+      if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
+      $("reading-status").className = "reading-status complete";
+      $("reading-status").textContent = "✅ Reading complete! You can go back to dashboard.";
+      return;
+    }
+    const hintedSeconds = parseMinSecondsFromReason(completion.reason);
+    if (hintedSeconds) requiredReadingSeconds = Math.max(requiredReadingSeconds, hintedSeconds);
+    const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
+    $("reading-status").className = "reading-status in-progress";
+    $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+  };
 
   $("reading-chapter-title").textContent = "Loading...";
   $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating reading material from NCERT...</p></div>`;
   $("reading-status").className = "reading-status in-progress";
-  $("reading-status").textContent = "📖 Keep reading... (min 3 minutes)";
+  $("reading-status").textContent = "📖 Calculating required read time...";
 
   // Start timer
   $("reading-timer").textContent = "Time: 0:00";
-  readingTimer = setInterval(() => {
+  readingTimer = setInterval(async () => {
     readingSeconds++;
     $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
 
-    if (!readingTaskCompleted && readingSeconds >= requiredReadingSeconds) {
-      readingTaskCompleted = true;
-      $("reading-status").className = "reading-status complete";
-      $("reading-status").textContent = "✅ Reading complete! You can go back to dashboard.";
-      // Auto-complete the reading task
-      completeReading();
+    if (contentLoaded && !readingTaskCompleted && readingSeconds >= requiredReadingSeconds) {
+      await attemptMarkReadingComplete();
     }
   }, 1000);
 
@@ -803,13 +864,15 @@ async function openReading(chapterNumber, taskId) {
         learner_id: getLearnerId(),
         chapter_number: chapterNumber,
         regenerate: false,
-        task_id: taskId || null,
+        task_id: readingTaskId || null,
       },
     });
-    requiredReadingSeconds = Math.max(60, Math.min(300, parseInt(content.required_read_seconds || 60)));
+    const parsedRequired = parseInt(content.required_read_seconds, 10);
+    const contentRequired = Number.isFinite(parsedRequired) && parsedRequired > 0 ? parsedRequired : 60;
+    requiredReadingSeconds = contentRequired;
+    contentLoaded = true;
     if (readingTaskId && !readingTaskCompleted && readingSeconds >= requiredReadingSeconds) {
-      readingTaskCompleted = true;
-      completeReading();
+      await attemptMarkReadingComplete();
     }
     const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
     if (!readingTaskCompleted) {
@@ -827,8 +890,8 @@ async function openReading(chapterNumber, taskId) {
       $("reading-status").className = "reading-status complete";
       $("reading-status").innerHTML = `
         ✅ Reading complete
-        <button onclick="openReading(${chapterNumber}, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Reload</button>
-        <button onclick="regenerateChapterReading(${chapterNumber}, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--info);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">✨ Regenerate</button>
+        <button onclick="openReading(${chapterNumber}, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Reload</button>
+        <button onclick="regenerateChapterReading(${chapterNumber}, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--info);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">✨ Regenerate</button>
       `;
     }
   } catch (err) {
@@ -837,9 +900,9 @@ async function openReading(chapterNumber, taskId) {
 }
 
 async function completeReading() {
-  if (!readingTaskId) return;
+  if (!readingTaskId) return { ok: true, reason: "No task tracking required." };
   try {
-    await api("/learning/reading/complete", {
+    const result = await api("/learning/reading/complete", {
       method: "POST",
       body: {
         learner_id: getLearnerId(),
@@ -847,8 +910,10 @@ async function completeReading() {
         time_spent_seconds: readingSeconds,
       },
     });
+    return { ok: !!result.accepted, reason: result.reason || "" };
   } catch (err) {
     console.warn("Reading completion failed:", err);
+    return { ok: false, reason: err.message || "completion request failed" };
   }
 }
 
@@ -1115,30 +1180,56 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
   if (overlay) overlay.remove();
 
   showScreen("reading");
+  if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
   readingChapterNumber = chapterNumber;
   readingSeconds = 0;
   readingTaskId = taskId;
+  if (!readingTaskId) {
+    const resolvedTaskMeta = await resolveCurrentWeekTask("read", chapterNumber, sectionId);
+    readingTaskId = resolvedTaskMeta?.task_id || null;
+  }
 
   $("reading-chapter-title").textContent = regenerate ? "Regenerating section content..." : "Loading section content...";
   $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>${regenerate ? "Regenerating fresh content from NCERT..." : "Loading section reading material..."}</p></div>`;
   $("reading-status").className = "reading-status in-progress";
-  $("reading-status").textContent = taskId ? "📖 Keep reading..." : "📖 Reading section content...";
+  $("reading-status").textContent = readingTaskId
+    ? "📖 Calculating required read time..."
+    : "📖 Reading section content...";
 
   $("reading-timer").textContent = "Time: 0:00";
-  let requiredReadingSeconds = 300;
+  let requiredReadingSeconds = 60;
   let sectionTaskCompleted = false;
-  readingTimer = setInterval(() => {
-    readingSeconds++;
-    $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
-    if (taskId && !sectionTaskCompleted && readingSeconds >= requiredReadingSeconds) {
+  let completionInFlight = false;
+  let contentLoaded = false;
+
+  const attemptMarkSectionReadingComplete = async () => {
+    if (sectionTaskCompleted || completionInFlight) return;
+    completionInFlight = true;
+    const completion = await completeReading();
+    completionInFlight = false;
+    if (completion.ok) {
       sectionTaskCompleted = true;
-      completeReading();
+      if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
       $("reading-status").className = "reading-status complete";
       $("reading-status").innerHTML = `
         📖 Reading complete
-        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
+        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
         <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
       `;
+      return;
+    }
+    const hintedSeconds = parseMinSecondsFromReason(completion.reason);
+    if (hintedSeconds) requiredReadingSeconds = Math.max(requiredReadingSeconds, hintedSeconds);
+    const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
+    $("reading-status").className = "reading-status in-progress";
+    $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+  };
+
+  readingTimer = setInterval(async () => {
+    readingSeconds++;
+    $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
+    if (contentLoaded && readingTaskId && !sectionTaskCompleted && readingSeconds >= requiredReadingSeconds) {
+      await attemptMarkSectionReadingComplete();
     }
   }, 1000);
 
@@ -1150,16 +1241,18 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
         chapter_number: chapterNumber,
         section_id: sectionId,
         regenerate,
-        task_id: taskId || null,
+        task_id: readingTaskId || null,
       },
     });
-    requiredReadingSeconds = Math.max(60, Math.min(300, parseInt(content.required_read_seconds || 60)));
-    if (taskId && !sectionTaskCompleted && readingSeconds >= requiredReadingSeconds) {
-      sectionTaskCompleted = true;
-      completeReading();
+    const parsedRequired = parseInt(content.required_read_seconds, 10);
+    const contentRequired = Number.isFinite(parsedRequired) && parsedRequired > 0 ? parsedRequired : 60;
+    requiredReadingSeconds = contentRequired;
+    contentLoaded = true;
+    if (readingTaskId && !sectionTaskCompleted && readingSeconds >= requiredReadingSeconds) {
+      await attemptMarkSectionReadingComplete();
     }
     const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
-    if (taskId && !sectionTaskCompleted) {
+    if (readingTaskId && !sectionTaskCompleted) {
       $("reading-status").className = "reading-status in-progress";
       $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
     }
@@ -1172,11 +1265,12 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
     $("reading-content").innerHTML = mdToHtml(content.content);
     renderKaTeX($("reading-content"));
 
-    if (!taskId) {
+    if (!readingTaskId) {
+      if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
       $("reading-status").className = "reading-status complete";
       $("reading-status").innerHTML = `
         📖 Reading complete
-        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${taskId ? `'${taskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
+        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
         <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
       `;
     }

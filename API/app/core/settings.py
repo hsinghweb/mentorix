@@ -59,8 +59,15 @@ class Settings(BaseSettings):
     reasoning_score_threshold: int = 85
     reasoning_max_refinements: int = 1
     math_format_fix_second_pass_enabled: bool = False
+    reading_min_seconds: int = 60
+    reading_max_seconds: int = 300
+    reading_estimate_wpm: int = 150
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=(".env", "CONFIG/local.env"),
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()
