@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     model_registry_file: str = "CONFIG/models_registry.json"
     reasoning_score_threshold: int = 85
     reasoning_max_refinements: int = 1
+    math_format_fix_second_pass_enabled: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

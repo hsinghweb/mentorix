@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import random
 import re
 from difflib import SequenceMatcher
@@ -58,6 +59,7 @@ class ContentRequest(BaseModel):
     learner_id: UUID
     chapter_number: int = Field(ge=1, le=14)
     regenerate: bool = False
+    task_id: UUID | None = None
 
 
 class ContentResponse(BaseModel):
@@ -67,6 +69,7 @@ class ContentResponse(BaseModel):
     source: str  # "llm" | "rag_only" | "fallback"
     tone: str
     examples_count: int
+    required_read_seconds: int = 60
 
 
 class TestQuestion(BaseModel):
@@ -126,6 +129,7 @@ class SubsectionContentRequest(BaseModel):
     chapter_number: int = Field(ge=1, le=14)
     section_id: str  # e.g. "1.2", "3.3.1"
     regenerate: bool = False  # True = force LLM call, ignore cache
+    task_id: UUID | None = None
 
 
 class PracticeGenerateRequest(BaseModel):
@@ -233,11 +237,190 @@ def _chapter_test_cache_key(chapter_base: str, difficulty: str, profile_snapshot
     return f"{chapter_base}::pv={TEST_PROMPT_VERSION}::difficulty={difficulty}::p={profile_snapshot}"
 
 
+def _estimate_read_seconds(content: str, ability: float = 0.5) -> int:
+    """
+    Estimate minimum reading time from content length.
+    Rule: dynamic between 1 and 5 minutes (inclusive).
+    """
+    words = len(re.findall(r"\b\w+\b", str(content or "")))
+    if words <= 0:
+        return 60
+    if ability < 0.4:
+        wpm = 110.0
+    elif ability < 0.7:
+        wpm = 140.0
+    else:
+        wpm = 170.0
+    estimated = int(math.ceil((words / wpm) * 60.0))
+    return max(60, min(300, estimated))
+
+
+async def _apply_dynamic_reading_requirement(
+    db: AsyncSession,
+    learner_id: UUID,
+    task_id: UUID | None,
+    required_seconds: int,
+) -> None:
+    if not task_id:
+        return
+    task = (await db.execute(
+        select(Task).where(Task.id == task_id, Task.learner_id == learner_id, Task.task_type == "read")
+    )).scalar_one_or_none()
+    if not task:
+        return
+    policy = dict(task.proof_policy or {})
+    policy["min_seconds"] = int(required_seconds)
+    # Keep a denormalized minutes value for backward compatibility in older consumers.
+    policy["min_reading_minutes"] = max(1, int(math.ceil(required_seconds / 60.0)))
+    task.proof_policy = policy
+    await db.flush()
+
+
 def _normalized_question_text(text: str) -> str:
     """Normalize question text for de-dup checks."""
     txt = re.sub(r"\\\(|\\\)|\\\[|\\\]", " ", str(text or ""))
     txt = re.sub(r"[^a-zA-Z0-9]+", " ", txt).strip().lower()
     return re.sub(r"\s+", " ", txt)
+
+
+def _looks_like_math_fragment(fragment: str) -> bool:
+    s = str(fragment or "").strip()
+    if not s:
+        return False
+    if any(ch in s for ch in ["\\", "^", "_", "=", "+", "-", "*", "/", "×", "÷", "<", ">"]):
+        return True
+    if re.fullmatch(r"[a-zA-Z]\d*", s):
+        return True
+    if re.fullmatch(r"\d+(\.\d+)?", s):
+        return True
+    if re.fullmatch(r"[a-zA-Z0-9]+\s*(?:[+\-*/=]\s*[a-zA-Z0-9]+)+", s):
+        return True
+    return False
+
+
+def _normalize_generated_math_markdown(text: str) -> str:
+    """
+    Normalize weak math formatting from LLM output for better frontend rendering.
+    Example: "( a )" -> "\\(a\\)", "( 1 = 10 - 3 \\times 3 )" -> "\\(1 = 10 - 3 \\times 3\\)".
+    """
+    raw = str(text or "")
+    if not raw:
+        return raw
+
+    def repl(m: re.Match) -> str:
+        inner = (m.group(1) or "").strip()
+        if not _looks_like_math_fragment(inner):
+            return m.group(0)
+        if inner.startswith("\\(") and inner.endswith("\\)"):
+            return m.group(0)
+        compact = re.sub(r"\s+", " ", inner)
+        return f"\\({compact}\\)"
+
+    normalized = re.sub(r"\(\s*([^()\n]{1,120})\s*\)", repl, raw)
+    normalized = re.sub(r"\(\s+", "(", normalized)
+    normalized = re.sub(r"\s+\)", ")", normalized)
+    return normalized
+
+
+def _split_math_blocks(text: str) -> list[tuple[bool, str]]:
+    parts: list[tuple[bool, str]] = []
+    cursor = 0
+    for m in re.finditer(r"(\\\(.+?\\\)|\\\[.+?\\\])", text, flags=re.DOTALL):
+        if m.start() > cursor:
+            parts.append((False, text[cursor:m.start()]))
+        parts.append((True, m.group(0)))
+        cursor = m.end()
+    if cursor < len(text):
+        parts.append((False, text[cursor:]))
+    return parts
+
+
+def _repair_unwrapped_math_fragments(text: str) -> str:
+    fragments = _split_math_blocks(text)
+    out: list[str] = []
+    for is_math, chunk in fragments:
+        if is_math:
+            out.append(chunk)
+            continue
+
+        repaired = chunk
+
+        def wrap_fraction(m: re.Match) -> str:
+            expr = m.group(0).strip()
+            return f"\\({expr}\\)"
+        repaired = re.sub(
+            r"(?<!\\\()(?<![A-Za-z0-9_])([A-Za-z0-9_]+\s*/\s*[A-Za-z0-9_]+)(?![A-Za-z0-9_])(?!\\\))",
+            wrap_fraction,
+            repaired,
+        )
+
+        def wrap_expr(m: re.Match) -> str:
+            expr = m.group(0).strip()
+            if expr.startswith("\\(") and expr.endswith("\\)"):
+                return expr
+            return f"\\({expr}\\)"
+        repaired = re.sub(
+            r"(?<!\\\()(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*\s*(?:=|\+|-|\*|/|\^|×|÷|<|>)\s*[A-Za-z0-9_\\][A-Za-z0-9_\\\s+\-*/^×÷<>{}]*)",
+            wrap_expr,
+            repaired,
+        )
+        repaired = re.sub(
+            r"(?<!\\\()(?<![A-Za-z0-9_])([A-Za-z]\s+divides\s+[A-Za-z0-9_\\^{}]+)",
+            wrap_expr,
+            repaired,
+            flags=re.IGNORECASE,
+        )
+
+        out.append(repaired)
+    return "".join(out)
+
+
+def _count_unwrapped_math_like(text: str) -> int:
+    count = 0
+    for is_math, chunk in _split_math_blocks(text):
+        if is_math:
+            continue
+        count += len(re.findall(r"\(\s*[a-zA-Z0-9_\\^{}=+\-*/×÷<>\s]{1,80}\s*\)", chunk))
+        count += len(re.findall(r"(?<!\\\()([A-Za-z0-9_]+\s*/\s*[A-Za-z0-9_]+)(?!\\\))", chunk))
+        count += len(re.findall(r"(?<!\\\()([A-Za-z]\s+divides\s+[A-Za-z0-9_\\^{}]+)", chunk, flags=re.IGNORECASE))
+        count += len(re.findall(r"(?<!\\\()([A-Za-z][A-Za-z0-9_]*\s*(?:=|\+|-|\*|/|\^|×|÷)\s*[A-Za-z0-9_\\][A-Za-z0-9_\\\s+\-*/^×÷{}]*)", chunk))
+    return count
+
+
+async def _enforce_math_format(text: str, provider=None) -> str:
+    repaired = _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(text))
+    unresolved = _count_unwrapped_math_like(repaired)
+    if unresolved <= 0:
+        return repaired
+
+    logger.warning("event=math_format_unresolved stage=deterministic count=%s", unresolved)
+    if not settings.math_format_fix_second_pass_enabled or provider is None:
+        return repaired
+
+    fix_prompt = (
+        "Rewrite the following educational content with STRICT formatting rules.\n"
+        "Keep meaning unchanged.\n"
+        "Rules:\n"
+        "- Every mathematical expression MUST be wrapped in LaTeX inline delimiters \\\\( ... \\\\).\n"
+        "- Do not use plain parenthesized math like ( a ) or ( p/q ).\n"
+        "- Keep markdown structure intact.\n\n"
+        "Content:\n"
+        f"{repaired}"
+    )
+    try:
+        llm_text, _ = await provider.generate(fix_prompt)
+        if llm_text and llm_text.strip():
+            fixed = _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(llm_text.strip()))
+            unresolved_fixed = _count_unwrapped_math_like(fixed)
+            logger.info(
+                "event=math_format_second_pass unresolved_before=%s unresolved_after=%s",
+                unresolved,
+                unresolved_fixed,
+            )
+            return fixed if unresolved_fixed <= unresolved else repaired
+    except Exception as exc:
+        logger.warning("Math format second pass failed: %s", exc)
+    return repaired
 
 
 def _is_near_duplicate(candidate: str, existing: list[str], threshold: float = 0.9) -> bool:
@@ -432,6 +615,12 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached and cached.get("content"):
+            required_read_seconds = int(
+                cached.get("required_read_seconds")
+                or _estimate_read_seconds(str(cached.get("content") or ""), combined_ability)
+            )
+            await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+            await db.commit()
             logger.info(
                 "event=cache_hit kind=chapter_content learner_id=%s chapter=%s section=%s",
                 payload.learner_id,
@@ -445,6 +634,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
                 source="cached",
                 tone=str(cached.get("tone") or tone_config["tone"]),
                 examples_count=tone_config["examples"],
+                required_read_seconds=required_read_seconds,
             )
         logger.info(
             "event=cache_miss kind=chapter_content learner_id=%s chapter=%s section=%s",
@@ -466,6 +656,9 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
             f"**Note:** Detailed NCERT content for this chapter is not yet embedded. "
             f"Please refer to the NCERT textbook for Chapter {payload.chapter_number}."
         )
+        required_read_seconds = _estimate_read_seconds(content, combined_ability)
+        await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+        await db.commit()
         return ContentResponse(
             chapter_number=payload.chapter_number,
             chapter_title=chapter_name,
@@ -473,6 +666,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
             source="fallback",
             tone=tone_config["tone"],
             examples_count=0,
+            required_read_seconds=required_read_seconds,
         )
 
     # Generate with LLM
@@ -489,8 +683,12 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
         f"Use ONLY the following NCERT curriculum content as your source. "
         f"Do not add any information outside of this:\n\n"
         f"{context}\n\n"
-        f"Format the output in clean Markdown with headers, bullet points, "
-        f"and LaTeX math notation using \\\\( \\\\) for inline math.\n"
+        f"Formatting rules (strict):\n"
+        f"- Use clean Markdown headings and bullets.\n"
+        f"- Write ALL math as LaTeX inline math using \\\\( ... \\\\).\n"
+        f"- NEVER write math as plain parenthesized text like ( a ) or ( p/q ).\n"
+        f"- Good: \\\\(a\\\\), \\\\((p/q)\\\\), \\\\(17 = 5 \\\\times 3 + 2\\\\).\n"
+        f"- Keep notation consistent and student-readable.\n"
         f"Keep the language appropriate for a 15-16 year old student.\n"
     )
 
@@ -498,21 +696,27 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
         provider = get_llm_provider(role="content_generator")
         llm_text, _ = await provider.generate(prompt)
         if llm_text and len(llm_text.strip()) > 50:
+            generated_content = await _enforce_math_format(llm_text.strip(), provider=provider)
+            required_read_seconds = _estimate_read_seconds(generated_content, combined_ability)
             save_content_cache(
                 str(payload.learner_id),
                 payload.chapter_number,
                 cache_section_id,
                 chapter_name,
-                llm_text.strip(),
+                generated_content,
                 tone_config["tone"],
+                required_read_seconds=required_read_seconds,
             )
+            await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+            await db.commit()
             return ContentResponse(
                 chapter_number=payload.chapter_number,
                 chapter_title=chapter_name,
-                content=llm_text.strip(),
+                content=generated_content,
                 source="llm",
                 tone=tone_config["tone"],
                 examples_count=tone_config["examples"],
+                required_read_seconds=required_read_seconds,
             )
     except Exception as exc:
         logger.warning("LLM content generation failed: %s", exc)
@@ -523,6 +727,9 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
         f"## Key Concepts\n\n{context}\n\n"
         f"*Content sourced from NCERT textbook.*"
     )
+    required_read_seconds = _estimate_read_seconds(content, combined_ability)
+    await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+    await db.commit()
     return ContentResponse(
         chapter_number=payload.chapter_number,
         chapter_title=chapter_name,
@@ -530,6 +737,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
         source="rag_only",
         tone=tone_config["tone"],
         examples_count=0,
+        required_read_seconds=required_read_seconds,
     )
 
 
@@ -1202,7 +1410,7 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
             provider = get_llm_provider(role="content_generator")
             llm_text, _ = await provider.generate(prompt)
             if llm_text and llm_text.strip():
-                explanation = llm_text.strip()
+                explanation = await _enforce_math_format(llm_text.strip(), provider=provider)
                 source = "llm"
         except Exception as exc:
             logger.warning("Question explain generation failed: %s", exc)
@@ -1250,8 +1458,6 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
 @router.post("/reading/complete", response_model=CompleteReadingResponse)
 async def complete_reading(payload: CompleteReadingRequest, db: AsyncSession = Depends(get_db)):
     """Mark a reading task as complete if minimum time threshold is met."""
-    MIN_READING_SECONDS = 180  # 3 minutes minimum
-
     task = (await db.execute(
         select(Task).where(Task.id == payload.task_id, Task.learner_id == payload.learner_id)
     )).scalar_one_or_none()
@@ -1262,11 +1468,21 @@ async def complete_reading(payload: CompleteReadingRequest, db: AsyncSession = D
     if task.status == "completed":
         return CompleteReadingResponse(task_id=str(task.id), accepted=True, reason="Already completed.")
 
-    if payload.time_spent_seconds < MIN_READING_SECONDS:
+    policy = dict(task.proof_policy or {})
+    required_seconds = int(policy.get("min_seconds") or 0)
+    if required_seconds <= 0 and policy.get("min_reading_minutes") is not None:
+        try:
+            required_seconds = int(float(policy.get("min_reading_minutes")) * 60)
+        except Exception:
+            required_seconds = 0
+    if required_seconds <= 0:
+        required_seconds = 60  # default minimum: 1 minute
+
+    if payload.time_spent_seconds < required_seconds:
         return CompleteReadingResponse(
             task_id=str(task.id),
             accepted=False,
-            reason=f"Please spend at least {MIN_READING_SECONDS // 60} minutes reading before completing.",
+            reason=f"Please spend at least {max(1, int(math.ceil(required_seconds / 60.0)))} minutes reading before completing.",
         )
 
     task.status = "completed"
@@ -1407,6 +1623,10 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached:
+            required_read_seconds = int(
+                cached.get("required_read_seconds")
+                or _estimate_read_seconds(str(cached.get("content") or ""), combined_ability)
+            )
             logger.info(
                 "event=cache_hit kind=section_content learner_id=%s chapter=%s section=%s",
                 payload.learner_id,
@@ -1427,7 +1647,8 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 sp.reading_completed = True
                 if sp.status == "not_started":
                     sp.status = "reading_done"
-                await db.commit()
+            await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+            await db.commit()
             return {
                 "chapter_number": payload.chapter_number,
                 "section_id": payload.section_id,
@@ -1435,6 +1656,7 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 "content": cached["content"],
                 "source": "cached",
                 "tone": cached.get("tone", "normal"),
+                "required_read_seconds": required_read_seconds,
             }
         logger.info(
             "event=cache_miss kind=section_content learner_id=%s chapter=%s section=%s",
@@ -1458,17 +1680,22 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
         context = "\n\n".join(chunks[:4]) if chunks else ""
 
     if not context:
+        fallback_content = (
+            f"# {section_title}\n\n"
+            f"**Note:** NCERT content for section {payload.section_id} is not yet embedded. "
+            f"Please refer to the NCERT textbook for Chapter {payload.chapter_number}."
+        )
+        required_read_seconds = _estimate_read_seconds(fallback_content, combined_ability)
+        await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+        await db.commit()
         return {
             "chapter_number": payload.chapter_number,
             "section_id": payload.section_id,
             "section_title": section_title,
-            "content": (
-                f"# {section_title}\n\n"
-                f"**Note:** NCERT content for section {payload.section_id} is not yet embedded. "
-                f"Please refer to the NCERT textbook for Chapter {payload.chapter_number}."
-            ),
+            "content": fallback_content,
             "source": "fallback",
             "tone": tone_config["tone"],
+            "required_read_seconds": required_read_seconds,
         }
 
     prompt = (
@@ -1483,8 +1710,12 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
         f"Use ONLY the following NCERT curriculum content as your source. "
         f"Do not add any information outside of this:\n\n"
         f"{context}\n\n"
-        f"Format the output in clean Markdown with headers, bullet points, "
-        f"and LaTeX math notation using \\\\( \\\\) for inline math.\n"
+        f"Formatting rules (strict):\n"
+        f"- Use clean Markdown headings and bullets.\n"
+        f"- Write ALL math as LaTeX inline math using \\\\( ... \\\\).\n"
+        f"- NEVER write math as plain parenthesized text like ( a ) or ( p/q ).\n"
+        f"- Good: \\\\(a\\\\), \\\\((p/q)\\\\), \\\\(17 = 5 \\\\times 3 + 2\\\\).\n"
+        f"- Keep notation consistent and student-readable.\n"
         f"Keep the language appropriate for a 15-16 year old student.\n"
     )
 
@@ -1507,12 +1738,15 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                     sp.status = "reading_done"
                 await db.commit()
 
-            generated_content = llm_text.strip()
+            generated_content = await _enforce_math_format(llm_text.strip(), provider=provider)
+            required_read_seconds = _estimate_read_seconds(generated_content, combined_ability)
             # Save to cache
             save_content_cache(
                 str(payload.learner_id), payload.chapter_number, cache_section_id,
-                section_title, generated_content, tone_config["tone"],
+                section_title, generated_content, tone_config["tone"], required_read_seconds=required_read_seconds,
             )
+            await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+            await db.commit()
             return {
                 "chapter_number": payload.chapter_number,
                 "section_id": payload.section_id,
@@ -1520,17 +1754,23 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 "content": generated_content,
                 "source": "llm",
                 "tone": tone_config["tone"],
+                "required_read_seconds": required_read_seconds,
             }
     except Exception as exc:
         logger.warning("LLM section content generation failed: %s", exc)
 
+    rag_content = f"# {section_title}\n\n## Key Concepts\n\n{context}\n\n*Content sourced from NCERT textbook.*"
+    required_read_seconds = _estimate_read_seconds(rag_content, combined_ability)
+    await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+    await db.commit()
     return {
         "chapter_number": payload.chapter_number,
         "section_id": payload.section_id,
         "section_title": section_title,
-        "content": f"# {section_title}\n\n## Key Concepts\n\n{context}\n\n*Content sourced from NCERT textbook.*",
+        "content": rag_content,
         "source": "rag_only",
         "tone": tone_config["tone"],
+        "required_read_seconds": required_read_seconds,
     }
 
 

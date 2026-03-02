@@ -30,6 +30,7 @@ GEMINI_API_KEY=<ADD_YOUR_GEMINI_API_KEY>
 GEMINI_API_URL=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent 
 LLM_PROVIDER=gemini
 LLM_MODEL=gemini-2.5-flash
+MATH_FORMAT_FIX_SECOND_PASS_ENABLED=false
 OLLAMA_BASE_URL=http://host.docker.internal:11434
 OLLAMA_MODEL=qwen2.5:3b
 

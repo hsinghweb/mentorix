@@ -65,7 +65,7 @@ def get_cached_content(learner_id: str, chapter_number: int, section_id: str) ->
 
 def save_content_cache(
     learner_id: str, chapter_number: int, section_id: str,
-    section_title: str, content: str, tone: str,
+    section_title: str, content: str, tone: str, required_read_seconds: int | None = None,
 ) -> None:
     """Save generated reading content to cache."""
     db = _get_db()
@@ -85,6 +85,7 @@ def save_content_cache(
                 "section_title": section_title,
                 "content": content,
                 "tone": tone,
+                "required_read_seconds": required_read_seconds,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
             upsert=True,

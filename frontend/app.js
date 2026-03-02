@@ -70,6 +70,7 @@ function renderKaTeX(container) {
   if (typeof renderMathInElement === "function") {
     renderMathInElement(container, {
       delimiters: [
+        { left: "$", right: "$", display: false },
         { left: "\\(", right: "\\)", display: false },
         { left: "\\[", right: "\\]", display: true },
         { left: "$$", right: "$$", display: true },
@@ -772,6 +773,8 @@ async function openReading(chapterNumber, taskId) {
   readingTaskId = taskId;
   readingChapterNumber = chapterNumber;
   readingSeconds = 0;
+  let requiredReadingSeconds = 300;
+  let readingTaskCompleted = false;
 
   $("reading-chapter-title").textContent = "Loading...";
   $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating reading material from NCERT...</p></div>`;
@@ -784,7 +787,8 @@ async function openReading(chapterNumber, taskId) {
     readingSeconds++;
     $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
 
-    if (readingSeconds >= 180) {
+    if (!readingTaskCompleted && readingSeconds >= requiredReadingSeconds) {
+      readingTaskCompleted = true;
       $("reading-status").className = "reading-status complete";
       $("reading-status").textContent = "✅ Reading complete! You can go back to dashboard.";
       // Auto-complete the reading task
@@ -795,8 +799,23 @@ async function openReading(chapterNumber, taskId) {
   try {
     const content = await api("/learning/content", {
       method: "POST",
-      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, regenerate: false },
+      body: {
+        learner_id: getLearnerId(),
+        chapter_number: chapterNumber,
+        regenerate: false,
+        task_id: taskId || null,
+      },
     });
+    requiredReadingSeconds = Math.max(60, Math.min(300, parseInt(content.required_read_seconds || 60)));
+    if (readingTaskId && !readingTaskCompleted && readingSeconds >= requiredReadingSeconds) {
+      readingTaskCompleted = true;
+      completeReading();
+    }
+    const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
+    if (!readingTaskCompleted) {
+      $("reading-status").className = "reading-status in-progress";
+      $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+    }
 
     const sourceBadge = content.source === "cached"
       ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
@@ -804,7 +823,7 @@ async function openReading(chapterNumber, taskId) {
     $("reading-chapter-title").innerHTML = `📖 ${content.chapter_title} ${sourceBadge}`;
     $("reading-content").innerHTML = mdToHtml(content.content);
     renderKaTeX($("reading-content"));
-    if (readingSeconds >= 180) {
+    if (readingTaskCompleted) {
       $("reading-status").className = "reading-status complete";
       $("reading-status").innerHTML = `
         ✅ Reading complete
@@ -1103,14 +1122,15 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
   $("reading-chapter-title").textContent = regenerate ? "Regenerating section content..." : "Loading section content...";
   $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>${regenerate ? "Regenerating fresh content from NCERT..." : "Loading section reading material..."}</p></div>`;
   $("reading-status").className = "reading-status in-progress";
-  $("reading-status").textContent = taskId ? "📖 Keep reading... (min 3 minutes)" : "📖 Reading section content...";
+  $("reading-status").textContent = taskId ? "📖 Keep reading..." : "📖 Reading section content...";
 
   $("reading-timer").textContent = "Time: 0:00";
+  let requiredReadingSeconds = 300;
   let sectionTaskCompleted = false;
   readingTimer = setInterval(() => {
     readingSeconds++;
     $("reading-timer").textContent = `Time: ${formatTime(readingSeconds)}`;
-    if (taskId && !sectionTaskCompleted && readingSeconds >= 180) {
+    if (taskId && !sectionTaskCompleted && readingSeconds >= requiredReadingSeconds) {
       sectionTaskCompleted = true;
       completeReading();
       $("reading-status").className = "reading-status complete";
@@ -1125,8 +1145,24 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
   try {
     const content = await api("/learning/content/section", {
       method: "POST",
-      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, section_id: sectionId, regenerate },
+      body: {
+        learner_id: getLearnerId(),
+        chapter_number: chapterNumber,
+        section_id: sectionId,
+        regenerate,
+        task_id: taskId || null,
+      },
     });
+    requiredReadingSeconds = Math.max(60, Math.min(300, parseInt(content.required_read_seconds || 60)));
+    if (taskId && !sectionTaskCompleted && readingSeconds >= requiredReadingSeconds) {
+      sectionTaskCompleted = true;
+      completeReading();
+    }
+    const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
+    if (taskId && !sectionTaskCompleted) {
+      $("reading-status").className = "reading-status in-progress";
+      $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+    }
 
     const sourceBadge = content.source === "cached"
       ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
@@ -1270,7 +1306,12 @@ async function regenerateChapterReading(chapterNumber, taskId) {
   try {
     const content = await api("/learning/content", {
       method: "POST",
-      body: { learner_id: getLearnerId(), chapter_number: chapterNumber, regenerate: true },
+      body: {
+        learner_id: getLearnerId(),
+        chapter_number: chapterNumber,
+        regenerate: true,
+        task_id: taskId || null,
+      },
     });
     $("reading-chapter-title").innerHTML = `📖 ${content.chapter_title} <span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">🔄 REGENERATED</span>`;
     $("reading-content").innerHTML = mdToHtml(content.content);
