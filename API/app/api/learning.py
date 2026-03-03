@@ -11,6 +11,7 @@ import logging
 import math
 import random
 import re
+import asyncio
 from difflib import SequenceMatcher
 from datetime import datetime, timezone
 from uuid import UUID, uuid4
@@ -404,14 +405,14 @@ def _count_unwrapped_math_like(text: str) -> int:
     return count
 
 
-async def _enforce_math_format(text: str, provider=None) -> str:
+async def _enforce_math_format(text: str, provider=None, allow_second_pass: bool = True) -> str:
     repaired = _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(text))
     unresolved = _count_unwrapped_math_like(repaired)
     if unresolved <= 0:
         return repaired
 
     logger.warning("event=math_format_unresolved stage=deterministic count=%s", unresolved)
-    if not settings.math_format_fix_second_pass_enabled or provider is None:
+    if not allow_second_pass or not settings.math_format_fix_second_pass_enabled or provider is None:
         return repaired
 
     fix_prompt = (
@@ -449,12 +450,25 @@ async def _format_mcq_item_math(item: dict, provider=None) -> dict:
     """Apply reading-content math formatting to MCQ stem + options."""
     if not isinstance(item, dict):
         return item
-    stem = await _enforce_math_format(str(item.get("q", "")), provider=provider)
+    stem_task = _enforce_math_format(
+        str(item.get("q", "")),
+        provider=provider,
+        allow_second_pass=False,
+    )
     raw_options = item.get("options", [])
-    options: list[str] = []
+    option_tasks = []
     if isinstance(raw_options, list):
-        for opt in raw_options:
-            options.append(await _enforce_math_format(str(opt), provider=provider))
+        option_tasks = [
+            _enforce_math_format(str(opt), provider=provider, allow_second_pass=False)
+            for opt in raw_options
+        ]
+    if option_tasks:
+        results = await asyncio.gather(stem_task, *option_tasks)
+        stem = results[0]
+        options = [str(v) for v in results[1:]]
+    else:
+        stem = await stem_task
+        options = []
     return {
         **item,
         "q": stem,
