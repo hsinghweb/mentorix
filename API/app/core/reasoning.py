@@ -60,11 +60,35 @@ class ReasoningEngine:
 
         for idx in range(max_rounds + 1):
             score, critique = await self.verifier.verify(query, current, context)
-            history.append({"round": idx + 1, "draft": current, "score": score, "critique": critique})
+            history.append(
+                {
+                    "round": idx + 1,
+                    "state": "verified",
+                    "draft": current,
+                    "score": score,
+                    "critique": critique,
+                }
+            )
             if score >= settings.reasoning_score_threshold:
+                history.append(
+                    {
+                        "round": idx + 1,
+                        "state": "accepted",
+                        "decision": "fast_path_accept",
+                        "score": score,
+                    }
+                )
                 return current, history
             if idx == max_rounds:
                 best = max(history, key=lambda x: x["score"])
+                history.append(
+                    {
+                        "round": idx + 1,
+                        "state": "terminated",
+                        "decision": "max_refinements_reached",
+                        "best_score": best["score"],
+                    }
+                )
                 return best["draft"], history
 
             refine_prompt = (
@@ -73,6 +97,14 @@ class ReasoningEngine:
                 "Return improved draft only."
             )
             refined, _usage = await self.generator.generate(refine_prompt)
+            history.append(
+                {
+                    "round": idx + 1,
+                    "state": "refined",
+                    "decision": "retry",
+                    "refined": bool(refined),
+                }
+            )
             current = refined or current
 
         return current, history
