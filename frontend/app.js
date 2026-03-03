@@ -82,7 +82,7 @@ function renderKaTeX(container) {
 
 function normalizeMathDelimiters(text) {
   if (!text) return "";
-  return String(text)
+  let s = String(text)
     .replace(/\\\\\(/g, "\\(")
     .replace(/\\\\\)/g, "\\)")
     .replace(/\\\\\[/g, "\\[")
@@ -90,6 +90,30 @@ function normalizeMathDelimiters(text) {
     // Heuristic fallback: wrap plain parenthesized LaTeX commands so KaTeX can render.
     .replace(/\(\s*(\\[A-Za-z]+[^()\n]{0,220})\s*\)/g, "\\($1\\)")
     .replace(/\r\n/g, "\n");
+
+  // Fix malformed inline closers: \(\sqrt{2} \\) -> \(\sqrt{2}\)
+  s = s.replace(/\\\(([\s\S]*?)\\\\\)/g, "\\($1\\)");
+
+  // Fix bare LaTeX fragments that end with closer but are not wrapped:
+  // \sqrt{2}\) or \sqrt{2}\\) -> \(\sqrt{2}\)
+  s = s.replace(
+    /(^|[\s,;:([{\-])((?:\\[A-Za-z]+(?:\{[^{}]*\}|[A-Za-z0-9._^+-])*)+)\\\)/g,
+    (m, p1, p2, offset, full) => {
+      const at = Number(offset || 0) + String(p1 || "").length;
+      if (at >= 2 && String(full).slice(at - 2, at) === "\\(") return m;
+      return `${p1}\\(${p2.replace(/\\\)$/, "")}\\)`;
+    }
+  );
+
+  // Fix orphan opener for single symbol: "\(p is ..." -> "\(p\) is ..."
+  s = s.replace(
+    /\\\(\s*([A-Za-z0-9][A-Za-z0-9_^{}]*)\s+([A-Za-z])/g,
+    "\\($1\\) $2"
+  );
+
+  // Normalize accidental duplicated trailing slashes inside inline math.
+  s = s.replace(/\\\(([^)]*?)\\\\\s*\\\)/g, "\\($1\\)");
+  return s;
 }
 
 function protectMathBlocks(text) {

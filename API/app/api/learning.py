@@ -340,6 +340,47 @@ def _normalize_generated_math_markdown(text: str) -> str:
     return "".join(parts)
 
 
+def _repair_broken_latex_delimiters(text: str) -> str:
+    """
+    Repair common malformed inline delimiters seen in model output:
+    - \\( ... \\\\) -> \\( ... \\)
+    - \\sqrt{2}\\\\) -> \\(\\sqrt{2}\\)
+    - Unbalanced \\( without closing \\) on a line -> append closing \\)
+    """
+    raw = str(text or "")
+    if not raw:
+        return raw
+
+    fixed = raw
+    fixed = fixed.replace("\\\\(", "\\(").replace("\\\\)", "\\)")
+    fixed = fixed.replace("\\\\[", "\\[").replace("\\\\]", "\\]")
+
+    # Broken inline closer inside an inline block.
+    fixed = re.sub(r"\\\((.*?)\\\\\)", r"\\(\1\\)", fixed, flags=re.DOTALL)
+
+    # Bare latex fragment ending with broken closer: \sqrt{2}\\) -> \(\sqrt{2}\)
+    def _wrap_bare_fragment(m: re.Match) -> str:
+        prefix = m.group(1)
+        body = (m.group(2) or "").replace("\\\\)", "")
+        return prefix + "\\(" + body + "\\)"
+
+    fixed = re.sub(
+        r"(^|[\s,;:([{\-])((?:\\[A-Za-z]+(?:\{[^{}]*\}|[A-Za-z0-9._^+\-])*)+)\\\\\)",
+        _wrap_bare_fragment,
+        fixed,
+    )
+
+    # Line-level balancing for unmatched inline openers.
+    balanced: list[str] = []
+    for line in fixed.splitlines():
+        open_count = line.count(r"\(")
+        close_count = line.count(r"\)")
+        if open_count > close_count:
+            line = line + (r"\)" * (open_count - close_count))
+        balanced.append(line)
+    return "\n".join(balanced)
+
+
 def _split_math_blocks(text: str) -> list[tuple[bool, str]]:
     parts: list[tuple[bool, str]] = []
     cursor = 0
@@ -406,7 +447,8 @@ def _count_unwrapped_math_like(text: str) -> int:
 
 
 async def _enforce_math_format(text: str, provider=None, allow_second_pass: bool = True) -> str:
-    repaired = _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(text))
+    prefixed = _repair_broken_latex_delimiters(text)
+    repaired = _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(prefixed))
     unresolved = _count_unwrapped_math_like(repaired)
     if unresolved <= 0:
         return repaired
@@ -428,7 +470,9 @@ async def _enforce_math_format(text: str, provider=None, allow_second_pass: bool
     try:
         llm_text, _ = await provider.generate(fix_prompt)
         if llm_text and llm_text.strip():
-            fixed = _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(llm_text.strip()))
+            fixed = _repair_unwrapped_math_fragments(
+                _normalize_generated_math_markdown(_repair_broken_latex_delimiters(llm_text.strip()))
+            )
             unresolved_fixed = _count_unwrapped_math_like(fixed)
             logger.info(
                 "event=math_format_second_pass unresolved_before=%s unresolved_after=%s",
@@ -443,7 +487,8 @@ async def _enforce_math_format(text: str, provider=None, allow_second_pass: bool
 
 def _format_math_for_display(text: str) -> str:
     """Deterministic pass for cached/review/fallback text shown in UI."""
-    return _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(str(text or "")))
+    prefixed = _repair_broken_latex_delimiters(str(text or ""))
+    return _repair_unwrapped_math_fragments(_normalize_generated_math_markdown(prefixed))
 
 
 async def _format_mcq_item_math(item: dict, provider=None) -> dict:
