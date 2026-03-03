@@ -326,10 +326,17 @@ def _normalize_generated_math_markdown(text: str) -> str:
         compact = re.sub(r"\s+", " ", inner)
         return f"\\({compact}\\)"
 
-    normalized = re.sub(r"\(\s*([^()\n]{1,120})\s*\)", repl, raw)
-    normalized = re.sub(r"\(\s+", "(", normalized)
-    normalized = re.sub(r"\s+\)", ")", normalized)
-    return normalized
+    parts: list[str] = []
+    for is_math, chunk in _split_math_blocks(raw):
+        if is_math:
+            # Keep existing LaTeX math blocks untouched to avoid delimiter corruption.
+            parts.append(chunk)
+            continue
+        normalized = re.sub(r"\(\s*([^()\n]{1,120})\s*\)", repl, chunk)
+        normalized = re.sub(r"\(\s+", "(", normalized)
+        normalized = re.sub(r"\s+\)", ")", normalized)
+        parts.append(normalized)
+    return "".join(parts)
 
 
 def _split_math_blocks(text: str) -> list[tuple[bool, str]]:
@@ -1053,11 +1060,11 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
     for qid, expected in answer_key.items():
         selected = answer_map.get(qid)
         q = question_meta.get(qid, {})
-        options = [_format_math_for_display(str(o)) for o in (q.get("options", []) or [])]
+        options = [str(o) for o in (q.get("options", []) or [])]
         question_results.append(
             {
                 "question_id": qid,
-                "prompt": _format_math_for_display(str(q.get("prompt", ""))),
+                "prompt": str(q.get("prompt", "")),
                 "options": options,
                 "selected_index": selected,
                 "correct_index": expected,
@@ -1442,14 +1449,14 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
         chunks = await _retrieve_chapter_chunks(db, chapter_number, top_k=5)
         context = "\n\n".join(chunks[:4]) if chunks else ""
 
-    options = [_format_math_for_display(str(o)) for o in (question.get("options", []) or [])]
+    options = [str(o) for o in (question.get("options", []) or [])]
     prompt = (
         "You are a Class 10 CBSE math tutor.\n"
         "Explain the question outcome in a concise and clear way.\n"
         "Use ONLY the NCERT source context below.\n\n"
         f"Chapter: {chapter_number}\n"
         f"Section: {section_id or 'chapter-level final'}\n"
-        f"Question: {_format_math_for_display(str(question.get('prompt', '')))}\n"
+        f"Question: {str(question.get('prompt', ''))}\n"
         f"Options: {json.dumps(options, ensure_ascii=True)}\n"
         f"Student selected index: {selected_index}\n"
         f"Correct index: {correct_index}\n\n"
