@@ -698,7 +698,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
             return ContentResponse(
                 chapter_number=payload.chapter_number,
                 chapter_title=chapter_name,
-                content=str(cached["content"]),
+                content=_format_math_for_display(str(cached["content"])),
                 source="cached",
                 tone=str(cached.get("tone") or tone_config["tone"]),
                 examples_count=tone_config["examples"],
@@ -730,7 +730,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
         return ContentResponse(
             chapter_number=payload.chapter_number,
             chapter_title=chapter_name,
-            content=content,
+            content=_format_math_for_display(content),
             source="fallback",
             tone=tone_config["tone"],
             examples_count=0,
@@ -780,7 +780,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
             return ContentResponse(
                 chapter_number=payload.chapter_number,
                 chapter_title=chapter_name,
-                content=generated_content,
+                content=_format_math_for_display(generated_content),
                 source="llm",
                 tone=tone_config["tone"],
                 examples_count=tone_config["examples"],
@@ -801,7 +801,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     return ContentResponse(
         chapter_number=payload.chapter_number,
         chapter_title=chapter_name,
-        content=content,
+        content=_format_math_for_display(content),
         source="rag_only",
         tone=tone_config["tone"],
         examples_count=0,
@@ -1074,11 +1074,11 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
     for qid, expected in answer_key.items():
         selected = answer_map.get(qid)
         q = question_meta.get(qid, {})
-        options = [str(o) for o in (q.get("options", []) or [])]
+        options = [_format_math_for_display(str(o)) for o in (q.get("options", []) or [])]
         question_results.append(
             {
                 "question_id": qid,
-                "prompt": str(q.get("prompt", "")),
+                "prompt": _format_math_for_display(str(q.get("prompt", ""))),
                 "options": options,
                 "selected_index": selected,
                 "correct_index": expected,
@@ -1409,7 +1409,7 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
                 chapter_number=chapter_number,
                 chapter=chapter,
                 section_id=section_id,
-                explanation=str(cached["explanation"]),
+                explanation=_format_math_for_display(str(cached["explanation"])),
                 source="cached",
             )
         logger.info(
@@ -1463,14 +1463,15 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
         chunks = await _retrieve_chapter_chunks(db, chapter_number, top_k=5)
         context = "\n\n".join(chunks[:4]) if chunks else ""
 
-    options = [str(o) for o in (question.get("options", []) or [])]
+    formatted_question = _format_math_for_display(str(question.get("prompt", "")))
+    options = [_format_math_for_display(str(o)) for o in (question.get("options", []) or [])]
     prompt = (
         "You are a Class 10 CBSE math tutor.\n"
         "Explain the question outcome in a concise and clear way.\n"
         "Use ONLY the NCERT source context below.\n\n"
         f"Chapter: {chapter_number}\n"
         f"Section: {section_id or 'chapter-level final'}\n"
-        f"Question: {str(question.get('prompt', ''))}\n"
+        f"Question: {formatted_question}\n"
         f"Options: {json.dumps(options, ensure_ascii=True)}\n"
         f"Student selected index: {selected_index}\n"
         f"Correct index: {correct_index}\n\n"
@@ -1489,7 +1490,9 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
             provider = get_llm_provider(role="content_generator")
             llm_text, _ = await provider.generate(prompt)
             if llm_text and llm_text.strip():
-                explanation = await _enforce_math_format(llm_text.strip(), provider=provider)
+                explanation = _format_math_for_display(
+                    await _enforce_math_format(llm_text.strip(), provider=provider)
+                )
                 source = "llm"
         except Exception as exc:
             logger.warning("Question explain generation failed: %s", exc)
@@ -1510,6 +1513,8 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
             f"Your choice: **{_format_math_for_display(str(chosen_text))}**\n\n"
             "Review the related concept from the section and retry a similar problem."
         )
+
+    explanation = _format_math_for_display(explanation)
 
     save_explanation_cache(
         str(payload.learner_id),
@@ -1732,7 +1737,7 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 "chapter_number": payload.chapter_number,
                 "section_id": payload.section_id,
                 "section_title": cached.get("section_title", section_title),
-                "content": cached["content"],
+                "content": _format_math_for_display(str(cached["content"])),
                 "source": "cached",
                 "tone": cached.get("tone", "normal"),
                 "required_read_seconds": required_read_seconds,
@@ -1771,7 +1776,7 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
             "chapter_number": payload.chapter_number,
             "section_id": payload.section_id,
             "section_title": section_title,
-            "content": fallback_content,
+            "content": _format_math_for_display(fallback_content),
             "source": "fallback",
             "tone": tone_config["tone"],
             "required_read_seconds": required_read_seconds,
@@ -1830,7 +1835,7 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 "chapter_number": payload.chapter_number,
                 "section_id": payload.section_id,
                 "section_title": section_title,
-                "content": generated_content,
+                "content": _format_math_for_display(generated_content),
                 "source": "llm",
                 "tone": tone_config["tone"],
                 "required_read_seconds": required_read_seconds,
@@ -1846,7 +1851,7 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
         "chapter_number": payload.chapter_number,
         "section_id": payload.section_id,
         "section_title": section_title,
-        "content": rag_content,
+        "content": _format_math_for_display(rag_content),
         "source": "rag_only",
         "tone": tone_config["tone"],
         "required_read_seconds": required_read_seconds,
