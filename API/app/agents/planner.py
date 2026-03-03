@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 
 class CurriculumPlannerAgent(BaseAgent):
+    role = "planner"
+    capabilities = ("plan_curriculum",)
+
     def __init__(self):
         self.provider = get_llm_provider(role="content_generator")
 

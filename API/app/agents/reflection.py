@@ -2,6 +2,9 @@ from app.agents.base import BaseAgent
 
 
 class ReflectionAgent(BaseAgent):
+    role = "evaluator"
+    capabilities = ("reflect_progress",)
+
     async def run(self, input_data: dict) -> dict:
         concept = input_data["concept"]
         old_mastery = float(input_data["mastery_map"].get(concept, 0.3))

@@ -41,6 +41,9 @@ def _recommendations(risk_level: str, patterns: list[dict]) -> list[str]:
 
 
 class AnalyticsEvaluationAgent(BaseAgent):
+    role = "evaluator"
+    capabilities = ("evaluate_analytics",)
+
     async def run(self, input_data: dict) -> dict:
         recent_scores = [float(v) for v in input_data.get("recent_scores", [])]
         response_times = [float(v) for v in input_data.get("recent_response_times", [])]

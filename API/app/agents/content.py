@@ -12,6 +12,9 @@ logger = get_domain_logger(__name__, DOMAIN_COMPLIANCE)
 
 
 class ContentGenerationAgent(BaseAgent):
+    role = "executor"
+    capabilities = ("generate_content",)
+
     def __init__(self):
         self.provider = get_llm_provider(role="content_generator")
 

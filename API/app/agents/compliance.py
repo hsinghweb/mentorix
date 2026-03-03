@@ -2,6 +2,9 @@ from app.agents.base import BaseAgent
 
 
 class ComplianceAgent(BaseAgent):
+    role = "compliance"
+    capabilities = ("check_compliance",)
+
     async def run(self, input_data: dict) -> dict:
         consecutive_failures = int(input_data.get("consecutive_failures", 0))
         response_time = float(input_data.get("response_time", 0.0))

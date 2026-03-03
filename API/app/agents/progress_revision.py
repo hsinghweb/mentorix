@@ -17,6 +17,9 @@ REVISION_THRESHOLD = 0.50  # Below this, queue for revision
 
 
 class ProgressRevisionAgent(BaseAgent):
+    role = "evaluator"
+    capabilities = ("evaluate_revision_need",)
+
     async def run(self, input_data: dict) -> dict:
         mastery_map = input_data.get("mastery_map", {})
         learner_id = input_data.get("learner_id")

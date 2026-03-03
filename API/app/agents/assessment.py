@@ -2,6 +2,9 @@ from app.agents.base import BaseAgent
 
 
 class AssessmentAgent(BaseAgent):
+    role = "evaluator"
+    capabilities = ("generate_assessment", "evaluate_answer")
+
     async def run(self, input_data: dict) -> dict:
         concept = input_data["concept"]
         difficulty = input_data["difficulty"]

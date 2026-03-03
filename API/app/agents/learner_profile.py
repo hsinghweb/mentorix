@@ -22,6 +22,9 @@ def _mastery_band(score: float) -> str:
 
 
 class LearnerProfilingAgent(BaseAgent):
+    role = "evaluator"
+    capabilities = ("profile_learner",)
+
     async def run(self, input_data: dict) -> dict:
         mastery_map = input_data.get("mastery_map", {})
         learner_id = input_data.get("learner_id")
