@@ -25,6 +25,7 @@ from app.memory.ingest import get_memory_context
 from app.models.entities import AssessmentResult, GeneratedArtifact, Learner, LearnerProfile, SessionLog
 from app.orchestrator.engine import StateEngine
 from app.orchestrator.states import SessionState
+from app.orchestrator.agent_compliance import AgentRole, AgentCoordinator
 from app.rag.embeddings import embed_text
 from app.rag.retriever import retrieve_concept_chunks_with_meta
 from app.schemas.session import (
@@ -49,6 +50,67 @@ reflection_agent = ReflectionAgent()
 analytics_agent = AnalyticsEvaluationAgent()
 compliance_agent = ComplianceAgent()
 memory_manager_agent = MemoryManagementAgent()
+agent_coordinator = AgentCoordinator()
+agent_coordinator.register(
+    name="LearnerProfilingAgent",
+    role=AgentRole.EVALUATOR,
+    capabilities={"profile_learner": "run"},
+    handler=profiling_agent,
+)
+agent_coordinator.register(
+    name="OnboardingAgent",
+    role=AgentRole.PLANNER,
+    capabilities={"summarize_onboarding": "run"},
+    handler=onboarding_agent,
+)
+agent_coordinator.register(
+    name="CurriculumPlannerAgent",
+    role=AgentRole.PLANNER,
+    capabilities={"plan_curriculum": "run"},
+    handler=planner_agent,
+)
+agent_coordinator.register(
+    name="ContentGenerationAgent",
+    role=AgentRole.EXECUTOR,
+    capabilities={"generate_content": "run"},
+    handler=content_agent,
+)
+agent_coordinator.register(
+    name="AdaptationAgent",
+    role=AgentRole.EXECUTOR,
+    capabilities={"adapt_strategy": "run"},
+    handler=adaptation_agent,
+)
+agent_coordinator.register(
+    name="AssessmentAgent",
+    role=AgentRole.EVALUATOR,
+    capabilities={"generate_assessment": "run", "evaluate_answer": "evaluate"},
+    handler=assessment_agent,
+)
+agent_coordinator.register(
+    name="ReflectionAgent",
+    role=AgentRole.EVALUATOR,
+    capabilities={"reflect_progress": "run"},
+    handler=reflection_agent,
+)
+agent_coordinator.register(
+    name="AnalyticsEvaluationAgent",
+    role=AgentRole.EVALUATOR,
+    capabilities={"evaluate_analytics": "run"},
+    handler=analytics_agent,
+)
+agent_coordinator.register(
+    name="ComplianceAgent",
+    role=AgentRole.COMPLIANCE,
+    capabilities={"check_compliance": "run"},
+    handler=compliance_agent,
+)
+agent_coordinator.register(
+    name="MemoryManagementAgent",
+    role=AgentRole.MEMORY,
+    capabilities={"update_memory": "run"},
+    handler=memory_manager_agent,
+)
 _degraded_session_cache: dict[str, dict[str, str]] = {}
 _idempotency_response_cache: dict[str, dict] = {}
 
@@ -67,6 +129,24 @@ CONCEPT_DIFFICULTY_BOUNDS: dict[str, tuple[int, int]] = {
     "quadratic_equations": (1, 3),
     "probability": (1, 2),
 }
+
+
+async def _invoke_agent(
+    *,
+    run_id: str,
+    sender_role: AgentRole,
+    target_agent: str,
+    capability: str,
+    payload: dict,
+) -> dict:
+    """Role/capability-compliant inter-agent dispatch."""
+    return await agent_coordinator.dispatch(
+        run_id=run_id,
+        sender_role=sender_role,
+        target_agent=target_agent,
+        capability=capability,
+        payload=payload,
+    )
 
 
 def _apply_adaptation_shift_caps(*, concept: str, current_difficulty: int, adaptation: dict) -> dict:
@@ -251,9 +331,21 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         event="session_initialized",
     )
 
-    p = await profiling_agent.run({"mastery_map": profile.concept_mastery, "learner_id": payload.learner_id})
-    onboarding_summary = await onboarding_agent.run(
-        {"learner_id": payload.learner_id, "mastery_map": p.get("mastery_map", {})}
+    p = await _invoke_agent(
+        run_id=session_id,
+        sender_role=AgentRole.PLANNER,
+        target_agent="LearnerProfilingAgent",
+        capability="profile_learner",
+        payload={"mastery_map": profile.concept_mastery, "learner_id": payload.learner_id},
+    )
+    mastery_map = p.get("mastery_map") or p.get("concept_mastery") or dict(profile.concept_mastery or {})
+    weak_concepts = p.get("weak_concepts") or p.get("recommended_focus") or []
+    onboarding_summary = await _invoke_agent(
+        run_id=session_id,
+        sender_role=AgentRole.PLANNER,
+        target_agent="OnboardingAgent",
+        capability="summarize_onboarding",
+        payload={"learner_id": payload.learner_id, "mastery_map": mastery_map},
     )
     state, step_idx = _advance_state(
         session_id=session_id,
@@ -261,12 +353,21 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         state=state,
         step_index=step_idx,
         event="profile_loaded",
-        payload={"weak_concepts": p.get("weak_concepts", [])},
+        payload={"weak_concepts": weak_concepts},
     )
 
-    plan = await planner_agent.run({"mastery_map": p["mastery_map"], "recent_concepts": recent})
-    concept = plan["next_concept"]
-    difficulty = int(plan["target_difficulty"])
+    plan = await _invoke_agent(
+        run_id=session_id,
+        sender_role=AgentRole.PLANNER,
+        target_agent="CurriculumPlannerAgent",
+        capability="plan_curriculum",
+        payload={"mastery_map": mastery_map, "recent_concepts": recent},
+    )
+    concept = plan.get("next_concept")
+    if not concept:
+        plan_items = plan.get("plan") or []
+        concept = str(plan_items[0].get("chapter")) if plan_items else str(weak_concepts[0] if weak_concepts else "fractions")
+    difficulty = int(plan.get("target_difficulty", 1))
     state, step_idx = _advance_state(
         session_id=session_id,
         learner_id=str(learner_id),
@@ -280,14 +381,18 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
     chunks = retrieval["chunks"]
     memory_context = get_memory_context(str(learner_id))
     memory_hint = f"Learner memory context: {json.dumps(memory_context)}"
-    content = await content_agent.run(
-        {
+    content = await _invoke_agent(
+        run_id=session_id,
+        sender_role=AgentRole.PLANNER,
+        target_agent="ContentGenerationAgent",
+        capability="generate_content",
+        payload={
             "concept": concept,
             "difficulty": difficulty,
             "retrieved_chunks": chunks + [memory_hint],
             "retrieval_confidence": retrieval.get("retrieval_confidence", 0.0),
             "retrieval_message": retrieval.get("message", ""),
-        }
+        },
     )
     state, step_idx = _advance_state(
         session_id=session_id,
@@ -302,16 +407,24 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         },
     )
 
-    adaptation = await adaptation_agent.run(
-        {"rolling_error_rate": 0.0, "response_time_deviation": 0.0, "consecutive_failures": 0, "difficulty": difficulty}
+    adaptation = await _invoke_agent(
+        run_id=session_id,
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="AdaptationAgent",
+        capability="adapt_strategy",
+        payload={"rolling_error_rate": 0.0, "response_time_deviation": 0.0, "consecutive_failures": 0, "difficulty": difficulty},
     )
     adaptation = _apply_adaptation_shift_caps(
         concept=concept,
         current_difficulty=difficulty,
         adaptation=adaptation,
     )
-    question_payload = await assessment_agent.run(
-        {"concept": concept, "difficulty": adaptation["new_difficulty"]}
+    question_payload = await _invoke_agent(
+        run_id=session_id,
+        sender_role=AgentRole.EXECUTOR,
+        target_agent="AssessmentAgent",
+        capability="generate_assessment",
+        payload={"concept": concept, "difficulty": adaptation["new_difficulty"]},
     )
 
     session_key = f"session:{session_id}"
@@ -347,13 +460,17 @@ async def start_session(payload: StartSessionRequest, db: AsyncSession = Depends
         )
     )
     await db.commit()
-    await memory_manager_agent.run(
-        {
+    await _invoke_agent(
+        run_id=session_id,
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="MemoryManagementAgent",
+        capability="update_memory",
+        payload={
             "learner_id": str(learner_id),
             "concept": concept,
             "score": 1.0,
             "adaptation_score": float(adaptation["adaptation_score"]),
-        }
+        },
     )
     await notification_engine.notify(
         source="session",
@@ -409,7 +526,13 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
     failures = int(raw.get("consecutive_failures", 0))
     adaptation_state = json.loads(raw.get("adaptation_state", "{}"))
 
-    eval_out = await assessment_agent.evaluate(payload.answer, expected)
+    eval_out = await _invoke_agent(
+        run_id=payload.session_id,
+        sender_role=AgentRole.EXECUTOR,
+        target_agent="AssessmentAgent",
+        capability="evaluate_answer",
+        payload={"answer": payload.answer, "expected_answer": expected},
+    )
     score = float(eval_out["score"])
     error_type = eval_out["error_type"]
     new_error = 1.0 - score
@@ -426,14 +549,18 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
     )
 
     response_time_dev = min(1.0, max(0.0, payload.response_time / 30.0))
-    adaptation = await adaptation_agent.run(
-        {
+    adaptation = await _invoke_agent(
+        run_id=payload.session_id,
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="AdaptationAgent",
+        capability="adapt_strategy",
+        payload={
             "rolling_error_rate": rolling_error_rate,
             "response_time_deviation": response_time_dev,
             "consecutive_failures": failures,
             "difficulty": difficulty,
             "cooldown_remaining": int(adaptation_state.get("cooldown_remaining", 0)),
-        }
+        },
     )
     adaptation = _apply_adaptation_shift_caps(
         concept=concept,
@@ -454,14 +581,18 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
     )
 
     profile = await _get_or_create_learner_profile(db, learner_id)
-    reflection = await reflection_agent.run(
-        {
+    reflection = await _invoke_agent(
+        run_id=payload.session_id,
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="ReflectionAgent",
+        capability="reflect_progress",
+        payload={
             "concept": concept,
             "current_score": score,
             "mastery_map": profile.concept_mastery,
             "engagement_score": profile.engagement_score,
             "retention_decay": profile.retention_decay,
-        }
+        },
     )
     _log_state_transition(
         session_id=payload.session_id,
@@ -486,19 +617,27 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
             .limit(5)
         )
     ).scalars().all()
-    analytics_evaluation = await analytics_agent.run(
-        {
+    analytics_evaluation = await _invoke_agent(
+        run_id=payload.session_id,
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="AnalyticsEvaluationAgent",
+        capability="evaluate_analytics",
+        payload={
             "recent_scores": [a.score for a in reversed(recent_assessments)],
             "recent_response_times": [a.response_time for a in reversed(recent_assessments)],
             "recent_error_types": [a.error_type for a in reversed(recent_assessments)],
-        }
+        },
     )
-    compliance_status = await compliance_agent.run(
-        {
+    compliance_status = await _invoke_agent(
+        run_id=payload.session_id,
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="ComplianceAgent",
+        capability="check_compliance",
+        payload={
             "consecutive_failures": failures,
             "response_time": payload.response_time,
             "engagement_score": profile.engagement_score,
-        }
+        },
     )
 
     db.add(
@@ -519,13 +658,17 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         )
     )
     await db.commit()
-    await memory_manager_agent.run(
-        {
+    await _invoke_agent(
+        run_id=payload.session_id,
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="MemoryManagementAgent",
+        capability="update_memory",
+        payload={
             "learner_id": str(learner_id),
             "concept": concept,
             "score": score,
             "adaptation_score": float(adaptation["adaptation_score"]),
-        }
+        },
     )
     if compliance_status.get("disengagement_flag"):
         try:
@@ -545,14 +688,18 @@ async def submit_answer(payload: SubmitAnswerRequest, db: AsyncSession = Depends
         db, concept=concept, top_k=5, difficulty=adaptation["new_difficulty"]
     )
     chunks = retrieval["chunks"]
-    content = await content_agent.run(
-        {
+    content = await _invoke_agent(
+        run_id=payload.session_id,
+        sender_role=AgentRole.PLANNER,
+        target_agent="ContentGenerationAgent",
+        capability="generate_content",
+        payload={
             "concept": concept,
             "difficulty": adaptation["new_difficulty"],
             "retrieved_chunks": chunks,
             "retrieval_confidence": retrieval.get("retrieval_confidence", 0.0),
             "retrieval_message": retrieval.get("message", ""),
-        }
+        },
     )
     db.add(
         GeneratedArtifact(
@@ -624,19 +771,27 @@ async def dashboard(learner_id: str, db: AsyncSession = Depends(get_db)):
             .limit(10)
         )
     ).scalars().all()
-    analytics_summary = await analytics_agent.run(
-        {
+    analytics_summary = await _invoke_agent(
+        run_id=f"dashboard:{learner_id}",
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="AnalyticsEvaluationAgent",
+        capability="evaluate_analytics",
+        payload={
             "recent_scores": [a.score for a in reversed(recent_assessments)],
             "recent_response_times": [a.response_time for a in reversed(recent_assessments)],
             "recent_error_types": [a.error_type for a in reversed(recent_assessments)],
-        }
+        },
     )
-    compliance_summary = await compliance_agent.run(
-        {
+    compliance_summary = await _invoke_agent(
+        run_id=f"dashboard:{learner_id}",
+        sender_role=AgentRole.EVALUATOR,
+        target_agent="ComplianceAgent",
+        capability="check_compliance",
+        payload={
             "consecutive_failures": 0,
             "response_time": analytics_summary.get("avg_response_time", 0.0),
             "engagement_score": profile.engagement_score,
-        }
+        },
     )
 
     return DashboardResponse(

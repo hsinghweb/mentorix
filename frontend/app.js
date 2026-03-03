@@ -82,12 +82,77 @@ function renderKaTeX(container) {
 
 function normalizeMathDelimiters(text) {
   if (!text) return "";
-  return String(text)
+  let s = String(text)
     .replace(/\\\\\(/g, "\\(")
     .replace(/\\\\\)/g, "\\)")
     .replace(/\\\\\[/g, "\\[")
     .replace(/\\\\\]/g, "\\]")
+    // Heuristic fallback: wrap plain parenthesized LaTeX commands so KaTeX can render.
+    .replace(/\(\s*(\\[A-Za-z]+[^()\n]{0,220})\s*\)/g, "\\($1\\)")
     .replace(/\r\n/g, "\n");
+
+  // Fix malformed inline closers: \(\sqrt{2} \\) -> \(\sqrt{2}\)
+  s = s.replace(/\\\(([\s\S]*?)\\\\\)/g, "\\($1\\)");
+
+  // Fix bare LaTeX fragments that end with closer but are not wrapped:
+  // \sqrt{2}\) or \sqrt{2}\\) -> \(\sqrt{2}\)
+  s = s.replace(
+    /(^|[\s,;:([{\-])((?:\\[A-Za-z]+(?:\{[^{}]*\}|[A-Za-z0-9._^+-])*)+)\\\)/g,
+    (m, p1, p2, offset, full) => {
+      const at = Number(offset || 0) + String(p1 || "").length;
+      if (at >= 2 && String(full).slice(at - 2, at) === "\\(") return m;
+      return `${p1}\\(${p2.replace(/\\\)$/, "")}\\)`;
+    }
+  );
+
+  // Fix orphan opener for single symbol: "\(p is ..." -> "\(p\) is ..."
+  s = s.replace(
+    /\\\(\s*([A-Za-z0-9][A-Za-z0-9_^{}]*)\s+([A-Za-z])/g,
+    "\\($1\\) $2"
+  );
+
+  // Normalize accidental duplicated trailing slashes inside inline math.
+  s = s.replace(/\\\(([^)]*?)\\\\\s*\\\)/g, "\\($1\\)");
+  return s;
+}
+
+function protectMathBlocks(text) {
+  const source = normalizeMathDelimiters(text);
+  const tokens = [];
+  let idx = 0;
+  const sanitizeMathToken = (token) => {
+    let t = String(token || "");
+    if (t.startsWith("\\(") && t.endsWith("\\)")) {
+      let inner = t.slice(2, -2).trim();
+      // Repair malformed inline math like: \(\sqrt{2} \\)
+      inner = inner.replace(/\\\\\s*$/, "").trim();
+      return `\\(${inner}\\)`;
+    }
+    if (t.startsWith("\\[") && t.endsWith("\\]")) {
+      let inner = t.slice(2, -2).trim();
+      inner = inner.replace(/\\\\\s*$/, "").trim();
+      return `\\[${inner}\\]`;
+    }
+    return t;
+  };
+  const put = (m) => {
+    const key = `@@MATH_BLOCK_${idx++}@@`;
+    tokens.push([key, sanitizeMathToken(m)]);
+    return key;
+  };
+  const masked = source
+    .replace(/\\\([\s\S]*?\\\)/g, put)
+    .replace(/\\\[[\s\S]*?\\\]/g, put)
+    .replace(/\$\$[\s\S]*?\$\$/g, put)
+    .replace(/\$[^$\n]+\$/g, put);
+  return {
+    masked,
+    restore: (html) => {
+      let out = String(html || "");
+      for (const [key, value] of tokens) out = out.split(key).join(value);
+      return out;
+    },
+  };
 }
 
 function formatTime(seconds) {
@@ -97,28 +162,28 @@ function formatTime(seconds) {
 }
 
 function mdToHtml(md) {
-  const normalized = normalizeMathDelimiters(md);
-  if (!normalized) return "";
+  const { masked, restore } = protectMathBlocks(md);
+  if (!masked) return "";
   if (typeof marked !== "undefined" && typeof marked.parse === "function") {
-    return marked.parse(normalized, { breaks: true, gfm: true });
+    return restore(marked.parse(masked, { breaks: true, gfm: true }));
   }
-  return normalized
+  return restore(masked
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br>");
+    .replace(/\n/g, "<br>"));
 }
 
 function mdInlineToHtml(md) {
-  const normalized = normalizeMathDelimiters(md);
-  if (!normalized) return "";
+  const { masked, restore } = protectMathBlocks(md);
+  if (!masked) return "";
   if (typeof marked !== "undefined" && typeof marked.parseInline === "function") {
-    return marked.parseInline(normalized);
+    return restore(marked.parseInline(masked));
   }
-  return normalized
+  return restore(masked
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;"));
 }
 
 function extractChapterNumber(chapterLabel) {

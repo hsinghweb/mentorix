@@ -2,6 +2,9 @@ from app.agents.base import BaseAgent
 
 
 class OnboardingAgent(BaseAgent):
+    role = "planner"
+    capabilities = ("summarize_onboarding",)
+
     async def run(self, input_data: dict) -> dict:
         learner_id = input_data.get("learner_id", "unknown")
         mastery_map = input_data.get("mastery_map", {})

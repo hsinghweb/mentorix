@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from app.memory.store import memory_store
-
-
 class MemorySkeletonizer:
     @staticmethod
     def skeletonize(run_payload: dict) -> dict:
@@ -71,6 +68,7 @@ class MemorySkeletonizer:
 class EpisodicMemory:
     def save_episode(self, run_payload: dict) -> None:
         skeleton = MemorySkeletonizer.skeletonize(run_payload)
+        from app.memory.store import memory_store
         memory_store.save_episode(skeleton)
 
 

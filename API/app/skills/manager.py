@@ -62,6 +62,7 @@ class SkillManager:
                 meta = instance.get_metadata()
                 self.skill_classes[meta.name] = klass
                 registry[meta.name] = {
+                    "name": meta.name,
                     "path": str(skill_file),
                     "kind": "python",
                     "version": meta.version,
@@ -73,6 +74,7 @@ class SkillManager:
                 if not info.get("name"):
                     continue
                 registry[info["name"]] = {
+                    "name": info["name"],
                     "path": str(md_file),
                     "kind": "markdown",
                     "version": info.get("version", "1.0.0"),

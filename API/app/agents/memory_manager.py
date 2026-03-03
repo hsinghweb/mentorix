@@ -3,6 +3,9 @@ from app.memory.ingest import ingest_session_signal
 
 
 class MemoryManagementAgent(BaseAgent):
+    role = "memory"
+    capabilities = ("update_memory",)
+
     async def run(self, input_data: dict) -> dict:
         learner_id = str(input_data.get("learner_id"))
         concept = str(input_data.get("concept"))

@@ -2,6 +2,9 @@ from app.agents.base import BaseAgent
 
 
 class AdaptationAgent(BaseAgent):
+    role = "executor"
+    capabilities = ("adapt_strategy",)
+
     async def run(self, input_data: dict) -> dict:
         error_rate = float(input_data.get("rolling_error_rate", 0.0))
         response_time_deviation = float(input_data.get("response_time_deviation", 0.0))
