@@ -50,6 +50,12 @@ async def initialize_database(session: AsyncSession, engine) -> None:
             text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS current_forecast_weeks INTEGER")
         )
         await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS timeline_delta_weeks INTEGER"))
+        await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS onboarding_date DATE"))
+        await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS student_email VARCHAR(255)"))
+        await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS progress_status VARCHAR(32)"))
+        await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS progress_percentage FLOAT DEFAULT 0.0"))
+        await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS last_reminder_sent_at TIMESTAMPTZ"))
+        await conn.execute(text("ALTER TABLE learner_profile ADD COLUMN IF NOT EXISTS reminder_enabled BOOLEAN DEFAULT TRUE"))
         # Ensure indexes also exist for DBs created before index metadata changes.
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_session_logs_learner_id ON session_logs (learner_id)"))
         await conn.execute(text("CREATE INDEX IF NOT EXISTS idx_session_logs_concept ON session_logs (concept)"))
@@ -107,6 +113,15 @@ async def initialize_database(session: AsyncSession, engine) -> None:
         )
         await conn.execute(
             text("CREATE INDEX IF NOT EXISTS idx_engagement_events_event_type ON engagement_events (event_type)")
+        )
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_reminder_logs_learner_created "
+                "ON reminder_delivery_logs (learner_id, created_at)"
+            )
+        )
+        await conn.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_reminder_logs_status ON reminder_delivery_logs (status)")
         )
 
         if settings.retention_cleanup_enabled and settings.session_retention_days > 0:

@@ -13,7 +13,7 @@ import random
 import re
 import asyncio
 from difflib import SequenceMatcher
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,6 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.llm_provider import get_llm_provider
 from app.core.logging import DOMAIN_COMPLIANCE, get_domain_logger
 from app.core.settings import settings
+from app.core.timeline import (
+    TIMELINE_TZ,
+    build_week_timeline_item,
+    canonical_today,
+    estimate_completion_date,
+    format_week_label,
+    week_bounds_from_onboarding,
+)
 from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name
 from app.memory.cache import redis_client
 from app.memory.database import get_db
@@ -163,11 +171,20 @@ class DashboardResponse(BaseModel):
     math_9_percent: int | None
     selected_weeks: int | None
     suggested_weeks: int | None
+    onboarding_date: str | None = None
+    timeline_timezone: str = "UTC"
     current_week: int
+    current_week_label: str | None = None
+    current_week_start_date: str | None = None
+    current_week_end_date: str | None = None
     total_weeks: int
+    completion_estimate_date: str | None = None
+    completion_estimate_date_active_pace: str | None = None
+    completion_estimate_weeks_active_pace: int | None = None
     overall_completion_percent: float
     overall_mastery_percent: float
     rough_plan: list[dict]
+    timeline_visualization: list[dict] = Field(default_factory=list)
     chapter_status: list[dict]
     chapter_confidence: list[dict]
     current_week_tasks: list[dict]
@@ -263,6 +280,10 @@ def _clamp_read_seconds(value: int | float | None) -> int:
     except Exception:
         raw = min_seconds
     return max(min_seconds, min(max_seconds, raw))
+
+
+def _profile_onboarding_date(profile: LearnerProfile):
+    return profile.onboarding_date or canonical_today()
 
 
 async def _apply_dynamic_reading_requirement(
@@ -2408,20 +2429,47 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
 
     # Rough plan (onboarding stores as plan_payload.rough_plan)
     rough_plan = []
+    onboarding_date = _profile_onboarding_date(profile)
+    timeline_visualization = []
     if plan and plan.plan_payload:
         raw = plan.plan_payload.get("rough_plan", []) or plan.plan_payload.get("weeks", [])
         cw = plan.current_week or 1
         for entry in raw:
             w = entry.get("week", 0)
+            if not isinstance(w, int) or w <= 0:
+                continue
+            week_start, week_end = week_bounds_from_onboarding(onboarding_date, w)
+            week_label = format_week_label(w, week_start, week_end)
             rough_plan.append({
                 "week": w,
                 "chapter": entry.get("chapter"),
                 "focus": entry.get("focus"),
+                "week_start_date": week_start.isoformat(),
+                "week_end_date": week_end.isoformat(),
+                "week_label": week_label,
                 "status": "completed" if w < cw else ("current" if w == cw else "upcoming"),
             })
+            timeline_visualization.append(
+                {
+                    **build_week_timeline_item(
+                        onboarding_date=onboarding_date,
+                        week_number=w,
+                        is_current=(w == cw),
+                        is_past=(w < cw),
+                    ),
+                    "chapter": entry.get("chapter"),
+                    "focus": entry.get("focus"),
+                }
+            )
 
     # Current week tasks
     current_week = plan.current_week if plan else 1
+    current_week_start, current_week_end = week_bounds_from_onboarding(onboarding_date, current_week)
+    completion = estimate_completion_date(
+        onboarding_date=onboarding_date,
+        current_week=current_week,
+        total_weeks_forecast=(profile.current_forecast_weeks or (plan.total_weeks if plan else 14)),
+    )
     tasks = (await db.execute(
         select(Task).where(
             Task.learner_id == learner_id,
@@ -2467,11 +2515,22 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         math_9_percent=profile.math_9_percent,
         selected_weeks=profile.selected_timeline_weeks,
         suggested_weeks=profile.recommended_timeline_weeks,
+        onboarding_date=onboarding_date.isoformat(),
+        timeline_timezone=str(TIMELINE_TZ),
         current_week=current_week,
+        current_week_label=format_week_label(current_week, current_week_start, current_week_end),
+        current_week_start_date=current_week_start.isoformat(),
+        current_week_end_date=current_week_end.isoformat(),
         total_weeks=plan.total_weeks if plan else 14,
+        completion_estimate_date=(
+            onboarding_date + timedelta(days=((int(profile.current_forecast_weeks or (plan.total_weeks if plan else 14)) * 7) - 1))
+        ).isoformat(),
+        completion_estimate_date_active_pace=completion["estimated_completion_date"],
+        completion_estimate_weeks_active_pace=completion["completion_estimate_weeks_active_pace"],
         overall_completion_percent=round(overall_completion, 1),
         overall_mastery_percent=round(overall_mastery, 1),
         rough_plan=rough_plan,
+        timeline_visualization=timeline_visualization,
         chapter_status=chapter_status,
         chapter_confidence=chapter_confidence,
         current_week_tasks=current_tasks,

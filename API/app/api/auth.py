@@ -29,6 +29,7 @@ class StartSignupRequest(BaseModel):
     password: str = Field(min_length=1, max_length=72)
     name: str = Field(min_length=1, max_length=255)
     date_of_birth: date
+    student_email: str = Field(min_length=5, max_length=255, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     selected_timeline_weeks: int = Field(ge=14, le=28)
     math_9_percent: int = Field(ge=0, le=100)
 
@@ -44,6 +45,7 @@ class SignupRequest(BaseModel):
     password: str = Field(min_length=1, max_length=72)
     name: str = Field(min_length=1, max_length=255)
     date_of_birth: date
+    student_email: str = Field(min_length=5, max_length=255, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     selected_timeline_weeks: int = Field(ge=14, le=28)
     math_9_percent: int = Field(ge=0, le=100)
 
@@ -71,6 +73,12 @@ async def start_signup(payload: StartSignupRequest, db: AsyncSession = Depends(g
     existing = (await db.execute(select(StudentAuth).where(StudentAuth.username == username))).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=400, detail="Username already exists. Please login or choose another username.")
+    email = payload.student_email.strip().lower()
+    duplicate_email = (
+        await db.execute(select(LearnerProfile.learner_id).where(LearnerProfile.student_email == email))
+    ).scalar_one_or_none()
+    if duplicate_email:
+        raise HTTPException(status_code=400, detail="Email already registered. Please use a different email.")
 
     import json
     from uuid import uuid4
@@ -81,6 +89,7 @@ async def start_signup(payload: StartSignupRequest, db: AsyncSession = Depends(g
         "password_hash": hash_password(payload.password),
         "name": payload.name.strip(),
         "date_of_birth": payload.date_of_birth.isoformat(),
+        "student_email": email,
         "selected_timeline_weeks": _clamp_weeks(payload.selected_timeline_weeks),
         "math_9_percent": payload.math_9_percent,
     }
@@ -98,6 +107,7 @@ async def start_signup(payload: StartSignupRequest, db: AsyncSession = Depends(g
 @router.post("/signup", response_model=AuthResponse)
 async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
     username = payload.username.strip().lower()
+    email = payload.student_email.strip().lower()
     existing = (await db.execute(select(StudentAuth).where(StudentAuth.username == username))).scalar_one_or_none()
     if existing:
         # For this project we keep signup very forgiving: if the username exists,
@@ -109,6 +119,12 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
             username=existing.username,
             name=existing.name,
         )
+
+    duplicate_email = (
+        await db.execute(select(LearnerProfile.learner_id).where(LearnerProfile.student_email == email))
+    ).scalar_one_or_none()
+    if duplicate_email:
+        raise HTTPException(status_code=400, detail="Email already registered. Please use a different email.")
 
     learner = Learner(name=payload.name.strip(), grade_level="10")
     db.add(learner)
@@ -125,6 +141,7 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
         current_forecast_weeks=None,
         timeline_delta_weeks=None,
         math_9_percent=payload.math_9_percent,
+        student_email=email,
     )
     db.add(profile)
 

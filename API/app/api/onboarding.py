@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.jwt_auth import create_token
 from app.core.logging import DOMAIN_ONBOARDING, get_domain_logger
+from app.core.settings import settings
+from app.core.timeline import (
+    TIMELINE_TZ,
+    build_week_timeline_item,
+    canonical_today,
+    estimate_completion_date,
+    format_week_label,
+    week_bounds_from_onboarding,
+)
 from app.memory.cache import redis_client
 from app.memory.database import get_db
 from app.models.entities import (
@@ -24,6 +33,7 @@ from app.models.entities import (
     PolicyViolation,
     RevisionPolicyState,
     RevisionQueueItem,
+    ReminderDeliveryLog,
     AssessmentResult,
     StudentAuth,
     Task,
@@ -34,6 +44,7 @@ from app.models.entities import (
 )
 from app.agents.diagnostic_mcq import generate_diagnostic_mcq
 from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name, get_syllabus_for_api
+from app.services.reminder_service import dispatch_due_reminders, evaluate_reminder_eligibility
 from app.schemas.onboarding import (
     ChapterPlan,
     ChapterAdvanceRequest,
@@ -60,6 +71,7 @@ from app.schemas.onboarding import (
     DailyPlanResponse,
     ForecastHistoryItem,
     ForecastHistoryResponse,
+    ComparativeAnalyticsResponse,
     StudentLearningMetricsResponse,
 )
 
@@ -299,6 +311,12 @@ def _profile_snapshot_payload(profile: LearnerProfile) -> dict:
         "recommended_timeline_weeks": profile.recommended_timeline_weeks,
         "current_forecast_weeks": profile.current_forecast_weeks,
         "timeline_delta_weeks": profile.timeline_delta_weeks,
+        "onboarding_date": profile.onboarding_date.isoformat() if profile.onboarding_date else None,
+        "student_email": profile.student_email,
+        "progress_status": profile.progress_status,
+        "progress_percentage": round(float(profile.progress_percentage or 0.0), 3),
+        "last_reminder_sent_at": profile.last_reminder_sent_at.isoformat() if profile.last_reminder_sent_at else None,
+        "reminder_enabled": bool(profile.reminder_enabled),
         "last_updated": profile.last_updated.isoformat() if profile.last_updated else None,
     }
 
@@ -378,6 +396,16 @@ async def _update_profile_after_outcome(
     adherence = await _compute_adherence_rate_week(db, learner_id)
     normalized_minutes = min(1.0, float(max(0, minutes_week + max(0, int(engagement_minutes))) / 300.0))
     profile.engagement_score = round(max(0.1, min(1.0, (0.7 * normalized_minutes) + (0.3 * adherence))), 3)
+    chapter_scores = [float(v) for k, v in (profile.concept_mastery or {}).items() if str(k).startswith("Chapter")]
+    if chapter_scores:
+        completed = len([v for v in chapter_scores if v >= 0.60])
+        profile.progress_percentage = round((completed / max(1, len(chapter_scores))) * 100.0, 2)
+        if completed >= len(chapter_scores):
+            profile.progress_status = "completed"
+        elif completed > 0:
+            profile.progress_status = "in_progress"
+        else:
+            profile.progress_status = profile.progress_status or "not_started"
     profile.last_updated = datetime.now(timezone.utc)
     _persist_profile_snapshot(
         db=db,
@@ -499,6 +527,128 @@ async def _build_evaluation_analytics(db: AsyncSession, learner_id: UUID) -> dic
             risk_level=risk_level, misconception_patterns=misconception_patterns, trend=trend
         ),
         "chapter_attempt_summary": chapter_attempt_summary,
+    }
+
+
+async def _build_comparative_analytics(db: AsyncSession, learner_id: UUID) -> dict:
+    t0 = datetime.now(timezone.utc)
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Learner profile not found.")
+
+    cohort_rows = (
+        await db.execute(
+            select(
+                LearnerProfile.learner_id,
+                LearnerProfile.concept_mastery,
+                LearnerProfile.current_forecast_weeks,
+                LearnerProfile.selected_timeline_weeks,
+            ).limit(5000)
+        )
+    ).all()
+    cohort_scores: list[float] = []
+    learner_score = 0.0
+    learner_mastery = dict(profile.concept_mastery or {})
+    learner_topics = {k: float(v) for k, v in learner_mastery.items() if str(k).startswith("Chapter")}
+    learner_score = (
+        sum(learner_topics.values()) / max(1, len(learner_topics))
+        if learner_topics else 0.0
+    )
+    for row in cohort_rows:
+        mastery = dict(row.concept_mastery or {})
+        vals = [float(v) for k, v in mastery.items() if str(k).startswith("Chapter")]
+        cohort_scores.append(sum(vals) / max(1, len(vals)) if vals else 0.0)
+    cohort_size = len(cohort_scores)
+    if not cohort_scores:
+        cohort_scores = [0.0]
+    below = len([v for v in cohort_scores if v <= learner_score])
+    percentile = round((below / max(1, len(cohort_scores))) * 100.0, 2)
+    cohort_avg = round(sum(cohort_scores) / max(1, len(cohort_scores)), 4)
+
+    # Similar cluster proxy: nearest score band (+/- 0.05).
+    cluster = [v for v in cohort_scores if abs(v - learner_score) <= 0.05]
+    cluster_avg = round(sum(cluster) / max(1, len(cluster)), 4) if cluster else cohort_avg
+
+    # Topic-level + effort metrics.
+    weak_areas = [k for k, v in learner_topics.items() if float(v) < 0.45]
+    strong_areas = [k for k, v in learner_topics.items() if float(v) >= 0.75]
+    topic_mastery = {k: round(float(v), 4) for k, v in sorted(learner_topics.items(), key=lambda i: i[0])}
+    topic_minutes: dict[str, int] = {}
+    events = (
+        await db.execute(
+            select(EngagementEvent).where(EngagementEvent.learner_id == learner_id).limit(400)
+        )
+    ).scalars().all()
+    for ev in events:
+        chapter = str((ev.details or {}).get("chapter") or "General")
+        topic_minutes[chapter] = topic_minutes.get(chapter, 0) + int(ev.duration_minutes or 0)
+
+    attempts = (
+        await db.execute(
+            select(AssessmentResult).where(AssessmentResult.learner_id == learner_id).order_by(AssessmentResult.timestamp.asc())
+        )
+    ).scalars().all()
+    if len(attempts) >= 2:
+        half = max(1, len(attempts) // 2)
+        early = sum(float(a.score) for a in attempts[:half]) / half
+        late = sum(float(a.score) for a in attempts[half:]) / max(1, len(attempts) - half)
+        improvement_trend = round(late - early, 4)
+    else:
+        improvement_trend = 0.0
+
+    completed_topics = len([v for v in learner_topics.values() if v >= 0.60])
+    completion_rate = round((completed_topics / max(1, len(learner_topics))) * 100.0, 2)
+    learning_velocity = round(completed_topics / max(1.0, (len(events) / 14.0)), 3)
+    anonymized = cohort_size >= 5
+
+    drift = int((profile.current_forecast_weeks or 0) - (profile.selected_timeline_weeks or 0))
+    hooks = {
+        "adaptive_difficulty_hint": "decrease" if learner_score < 0.45 else ("increase" if learner_score > 0.8 else "maintain"),
+        "early_warning_signals": {
+            "low_mastery": learner_score < 0.40,
+            "timeline_drift_high": drift >= 2,
+            "below_cohort_average": learner_score < cohort_avg,
+            "repeated_weak_performance": len(weak_areas) >= 4,
+        },
+    }
+    elapsed_ms = int((datetime.now(timezone.utc) - t0).total_seconds() * 1000)
+    return {
+        "cohort_size": cohort_size,
+        "anonymized": anonymized,
+        "individual": {
+            "topic_mastery_score": round(learner_score, 4),
+            "topic_mastery_breakdown": topic_mastery,
+            "time_spent_per_topic_minutes": topic_minutes,
+            "weak_areas": weak_areas,
+            "strong_areas": strong_areas,
+            "learning_velocity": learning_velocity,
+            "completion_rate_percent": completion_rate,
+            "improvement_trend": improvement_trend,
+        },
+        "comparative": {
+            "percentile_ranking": percentile if anonymized else None,
+            "average_vs_cohort": {
+                "learner": round(learner_score, 4),
+                "cohort_average": cohort_avg if anonymized else None,
+                "delta": round(learner_score - cohort_avg, 4) if anonymized else None,
+            },
+            "similar_learner_cluster": {
+                "cluster_size": len(cluster) if anonymized else None,
+                "cluster_average_score": cluster_avg if anonymized else None,
+                "delta_vs_cluster": round(learner_score - cluster_avg, 4) if anonymized else None,
+            },
+            "trend_over_time": {
+                "improvement_trend": improvement_trend,
+            },
+        },
+        "hooks": hooks,
+        "performance": {
+            "computed_in_ms": elapsed_ms,
+            "sampled_cohort_rows": min(5000, cohort_size),
+            "scalability_guard_limit": 5000,
+        },
     }
 
 
@@ -711,8 +861,42 @@ def _build_rough_plan(chapter_scores: dict[str, float], target_weeks: int) -> tu
     return plan, first_week
 
 
+def _resolve_onboarding_date(profile: LearnerProfile) -> date:
+    return profile.onboarding_date or canonical_today()
+
+
+def _build_timeline_visualization(
+    *,
+    onboarding_date: date,
+    total_weeks: int,
+    current_week: int,
+    rough_plan_by_week: dict[int, dict] | None = None,
+) -> list[dict]:
+    items: list[dict] = []
+    source = rough_plan_by_week or {}
+    for w in range(1, max(1, int(total_weeks)) + 1):
+        base = build_week_timeline_item(
+            onboarding_date=onboarding_date,
+            week_number=w,
+            is_current=(w == int(current_week)),
+            is_past=(w < int(current_week)),
+        )
+        row = source.get(w) or {}
+        base["chapter"] = row.get("chapter")
+        base["focus"] = row.get("focus")
+        items.append(base)
+    return items
+
+
 @router.post("/start", response_model=OnboardingStartResponse)
 async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = Depends(get_db)):
+    student_email = payload.student_email.strip().lower()
+    duplicate_email = (
+        await db.execute(select(LearnerProfile.learner_id).where(LearnerProfile.student_email == student_email))
+    ).scalar_one_or_none()
+    if duplicate_email:
+        raise HTTPException(status_code=400, detail="Email already registered. Please use a different email.")
+
     learner = Learner(name=payload.name.strip(), grade_level=payload.grade_level)
     db.add(learner)
     await db.flush()
@@ -727,6 +911,11 @@ async def start_onboarding(payload: OnboardingStartRequest, db: AsyncSession = D
         recommended_timeline_weeks=None,
         current_forecast_weeks=None,
         timeline_delta_weeks=None,
+        onboarding_date=canonical_today(),
+        student_email=student_email,
+        progress_status="not_started",
+        progress_percentage=0.0,
+        reminder_enabled=True,
     )
     db.add(profile)
     _log_engagement_event(
@@ -928,6 +1117,11 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
             current_forecast_weeks=None,
             timeline_delta_weeks=None,
             math_9_percent=int(draft.get("math_9_percent", 0)),
+            onboarding_date=canonical_today(),
+            student_email=(draft.get("student_email") or "").strip().lower() or None,
+            progress_status="onboarding_completed",
+            progress_percentage=0.0,
+            reminder_enabled=True,
         )
         db.add(profile)
         auth = StudentAuth(
@@ -991,6 +1185,10 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     profile.concept_mastery = mastery
     profile.cognitive_depth = round(float(0.5 * score + 0.5 * (math_9_percent / 100.0)), 3)
     profile.last_updated = datetime.now(timezone.utc)
+    if profile.onboarding_date is None:
+        profile.onboarding_date = canonical_today()
+    profile.progress_status = "in_progress"
+    profile.progress_percentage = round(float((1 / 14) * 100.0), 2)
 
     # 2. Initialize all 14 Chapters in Progression
     for ch_data in SYLLABUS_CHAPTERS:
@@ -1064,6 +1262,27 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     await db.commit()
 
     token = create_token(use_learner_id, _auth_for_token.username) if _auth_for_token else None
+    onboarding_date = _resolve_onboarding_date(profile)
+    enriched_rough_plan: list[ChapterPlan] = []
+    for item in rough_plan:
+        week_start, week_end = week_bounds_from_onboarding(onboarding_date, item.week)
+        enriched_rough_plan.append(
+            item.model_copy(
+                update={
+                    "week_start_date": week_start.isoformat(),
+                    "week_end_date": week_end.isoformat(),
+                    "week_label": format_week_label(item.week, week_start, week_end),
+                }
+            )
+        )
+    week1_start, week1_end = week_bounds_from_onboarding(onboarding_date, week_1.week)
+    week1_enriched = week_1.model_copy(
+        update={
+            "week_start_date": week1_start.isoformat(),
+            "week_end_date": week1_end.isoformat(),
+            "week_label": format_week_label(week_1.week, week1_start, week1_end),
+        }
+    )
 
     response = OnboardingSubmitResponse(
         learner_id=use_learner_id,
@@ -1094,8 +1313,8 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
             "current_forecast_weeks": current_forecast_weeks,
             "timeline_delta_weeks": timeline_delta_weeks,
         },
-        rough_plan=rough_plan,
-        current_week_schedule=week_1,
+        rough_plan=enriched_rough_plan,
+        current_week_schedule=week1_enriched,
         current_week_tasks=[_to_task_item(task) for task in week_tasks],
     )
     if idempotency_cache_key:
@@ -1115,9 +1334,27 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="No weekly plan found for learner.")
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Learner profile not found.")
 
     rough = row.plan_payload.get("rough_plan", []) if isinstance(row.plan_payload, dict) else []
-    parsed = [ChapterPlan(**item) for item in rough]
+    onboarding_date = _resolve_onboarding_date(profile)
+    parsed: list[ChapterPlan] = []
+    for item in rough:
+        cp = ChapterPlan(**item)
+        start, end = week_bounds_from_onboarding(onboarding_date, cp.week)
+        parsed.append(
+            cp.model_copy(
+                update={
+                    "week_start_date": start.isoformat(),
+                    "week_end_date": end.isoformat(),
+                    "week_label": format_week_label(cp.week, start, end),
+                }
+            )
+        )
     committed_week_schedule = next((item for item in parsed if item.week == row.current_week), None)
     forecast_plan = [item for item in parsed if item.week > row.current_week]
     timeline = row.plan_payload.get("timeline", {}) if isinstance(row.plan_payload, dict) else {}
@@ -1130,6 +1367,21 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     ).scalars().all()
     estimate_weeks = timeline.get("current_forecast_weeks")
     selected_weeks = timeline.get("selected_timeline_weeks")
+    timeline_map = {
+        int(item.week): {"chapter": item.chapter, "focus": item.focus}
+        for item in parsed
+    }
+    viz = _build_timeline_visualization(
+        onboarding_date=onboarding_date,
+        total_weeks=row.total_weeks,
+        current_week=row.current_week,
+        rough_plan_by_week=timeline_map,
+    )
+    completion = estimate_completion_date(
+        onboarding_date=onboarding_date,
+        current_week=row.current_week,
+        total_weeks_forecast=timeline.get("current_forecast_weeks") or row.total_weeks,
+    )
     return WeeklyPlanResponse(
         learner_id=row.learner_id,
         current_week=row.current_week,
@@ -1143,6 +1395,19 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         forecast_plan=forecast_plan,
         current_week_tasks=[_to_task_item(task) for task in tasks],
         current_week_daily_breakdown=_daily_breakdown_from_tasks(tasks, row.current_week),
+        onboarding_date=onboarding_date.isoformat(),
+        timeline_timezone=str(TIMELINE_TZ),
+        current_week_label=(
+            committed_week_schedule.week_label
+            if committed_week_schedule is not None
+            else None
+        ),
+        timeline_visualization=viz,
+        completion_estimate_date=(
+            onboarding_date + timedelta(days=((int(estimate_weeks or row.total_weeks) * 7) - 1))
+        ).isoformat(),
+        completion_estimate_date_active_pace=completion["estimated_completion_date"],
+        completion_estimate_weeks_active_pace=completion["completion_estimate_weeks_active_pace"],
         planning_mode={
             "committed_week_active_only": True,
             "committed_week_locked": True,
@@ -1470,9 +1735,17 @@ async def list_current_week_tasks(learner_id: UUID, db: AsyncSession = Depends(g
             .order_by(Task.sort_order.asc(), Task.created_at.asc())
         )
     ).scalars().all()
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    onboarding_date = _resolve_onboarding_date(profile) if profile else canonical_today()
+    week_start, week_end = week_bounds_from_onboarding(onboarding_date, plan.current_week)
     return {
         "learner_id": learner_id,
         "week_number": plan.current_week,
+        "week_label": format_week_label(plan.current_week, week_start, week_end),
+        "week_start_date": week_start.isoformat(),
+        "week_end_date": week_end.isoformat(),
         "is_committed_week": True,
         "forecast_read_only": True,
         "tasks": [_to_task_item(task) for task in tasks],
@@ -1539,21 +1812,39 @@ async def get_full_schedule(learner_id: UUID, db: AsyncSession = Depends(get_db)
 
     current = int(plan.current_week)
     total = int(plan.total_weeks or 14)
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    onboarding_date = _resolve_onboarding_date(profile) if profile else canonical_today()
     weeks_list = []
     for w in range(1, total + 1):
         row = plan_by_week.get(w) or {}
+        week_start, week_end = week_bounds_from_onboarding(onboarding_date, w)
         weeks_list.append({
             "week_number": w,
+            "week_start_date": week_start.isoformat(),
+            "week_end_date": week_end.isoformat(),
+            "week_label": format_week_label(w, week_start, week_end),
             "chapter": row.get("chapter") or f"Chapter {min(w, 14)}",
             "focus": row.get("focus") or "learn + practice",
             "is_current": w == current,
             "is_past": w < current,
             "tasks": tasks_by_week.get(w, []),
         })
+    completion = estimate_completion_date(
+        onboarding_date=onboarding_date,
+        current_week=current,
+        total_weeks_forecast=(plan.plan_payload or {}).get("timeline", {}).get("current_forecast_weeks") or total,
+    )
     return {
         "learner_id": learner_id,
+        "onboarding_date": onboarding_date.isoformat(),
+        "timeline_timezone": str(TIMELINE_TZ),
         "current_week": current,
         "total_weeks": total,
+        "timeline_visualization": weeks_list,
+        "completion_estimate_date_active_pace": completion["estimated_completion_date"],
+        "completion_estimate_weeks_active_pace": completion["completion_estimate_weeks_active_pace"],
         "weeks": weeks_list,
     }
 
@@ -1753,6 +2044,69 @@ async def get_engagement_summary(learner_id: UUID, db: AsyncSession = Depends(ge
     )
 
 
+@router.get("/reminders/status/{learner_id}")
+async def get_reminder_status(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Learner profile not found.")
+    verdict = await evaluate_reminder_eligibility(db=db, learner_id=learner_id)
+    return {
+        "learner_id": learner_id,
+        "email": profile.student_email,
+        "reminder_enabled": bool(profile.reminder_enabled),
+        "last_reminder_sent_at": profile.last_reminder_sent_at.isoformat() if profile.last_reminder_sent_at else None,
+        "eligibility": verdict,
+    }
+
+
+@router.post("/reminders/dispatch-due")
+async def run_reminder_dispatch(db: AsyncSession = Depends(get_db)):
+    return await dispatch_due_reminders(
+        db=db,
+        reminder_rate_limit_hours=max(1, int(settings.reminder_rate_limit_hours)),
+    )
+
+
+@router.post("/reminders/unsubscribe/{learner_id}")
+async def unsubscribe_reminders(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Learner profile not found.")
+    profile.reminder_enabled = False
+    await db.commit()
+    return {"learner_id": learner_id, "reminder_enabled": False}
+
+
+@router.get("/reminders/logs/{learner_id}")
+async def list_reminder_logs(learner_id: UUID, db: AsyncSession = Depends(get_db), limit: int = 50):
+    rows = (
+        await db.execute(
+            select(ReminderDeliveryLog)
+            .where(ReminderDeliveryLog.learner_id == learner_id)
+            .order_by(ReminderDeliveryLog.created_at.desc())
+            .limit(min(max(1, int(limit)), 200))
+        )
+    ).scalars().all()
+    return {
+        "learner_id": learner_id,
+        "items": [
+            {
+                "email": row.email,
+                "mode": row.mode,
+                "reason": row.reason,
+                "status": row.status,
+                "details": row.details if isinstance(row.details, dict) else {},
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            }
+            for row in rows
+        ],
+    }
+
+
 @router.get("/profile-history/{learner_id}")
 async def get_profile_history(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
@@ -1840,6 +2194,19 @@ async def get_evaluation_analytics(learner_id: UUID, db: AsyncSession = Depends(
         raise HTTPException(status_code=404, detail="Learner not found.")
     payload = await _build_evaluation_analytics(db, learner_id)
     return EvaluationAnalyticsResponse(learner_id=learner_id, **payload)
+
+
+@router.get("/comparative-analytics/{learner_id}", response_model=ComparativeAnalyticsResponse)
+async def get_comparative_analytics(learner_id: UUID, db: AsyncSession = Depends(get_db)):
+    learner = (await db.execute(select(Learner).where(Learner.id == learner_id))).scalar_one_or_none()
+    if learner is None:
+        raise HTTPException(status_code=404, detail="Learner not found.")
+    payload = await _build_comparative_analytics(db, learner_id)
+    return ComparativeAnalyticsResponse(
+        learner_id=learner_id,
+        generated_at=datetime.now(timezone.utc),
+        **payload,
+    )
 
 
 @router.get("/learning-metrics/{learner_id}", response_model=StudentLearningMetricsResponse)
@@ -1951,6 +2318,10 @@ async def get_daily_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     ).scalar_one_or_none()
     if plan is None:
         raise HTTPException(status_code=404, detail="No weekly plan found for learner.")
+    profile = (
+        await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
+    ).scalar_one_or_none()
+    onboarding_date = _resolve_onboarding_date(profile) if profile else canonical_today()
     tasks = (
         await db.execute(
             select(Task)
@@ -1959,10 +2330,14 @@ async def get_daily_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         )
     ).scalars().all()
     chapter = tasks[0].chapter if tasks else None
+    week_start, week_end = week_bounds_from_onboarding(onboarding_date, plan.current_week)
     return DailyPlanResponse(
         learner_id=learner_id,
         week_number=plan.current_week,
         chapter=chapter,
+        week_label=format_week_label(plan.current_week, week_start, week_end),
+        week_start_date=week_start.isoformat(),
+        week_end_date=week_end.isoformat(),
         is_committed_week=True,
         forecast_read_only=True,
         daily_breakdown=_daily_breakdown_from_tasks(tasks, plan.current_week),

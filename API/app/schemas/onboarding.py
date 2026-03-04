@@ -12,6 +12,7 @@ QuestionType = Literal["mcq", "fill_blank", "true_false"]
 
 class OnboardingStartRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    student_email: str = Field(min_length=5, max_length=255, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     grade_level: str = Field(default="10", max_length=32)
     exam_in_months: int = Field(default=10, ge=1, le=18)
     selected_timeline_weeks: int = Field(default=14, ge=14, le=28)
@@ -57,6 +58,9 @@ class ChapterPlan(BaseModel):
     week: int
     chapter: str
     focus: str
+    week_start_date: str | None = None
+    week_end_date: str | None = None
+    week_label: str | None = None
 
 
 class TaskItem(BaseModel):
@@ -131,6 +135,13 @@ class WeeklyPlanResponse(BaseModel):
     current_week_tasks: list[TaskItem] = Field(default_factory=list)
     current_week_daily_breakdown: list[dict] = Field(default_factory=list)
     planning_mode: dict = Field(default_factory=dict)
+    onboarding_date: str | None = None
+    timeline_timezone: str = "UTC"
+    current_week_label: str | None = None
+    timeline_visualization: list[dict] = Field(default_factory=list)
+    completion_estimate_date: str | None = None
+    completion_estimate_date_active_pace: str | None = None
+    completion_estimate_weeks_active_pace: int | None = None
     completion_estimate_weeks: int | None = None
     completion_estimate_vs_goal_weeks: int | None = None
 
@@ -232,6 +243,9 @@ class DailyPlanResponse(BaseModel):
     learner_id: UUID
     week_number: int
     chapter: str | None = None
+    week_label: str | None = None
+    week_start_date: str | None = None
+    week_end_date: str | None = None
     is_committed_week: bool
     forecast_read_only: bool
     daily_breakdown: list[dict] = Field(default_factory=list)
@@ -265,3 +279,14 @@ class ForecastHistoryItem(BaseModel):
 class ForecastHistoryResponse(BaseModel):
     learner_id: UUID
     history: list[ForecastHistoryItem]
+
+
+class ComparativeAnalyticsResponse(BaseModel):
+    learner_id: UUID
+    cohort_size: int
+    anonymized: bool
+    generated_at: datetime
+    individual: dict
+    comparative: dict
+    hooks: dict = Field(default_factory=dict)
+    performance: dict = Field(default_factory=dict)

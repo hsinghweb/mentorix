@@ -488,6 +488,59 @@ body {
 }
 .confidence-score { font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; }
 
+/* Comparative Analytics */
+.comparative-summary {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 12px;
+}
+.comparative-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+}
+.comparative-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+}
+.comparative-label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 4px;
+}
+.comparative-value {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--accent-light);
+}
+.comparative-signals {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 10px;
+}
+.signal-chip {
+    border-radius: 999px;
+    padding: 6px 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: inline-block;
+}
+.signal-chip.risk {
+    background: var(--danger-light);
+    color: var(--danger);
+}
+.signal-chip.ok {
+    background: var(--success-light);
+    color: var(--success);
+}
+
 /* Plan Timeline */
 .plan-timeline { display: flex; flex-direction: column; gap: 6px; }
 .plan-week {

@@ -59,136 +59,136 @@
 
 ## 3. MCP Server-Client Adoption [P1]
 
-- [ ] Audit model/tool usage points for direct calls and hardcoded context handling.
-- [ ] Identify MCP-eligible components and migration scope.
-- [ ] Implement MCP server modules for context/tool exposure.
-- [ ] Implement MCP client request flow for structured model interactions.
-- [ ] Standardize request/response contract and error semantics.
-- [ ] Remove redundant non-MCP direct model-call paths where migrated.
-- [ ] Add observability for MCP calls (latency, failures, fallback usage).
+- [x] Audit model/tool usage points for direct calls and hardcoded context handling.
+- [x] Identify MCP-eligible components and migration scope.
+- [x] Implement MCP server modules for context/tool exposure.
+- [x] Implement MCP client request flow for structured model interactions.
+- [x] Standardize request/response contract and error semantics.
+- [x] Remove redundant non-MCP direct model-call paths where migrated.
+- [x] Add observability for MCP calls (latency, failures, fallback usage).
 
 ### Acceptance
-- [ ] Migrated paths route through MCP contracts.
-- [ ] Equivalent or better behavior vs pre-migration paths.
-- [ ] Extensibility improved (new tools/context providers are pluggable).
+- [x] Migrated paths route through MCP contracts.
+- [x] Equivalent or better behavior vs pre-migration paths.
+- [x] Extensibility improved (new tools/context providers are pluggable).
 
 ---
 
 ## 4. CLAUDE Skills Modularity Integration [P1]
 
-- [ ] Identify reusable reasoning/tool patterns suitable as CLAUDE skills.
-- [ ] Convert patterns into modular CLAUDE skill units.
-- [ ] Define clear input/output contracts for each skill.
-- [ ] Ensure each skill is independently testable.
-- [ ] Refactor dependent code to consume skills instead of duplicated logic.
-- [ ] Reduce coupling and improve readability/changeability across modules.
-- [ ] Confirm compatibility with latest supported CLAUDE skill architecture.
+- [x] Identify reusable reasoning/tool patterns suitable as CLAUDE skills.
+- [x] Convert patterns into modular CLAUDE skill units.
+- [x] Define clear input/output contracts for each skill.
+- [x] Ensure each skill is independently testable.
+- [x] Refactor dependent code to consume skills instead of duplicated logic.
+- [x] Reduce coupling and improve readability/changeability across modules.
+- [x] Confirm compatibility with latest supported CLAUDE skill architecture.
 
 ### Acceptance
-- [ ] Reused logic is centralized into skills with tests.
-- [ ] Cross-agent reuse is demonstrable in production code paths.
+- [x] Reused logic is centralized into skills with tests.
+- [x] Cross-agent reuse is demonstrable in production code paths.
 
 ---
 
 ## 5. Calendar-Based Week Tracking (Real Date Mapping) [P1]
 
-- [ ] Capture onboarding date as canonical learner timeline start.
-- [ ] Implement week-date computation (start/end) from onboarding date.
-- [ ] Make week mapping timezone-safe and deterministic.
-- [ ] Return date-mapped week labels in dashboard/plan APIs.
-- [ ] Support UI display format, e.g. `Week 1 (Mar 3 - Mar 9, 2026)`.
-- [ ] Add timeline visualization data payload (backend-ready for frontend rendering).
-- [ ] Add completion date estimation based on active pace.
+- [x] Capture onboarding date as canonical learner timeline start.
+- [x] Implement week-date computation (start/end) from onboarding date.
+- [x] Make week mapping timezone-safe and deterministic.
+- [x] Return date-mapped week labels in dashboard/plan APIs.
+- [x] Support UI display format, e.g. `Week 1 (Mar 3 - Mar 9, 2026)`.
+- [x] Add timeline visualization data payload (backend-ready for frontend rendering).
+- [x] Add completion date estimation based on active pace.
 
 ### Acceptance
-- [ ] Numeric week and calendar range are both available everywhere required.
-- [ ] Plan/progress views align to real calendar dates correctly.
+- [x] Numeric week and calendar range are both available everywhere required.
+- [x] Plan/progress views align to real calendar dates correctly.
 
 ---
 
 ## 6. Comparative Student Performance Analytics (Backend) [P1]
 
-- [ ] Define analytics schema and pipeline for individual + cohort metrics.
-- [ ] Implement individual analytics:
-  - [ ] Topic mastery score
-  - [ ] Time spent per topic
-  - [ ] Weak vs strong areas
-  - [ ] Learning velocity
-  - [ ] Completion rate
-- [ ] Implement comparative analytics:
-  - [ ] Percentile ranking
-  - [ ] Average vs cohort
-  - [ ] Similar learner cluster comparison
-  - [ ] Improvement trend over time
-- [ ] Implement anonymized aggregation and secure data handling controls.
-- [ ] Expose dashboard-ready structured analytics outputs.
-- [ ] Add scalability checks for analytics computation path.
-- [ ] Add hooks for future adaptive difficulty + early warning signals.
+- [x] Define analytics schema and pipeline for individual + cohort metrics.
+- [x] Implement individual analytics:
+  - [x] Topic mastery score
+  - [x] Time spent per topic
+  - [x] Weak vs strong areas
+  - [x] Learning velocity
+  - [x] Completion rate
+- [x] Implement comparative analytics:
+  - [x] Percentile ranking
+  - [x] Average vs cohort
+  - [x] Similar learner cluster comparison
+  - [x] Improvement trend over time
+- [x] Implement anonymized aggregation and secure data handling controls.
+- [x] Expose dashboard-ready structured analytics outputs.
+- [x] Add scalability checks for analytics computation path.
+- [x] Add hooks for future adaptive difficulty + early warning signals.
 
 ### Acceptance
-- [ ] API exposes stable analytics payloads for individual and comparative views.
-- [ ] Cohort metrics are anonymized and privacy-safe.
-- [ ] Computation remains performant at expected scale.
+- [x] API exposes stable analytics payloads for individual and comparative views.
+- [x] Cohort metrics are anonymized and privacy-safe.
+- [x] Computation remains performant at expected scale.
 
 ---
 
 ## 7. Student Email Capture and Automated Weekly Reminders [P1]
 
-- [ ] Add required `student_email` field to onboarding flow.
-- [ ] Validate email format and block duplicate email registrations.
-- [ ] Persist email reminder profile fields:
-  - [ ] `email`
-  - [ ] `onboarding_date`
-  - [ ] `current_week`
-  - [ ] `progress_status` / `progress_percentage`
-  - [ ] `last_reminder_sent_at`
-  - [ ] `reminder_enabled`
-- [ ] Implement reminder eligibility checks:
-  - [ ] week incomplete
-  - [ ] inactivity window exceeded
-  - [ ] deadline proximity
-- [ ] Implement static reminder mode:
-  - [ ] every 3 days when week incomplete
-  - [ ] 1 day before week deadline
-- [ ] Implement dynamic reminder mode (recommended):
-  - [ ] progress below threshold at mid-week
-  - [ ] no login/activity in last 3 days
-  - [ ] below cohort average
-  - [ ] repeated weak performance signal
-- [ ] Build email service module (`services/email_service.py`) with:
-  - [ ] Gmail SMTP/Gmail API support
-  - [ ] structured HTML templates
-  - [ ] retry and failure logging
-  - [ ] delivery audit logs
-- [ ] Add scheduler/worker for daily reminder scans and dispatch.
-- [ ] Add environment configuration support:
-  - [ ] `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM`
-  - [ ] optional Gmail API credentials
-- [ ] Add reminder safety controls:
-  - [ ] unsubscribe/disable reminders
-  - [ ] anti-spam rate limit
-  - [ ] secure handling of email data and secrets
+- [x] Add required `student_email` field to onboarding flow.
+- [x] Validate email format and block duplicate email registrations.
+- [x] Persist email reminder profile fields:
+  - [x] `email`
+  - [x] `onboarding_date`
+  - [x] `current_week`
+  - [x] `progress_status` / `progress_percentage`
+  - [x] `last_reminder_sent_at`
+  - [x] `reminder_enabled`
+- [x] Implement reminder eligibility checks:
+  - [x] week incomplete
+  - [x] inactivity window exceeded
+  - [x] deadline proximity
+- [x] Implement static reminder mode:
+  - [x] every 3 days when week incomplete
+  - [x] 1 day before week deadline
+- [x] Implement dynamic reminder mode (recommended):
+  - [x] progress below threshold at mid-week
+  - [x] no login/activity in last 3 days
+  - [x] below cohort average
+  - [x] repeated weak performance signal
+- [x] Build email service module (`services/email_service.py`) with:
+  - [x] Gmail SMTP/Gmail API support
+  - [x] structured HTML templates
+  - [x] retry and failure logging
+  - [x] delivery audit logs
+- [x] Add scheduler/worker for daily reminder scans and dispatch.
+- [x] Add environment configuration support:
+  - [x] `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_FROM`
+  - [x] optional Gmail API credentials
+- [x] Add reminder safety controls:
+  - [x] unsubscribe/disable reminders
+  - [x] anti-spam rate limit
+  - [x] secure handling of email data and secrets
 
 ### Acceptance
-- [ ] Onboarding captures and stores valid student email reliably.
-- [ ] Eligible students receive reminders with correct week/progress context.
-- [ ] Reminder sends are traceable, rate-limited, and resilient to transient failures.
+- [x] Onboarding captures and stores valid student email reliably.
+- [x] Eligible students receive reminders with correct week/progress context.
+- [x] Reminder sends are traceable, rate-limited, and resilient to transient failures.
 
 ---
 
 ## 8. Verification and Rollout [P2]
 
-- [ ] Add architecture conformance tests (agent boundaries + orchestration).
-- [ ] Add MCP contract tests and fallback behavior tests.
-- [ ] Add CLAD skill unit tests and integration tests.
-- [ ] Add calendar mapping edge-case tests (timezone/date boundary).
-- [ ] Add analytics validation tests (correctness + anonymization).
-- [ ] Prepare migration notes and rollback strategy for architecture changes.
-- [ ] Update technical docs for new architecture/runtime contracts.
+- [x] Add architecture conformance tests (agent boundaries + orchestration).
+- [x] Add MCP contract tests and fallback behavior tests.
+- [x] Add CLAD skill unit tests and integration tests.
+- [x] Add calendar mapping edge-case tests (timezone/date boundary).
+- [x] Add analytics validation tests (correctness + anonymization).
+- [x] Prepare migration notes and rollback strategy for architecture changes.
+- [x] Update technical docs for new architecture/runtime contracts.
 
 ### Acceptance
-- [ ] Test suite passes for all new architecture layers.
-- [ ] Rollout plan includes migration and rollback safety.
+- [x] Test suite passes for all new architecture layers.
+- [x] Rollout plan includes migration and rollback safety.
 
 ---
 
@@ -197,7 +197,7 @@
 1. P0.1 Session 17 compliance baseline and refactor plan  
 2. P0.2 Session 19 concept gap closure  
 3. P1.3 MCP migration for highest-value paths  
-4. P1.4 CLAD skill extraction and reuse  
+4. P1.4 CLAUDE skill extraction and reuse  
 5. P1.5 Calendar week-date mapping  
 6. P1.6 Comparative analytics backend  
 7. P1.7 Student email capture and reminder automation  
