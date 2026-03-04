@@ -197,7 +197,7 @@
 1. P0.1 Session 17 compliance baseline and refactor plan  
 2. P0.2 Session 19 concept gap closure  
 3. P1.3 MCP migration for highest-value paths  
-4. P1.4 CLAD skill extraction and reuse  
+4. P1.4 CLAUDE skill extraction and reuse  
 5. P1.5 Calendar week-date mapping  
 6. P1.6 Comparative analytics backend  
 7. P1.7 Student email capture and reminder automation  
