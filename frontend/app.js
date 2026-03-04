@@ -353,6 +353,7 @@ async function handleSignup(e) {
         password: $("signup-password").value,
         name: $("signup-name").value.trim(),
         date_of_birth: $("signup-dob").value,
+        student_email: $("signup-email").value.trim(),
         selected_timeline_weeks: parseInt($("signup-weeks").value),
         math_9_percent: parseInt($("signup-math9").value),
       },
@@ -569,7 +570,7 @@ function renderDashboard(data) {
         </div>
         <div class="profile-stat">
             <div class="stat-value">W${data.current_week}</div>
-            <div class="stat-label">Current Week</div>
+            <div class="stat-label">${data.current_week_label || "Current Week"}</div>
         </div>
         <div class="profile-stat">
             <div class="stat-value">${data.overall_completion_percent.toFixed(0)}%</div>
@@ -590,7 +591,7 @@ function renderDashboard(data) {
     `;
 
   // Current week tasks
-  renderTasks(data.current_week_tasks, data.current_week);
+  renderTasks(data.current_week_tasks, data.current_week, data.current_week_label);
 
   // Completion status
   $("completion-bar").querySelector("span").style.width = `${data.overall_completion_percent}%`;
@@ -630,9 +631,11 @@ function renderDashboardFallback() {
     `;
 }
 
-function renderTasks(tasks, weekNumber) {
+function renderTasks(tasks, weekNumber, weekLabel = null) {
   const container = $("current-tasks");
-  $("section-tasks").querySelector(".section-title").textContent = `📋 Week ${weekNumber} Tasks`;
+  $("section-tasks").querySelector(".section-title").textContent = weekLabel
+    ? `📋 ${weekLabel} Tasks`
+    : `📋 Week ${weekNumber} Tasks`;
 
   if (!tasks || tasks.length === 0) {
     container.innerHTML = `<div class="loading-overlay"><p>No tasks yet. Complete onboarding to get started!</p></div>`;
@@ -850,7 +853,7 @@ function renderPlan(plan, currentWeek) {
             <div class="plan-week ${statusCls}">
                 <div class="plan-week-num">W${p.week}</div>
                 <div class="plan-week-info">
-                    <div class="plan-week-chapter">${p.chapter}</div>
+                    <div class="plan-week-chapter">${p.week_label || p.chapter}</div>
                     <div class="plan-week-focus">${p.focus || ""}</div>
                 </div>
             </div>

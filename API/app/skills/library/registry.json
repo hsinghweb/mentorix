@@ -1,1 +1,26 @@
-{}
+{
+  "agent-manager-skill": {
+    "name": "agent-manager-skill",
+    "path": "/workspace/API/app/skills/library/agent-manager-skill/SKILL.md",
+    "kind": "markdown",
+    "version": "1.0.0",
+    "description": "Manage local agent processes and logs using CLI recipes",
+    "intent_triggers": [
+      "restart agent",
+      "kill agent",
+      "list agents"
+    ]
+  },
+  "learning-plan-booster": {
+    "name": "learning-plan-booster",
+    "path": "/workspace/API/app/skills/library/learning_plan_booster/skill.py",
+    "kind": "python",
+    "version": "1.0.0",
+    "description": "Adds explicit pacing and revision constraints to autonomous planning prompts.",
+    "intent_triggers": [
+      "revise plan",
+      "boost plan",
+      "improve learning plan"
+    ]
+  }
+}

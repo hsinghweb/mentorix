@@ -11,7 +11,9 @@ from pydantic import BaseModel
 from app.core.event_bus import event_bus
 from app.core.notification_engine import notification_engine
 from app.core.settings import settings
+from app.memory.database import SessionLocal
 from app.runtime.run_manager import run_manager
+from app.services.reminder_service import dispatch_due_reminders
 from app.skills.manager import skill_manager
 
 
@@ -35,6 +37,7 @@ class SchedulerService:
         self.jobs: dict[str, ScheduledJob] = {}
         self._task: asyncio.Task | None = None
         self._running = False
+        self._next_reminder_scan_at: datetime | None = None
 
     def load_jobs(self) -> None:
         self.base_dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +119,19 @@ class SchedulerService:
     async def _tick(self) -> None:
         while self._running:
             now = datetime.utcnow()
+            if settings.reminder_dispatch_enabled:
+                if self._next_reminder_scan_at is None or now >= self._next_reminder_scan_at:
+                    try:
+                        async with SessionLocal() as session:
+                            await dispatch_due_reminders(
+                                db=session,
+                                reminder_rate_limit_hours=max(1, int(settings.reminder_rate_limit_hours)),
+                            )
+                    except Exception:
+                        pass
+                    self._next_reminder_scan_at = now + timedelta(
+                        seconds=max(300, int(settings.reminder_scan_interval_seconds))
+                    )
             for job in list(self.jobs.values()):
                 if not job.enabled:
                     continue

@@ -62,6 +62,15 @@ class Settings(BaseSettings):
     reading_min_seconds: int = 60
     reading_max_seconds: int = 300
     reading_estimate_wpm: int = 150
+    email_host: str = ""
+    email_port: int = 587
+    email_user: str = ""
+    email_pass: str = ""
+    email_from: str = ""
+    gmail_api_credentials_json: str = ""
+    reminder_dispatch_enabled: bool = False
+    reminder_scan_interval_seconds: int = 86400
+    reminder_rate_limit_hours: int = 24
 
     model_config = SettingsConfigDict(
         env_file=(".env", "CONFIG/local.env"),

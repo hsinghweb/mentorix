@@ -52,6 +52,12 @@ class LearnerProfile(Base):
     recommended_timeline_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     current_forecast_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     timeline_delta_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    onboarding_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    student_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    progress_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    progress_percentage: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    last_reminder_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reminder_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     last_updated: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -433,6 +439,25 @@ class PolicyViolation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ReminderDeliveryLog(Base):
+    __tablename__ = "reminder_delivery_logs"
+    __table_args__ = (
+        Index("idx_reminder_logs_learner_created", "learner_id", "created_at"),
+        Index("idx_reminder_logs_status", "status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    learner_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("learners.id", ondelete="CASCADE"), nullable=False
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
+    mode: Mapped[str] = mapped_column(String(24), nullable=False, default="static")
+    reason: Mapped[str] = mapped_column(String(64), nullable=False, default="week_incomplete")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="sent")
+    details: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class RevisionPolicyState(Base):
     __tablename__ = "revision_policy_state"
     __table_args__ = (
@@ -500,4 +525,3 @@ class AgentDecision(Base):
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     reasoning: Mapped[str | None] = mapped_column(Text, nullable=True)  # LLM reasoning trace
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-

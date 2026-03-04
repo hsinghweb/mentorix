@@ -28,6 +28,9 @@ from app.orchestrator.states import SessionState
 from app.orchestrator.agent_compliance import AgentRole, AgentCoordinator
 from app.rag.embeddings import embed_text
 from app.rag.retriever import retrieve_concept_chunks_with_meta
+from app.mcp.client import execute_mcp
+from app.mcp.contracts import MCPRequest
+from app.mcp.server import mcp_server
 from app.schemas.session import (
     DashboardResponse,
     StartSessionRequest,
@@ -113,6 +116,7 @@ agent_coordinator.register(
 )
 _degraded_session_cache: dict[str, dict[str, str]] = {}
 _idempotency_response_cache: dict[str, dict] = {}
+_mcp_initialized = False
 
 
 DEFAULT_MASTERY = {
@@ -140,13 +144,45 @@ async def _invoke_agent(
     payload: dict,
 ) -> dict:
     """Role/capability-compliant inter-agent dispatch."""
-    return await agent_coordinator.dispatch(
-        run_id=run_id,
-        sender_role=sender_role,
-        target_agent=target_agent,
-        capability=capability,
-        payload=payload,
+    global _mcp_initialized
+    if not _mcp_initialized:
+        async def _dispatch_provider(request: MCPRequest) -> dict:
+            ctx = request.context or {}
+            return await agent_coordinator.dispatch(
+                run_id=str(ctx.get("run_id", run_id)),
+                sender_role=ctx.get("sender_role", sender_role),
+                target_agent=str(ctx.get("target_agent", target_agent)),
+                capability=str(ctx.get("capability", capability)),
+                payload=request.payload or {},
+            )
+        mcp_server.register("agent.dispatch", _dispatch_provider)
+        _mcp_initialized = True
+
+    async def _fallback() -> dict:
+        return await agent_coordinator.dispatch(
+            run_id=run_id,
+            sender_role=sender_role,
+            target_agent=target_agent,
+            capability=capability,
+            payload=payload,
+        )
+
+    mcp_response = await execute_mcp(
+        MCPRequest(
+            operation="agent.dispatch",
+            payload=payload,
+            context={
+                "run_id": run_id,
+                "sender_role": sender_role,
+                "target_agent": target_agent,
+                "capability": capability,
+            },
+        ),
+        fallback=_fallback,
     )
+    if not mcp_response.ok:
+        raise HTTPException(status_code=500, detail=f"Agent dispatch failed: {mcp_response.error}")
+    return mcp_response.result
 
 
 def _apply_adaptation_shift_caps(*, concept: str, current_difficulty: int, adaptation: dict) -> dict:
