@@ -10,13 +10,8 @@ from app.api.health import router as health_router
 from app.api.grounding import router as grounding_router
 from app.api.learning import router as learning_router
 from app.api.onboarding import router as onboarding_router
-from app.api.events import router as events_router
-from app.api.memory import router as memory_router
 from app.api.metrics import router as metrics_router
-from app.api.notifications import router as notifications_router
-from app.api.runs import router as runs_router
 from app.api.scheduler import router as scheduler_router
-from app.api.sessions import router as sessions_router
 from app.autonomy.scheduler import scheduler_service
 from app.core.auth import api_key_auth_middleware
 from app.core.bootstrap import initialize_database
@@ -41,13 +36,8 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Mentorix API", version="0.1.0")
 app.include_router(health_router)
 app.include_router(auth_router)
-app.include_router(sessions_router)
-app.include_router(runs_router)
-app.include_router(events_router)
 app.include_router(scheduler_router)
-app.include_router(memory_router)
 app.include_router(metrics_router)
-app.include_router(notifications_router)
 app.include_router(grounding_router)
 app.include_router(admin_router)
 app.include_router(onboarding_router)

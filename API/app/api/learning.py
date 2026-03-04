@@ -141,13 +141,6 @@ class SubsectionContentRequest(BaseModel):
     task_id: UUID | None = None
 
 
-class PracticeGenerateRequest(BaseModel):
-    learner_id: UUID
-    chapter_number: int = Field(ge=1, le=14)
-    section_id: str
-    regenerate: bool = False
-
-
 class CompleteReadingResponse(BaseModel):
     task_id: str
     accepted: bool
@@ -2111,20 +2104,6 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
     }
 
 
-@router.post("/practice/generate")
-async def generate_practice(payload: PracticeGenerateRequest, db: AsyncSession = Depends(get_db)):
-    """Generate practice set for a subsection (alias over section test generation)."""
-    section_payload = SubsectionContentRequest(
-        learner_id=payload.learner_id,
-        chapter_number=payload.chapter_number,
-        section_id=payload.section_id,
-        regenerate=payload.regenerate,
-    )
-    result = await generate_section_test(section_payload, db)
-    if isinstance(result, dict):
-        result["practice"] = True
-    return result
-
 # 5. Check if week is complete and advance
 @router.post("/week/advance", response_model=WeekCompleteResponse)
 async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
@@ -2544,7 +2523,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
 
 
 # 7. Plan history
-@router.get("/plan/history/{learner_id}")
+@router.get("/plan-history/{learner_id}")
 async def get_plan_history(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     """Return all plan versions for a learner, newest first."""
     versions = (await db.execute(
@@ -2567,13 +2546,6 @@ async def get_plan_history(learner_id: UUID, db: AsyncSession = Depends(get_db))
             for v in versions
         ],
     }
-
-
-@router.get("/plan-history/{learner_id}")
-async def get_plan_history_alias(learner_id: UUID, db: AsyncSession = Depends(get_db)):
-    """Alias endpoint for plan history."""
-    return await get_plan_history(learner_id, db)
-
 
 @router.get("/confidence-trend/{learner_id}")
 async def get_confidence_trend(learner_id: UUID, db: AsyncSession = Depends(get_db)):
