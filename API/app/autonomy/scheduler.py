@@ -126,6 +126,9 @@ class SchedulerService:
                             await dispatch_due_reminders(
                                 db=session,
                                 reminder_rate_limit_hours=max(1, int(settings.reminder_rate_limit_hours)),
+                                max_attempts=max(1, int(settings.reminder_dispatch_max_attempts)),
+                                retry_backoff_seconds=max(0, int(settings.reminder_dispatch_retry_backoff_seconds)),
+                                global_cooldown_seconds=max(0, int(settings.reminder_dispatch_global_cooldown_seconds)),
                             )
                     except Exception:
                         pass

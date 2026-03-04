@@ -73,3 +73,12 @@ Student UI currently calls:
 
 - Deleted only routes with direct evidence of replacement and zero student-UI calls.
 - Deferred anything with uncertain indirect/runtime dependency.
+
+## 6) Regression Validation Status
+
+- Fast profile:
+  - `scripts/test_fast.ps1` -> passed
+- Full profile:
+  - `scripts/test_full.ps1` -> passed (`25 passed`)
+- UI smoke:
+  - `scripts/test_mvp.ps1` -> passed

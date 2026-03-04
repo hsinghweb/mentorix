@@ -78,6 +78,41 @@ class EmailService:
             "html_size": len(html),
         }
 
+    def diagnostics(self) -> dict[str, Any]:
+        smtp_missing = []
+        if not self.host:
+            smtp_missing.append("EMAIL_HOST")
+        if not self.user:
+            smtp_missing.append("EMAIL_USER")
+        if not self.password:
+            smtp_missing.append("EMAIL_PASS")
+        if not self.sender:
+            smtp_missing.append("EMAIL_FROM")
+
+        gmail_ready = False
+        gmail_error = None
+        if self.gmail_api_credentials_json:
+            try:
+                parsed = json.loads(self.gmail_api_credentials_json)
+                gmail_ready = isinstance(parsed, dict) and bool(parsed)
+            except Exception as exc:
+                gmail_error = str(exc)
+
+        return {
+            "smtp": {
+                "ready": len(smtp_missing) == 0,
+                "host": self.host or None,
+                "port": self.port,
+                "from": self.sender or None,
+                "missing": smtp_missing,
+            },
+            "gmail_api": {
+                "ready": gmail_ready,
+                "configured": bool(self.gmail_api_credentials_json),
+                "error": gmail_error,
+            },
+        }
+
 
 email_service = EmailService()
 

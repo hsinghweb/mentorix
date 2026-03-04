@@ -71,6 +71,9 @@ class Settings(BaseSettings):
     reminder_dispatch_enabled: bool = False
     reminder_scan_interval_seconds: int = 86400
     reminder_rate_limit_hours: int = 24
+    reminder_dispatch_max_attempts: int = 2
+    reminder_dispatch_retry_backoff_seconds: int = 2
+    reminder_dispatch_global_cooldown_seconds: int = 60
 
     model_config = SettingsConfigDict(
         env_file=(".env", "CONFIG/local.env"),

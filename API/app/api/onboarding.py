@@ -23,6 +23,8 @@ from app.core.timeline import (
 )
 from app.memory.cache import redis_client
 from app.memory.database import get_db
+from app.mcp.client import execute_mcp
+from app.mcp.contracts import MCPRequest
 from app.models.entities import (
     ChapterProgression,
     EmbeddingChunk,
@@ -45,6 +47,7 @@ from app.models.entities import (
 from app.agents.diagnostic_mcq import generate_diagnostic_mcq
 from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name, get_syllabus_for_api
 from app.services.reminder_service import dispatch_due_reminders, evaluate_reminder_eligibility
+from app.services.email_service import email_service
 from app.schemas.onboarding import (
     ChapterPlan,
     ChapterAdvanceRequest,
@@ -207,6 +210,34 @@ def _recommend_timeline_weeks(selected_timeline_weeks: int, score: float) -> tup
         return recommended, "Foundation needs reinforcement. A longer timeline is recommended for confidence."
     recommended = _clamp_weeks(selected + 6)
     return recommended, "Strongly recommended to extend timeline and focus on fundamentals first."
+
+
+async def _recommend_timeline_via_mcp(selected_timeline_weeks: int, score: float) -> tuple[int, str]:
+    async def _fallback() -> dict:
+        recommended, note = _recommend_timeline_weeks(selected_timeline_weeks, score)
+        return {
+            "recommended_timeline_weeks": recommended,
+            "timeline_recommendation_note": note,
+        }
+
+    mcp_response = await execute_mcp(
+        MCPRequest(
+            operation="onboarding.recommend_timeline",
+            payload={
+                "selected_timeline_weeks": int(selected_timeline_weeks),
+                "score": float(score),
+            },
+        ),
+        fallback=_fallback,
+    )
+    if not mcp_response.ok:
+        return _recommend_timeline_weeks(selected_timeline_weeks, score)
+    result = mcp_response.result if isinstance(mcp_response.result, dict) else {}
+    recommended = _clamp_weeks(int(result.get("recommended_timeline_weeks") or selected_timeline_weeks))
+    note = str(result.get("timeline_recommendation_note") or "")
+    if not note:
+        _, note = _recommend_timeline_weeks(selected_timeline_weeks, score)
+    return recommended, note
 
 
 def _pacing_status(delta_weeks: int) -> str:
@@ -1162,7 +1193,10 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     )
 
     math_9_percent = float(profile.math_9_percent or 0)
-    recommended_timeline_weeks, recommendation_note = _recommend_timeline_weeks(selected_timeline_weeks, score)
+    recommended_timeline_weeks, recommendation_note = await _recommend_timeline_via_mcp(
+        selected_timeline_weeks,
+        score,
+    )
     current_forecast_weeks = recommended_timeline_weeks
     timeline_delta_weeks = current_forecast_weeks - selected_timeline_weeks
     rough_plan, week_1 = _build_rough_plan(chapter_scores, target_weeks=current_forecast_weeks)
@@ -2066,7 +2100,36 @@ async def run_reminder_dispatch(db: AsyncSession = Depends(get_db)):
     return await dispatch_due_reminders(
         db=db,
         reminder_rate_limit_hours=max(1, int(settings.reminder_rate_limit_hours)),
+        max_attempts=max(1, int(settings.reminder_dispatch_max_attempts)),
+        retry_backoff_seconds=max(0, int(settings.reminder_dispatch_retry_backoff_seconds)),
+        global_cooldown_seconds=max(0, int(settings.reminder_dispatch_global_cooldown_seconds)),
     )
+
+
+@router.get("/reminders/diagnostics")
+async def reminder_diagnostics():
+    email_diag = email_service.diagnostics()
+    reminder_runtime_ready = (
+        bool(settings.reminder_dispatch_enabled)
+        and (
+            bool(email_diag.get("smtp", {}).get("ready"))
+            or bool(email_diag.get("gmail_api", {}).get("ready"))
+        )
+    )
+    return {
+        "scheduler_enabled": bool(settings.scheduler_enabled),
+        "reminder_dispatch_enabled": bool(settings.reminder_dispatch_enabled),
+        "runtime_ready": reminder_runtime_ready,
+        "dispatch_policy": {
+            "scan_interval_seconds": int(settings.reminder_scan_interval_seconds),
+            "rate_limit_hours": int(settings.reminder_rate_limit_hours),
+            "max_attempts": int(settings.reminder_dispatch_max_attempts),
+            "retry_backoff_seconds": int(settings.reminder_dispatch_retry_backoff_seconds),
+            "global_cooldown_seconds": int(settings.reminder_dispatch_global_cooldown_seconds),
+        },
+        "email": email_diag,
+        "configuration_precedence": [".env", "CONFIG/local.env"],
+    }
 
 
 @router.post("/reminders/unsubscribe/{learner_id}")

@@ -19,7 +19,12 @@ async def execute_mcp(
     try:
         result = await mcp_server.execute(request)
         latency_ms = (time.perf_counter() - start) * 1000.0
-        record_mcp_call(latency_ms=latency_ms, failed=False, fallback_used=False)
+        record_mcp_call(
+            operation=request.operation,
+            latency_ms=latency_ms,
+            failed=False,
+            fallback_used=False,
+        )
         return MCPResponse(
             operation=request.operation,
             ok=True,
@@ -30,7 +35,12 @@ async def execute_mcp(
         failed = True
         if fallback is None:
             latency_ms = (time.perf_counter() - start) * 1000.0
-            record_mcp_call(latency_ms=latency_ms, failed=True, fallback_used=False)
+            record_mcp_call(
+                operation=request.operation,
+                latency_ms=latency_ms,
+                failed=True,
+                fallback_used=False,
+            )
             return MCPResponse(
                 operation=request.operation,
                 ok=False,
@@ -41,7 +51,12 @@ async def execute_mcp(
             fallback_used = True
             result = await fallback()
             latency_ms = (time.perf_counter() - start) * 1000.0
-            record_mcp_call(latency_ms=latency_ms, failed=failed, fallback_used=fallback_used)
+            record_mcp_call(
+                operation=request.operation,
+                latency_ms=latency_ms,
+                failed=failed,
+                fallback_used=fallback_used,
+            )
             return MCPResponse(
                 operation=request.operation,
                 ok=True,
@@ -52,7 +67,12 @@ async def execute_mcp(
             )
         except Exception as fallback_exc:
             latency_ms = (time.perf_counter() - start) * 1000.0
-            record_mcp_call(latency_ms=latency_ms, failed=True, fallback_used=fallback_used)
+            record_mcp_call(
+                operation=request.operation,
+                latency_ms=latency_ms,
+                failed=True,
+                fallback_used=fallback_used,
+            )
             return MCPResponse(
                 operation=request.operation,
                 ok=False,

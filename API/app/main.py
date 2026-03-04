@@ -25,6 +25,7 @@ from app.core.errors import (
 from app.core.logging import configure_logging
 from app.core.settings import settings
 from app.memory.database import SessionLocal, engine
+from app.mcp.providers import register_default_mcp_providers
 from app.rag.grounding_ingest import ensure_grounding_ready, run_grounding_ingestion
 from app.runtime.persistence import snapshot_persistence
 from fastapi import HTTPException
@@ -59,6 +60,7 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 
 @app.on_event("startup")
 async def on_startup():
+    register_default_mcp_providers()
     async with SessionLocal() as session:
         await initialize_database(session, engine)
         if settings.grounding_prepare_on_start:

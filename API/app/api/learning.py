@@ -33,6 +33,8 @@ from app.core.timeline import (
     week_bounds_from_onboarding,
 )
 from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name
+from app.mcp.client import execute_mcp
+from app.mcp.contracts import MCPRequest
 from app.memory.cache import redis_client
 from app.memory.database import get_db
 from app.agents.decision_logger import log_agent_decision
@@ -60,6 +62,27 @@ TIMELINE_MIN_WEEKS = 14
 TIMELINE_MAX_WEEKS = 28
 CONTENT_PROMPT_VERSION = "v2"
 TEST_PROMPT_VERSION = "v2"
+
+
+async def _generate_text_with_mcp(prompt: str, *, role: str = "content_generator") -> tuple[str | None, dict]:
+    provider = get_llm_provider(role=role)
+
+    async def _fallback() -> dict:
+        text, meta = await provider.generate(prompt)
+        if not text:
+            raise RuntimeError("LLM provider returned empty output")
+        return {"text": text, "meta": meta if isinstance(meta, dict) else {}, "role": role}
+
+    response = await execute_mcp(
+        MCPRequest(operation="llm.generate_text", payload={"prompt": prompt, "role": role}),
+        fallback=_fallback,
+    )
+    if not response.ok:
+        return None, {"reason": response.error or "mcp_failed", "fallback_used": response.fallback_used}
+    result = response.result if isinstance(response.result, dict) else {}
+    text = result.get("text")
+    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
+    return (str(text) if text else None), meta
 
 
 # ── Pydantic models ──────────────────────────────────────────────────────────
@@ -820,9 +843,9 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     )
 
     try:
-        provider = get_llm_provider(role="content_generator")
-        llm_text, _ = await provider.generate(prompt)
+        llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
         if llm_text and len(llm_text.strip()) > 50:
+            provider = get_llm_provider(role="content_generator")
             generated_content = await _enforce_math_format(llm_text.strip(), provider=provider)
             required_read_seconds = _estimate_read_seconds(generated_content, combined_ability)
             save_content_cache(
@@ -986,9 +1009,9 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
         )
 
         try:
-            provider = get_llm_provider(role="content_generator")
-            llm_text, _ = await provider.generate(prompt)
+            llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
             if llm_text:
+                provider = get_llm_provider(role="content_generator")
                 # Parse JSON from LLM response
                 text = llm_text.strip()
                 # Try to extract JSON array
@@ -1546,9 +1569,9 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
     source = "fallback"
     if context:
         try:
-            provider = get_llm_provider(role="content_generator")
-            llm_text, _ = await provider.generate(prompt)
+            llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
             if llm_text and llm_text.strip():
+                provider = get_llm_provider(role="content_generator")
                 explanation = _format_math_for_display(
                     await _enforce_math_format(llm_text.strip(), provider=provider)
                 )
@@ -1863,9 +1886,9 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
     )
 
     try:
-        provider = get_llm_provider(role="content_generator")
-        llm_text, _ = await provider.generate(prompt)
+        llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
         if llm_text and len(llm_text.strip()) > 50:
+            provider = get_llm_provider(role="content_generator")
             # Mark reading done for this subsection
             await _ensure_subsection_rows(db, payload.learner_id, payload.chapter_number)
             sp = (await db.execute(
@@ -2019,9 +2042,9 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         )
 
         try:
-            provider = get_llm_provider(role="content_generator")
-            llm_text, _ = await provider.generate(prompt)
+            llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
             if llm_text:
+                provider = get_llm_provider(role="content_generator")
                 text = llm_text.strip()
                 start = text.find("[")
                 end = text.rfind("]") + 1

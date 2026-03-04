@@ -89,7 +89,8 @@ function normalizeMathDelimiters(text) {
     .replace(/\\\\\]/g, "\\]")
     // Heuristic fallback: wrap plain parenthesized LaTeX commands so KaTeX can render.
     .replace(/\(\s*(\\[A-Za-z]+[^()\n]{0,220})\s*\)/g, "\\($1\\)")
-    .replace(/\r\n/g, "\n");
+    .replace(/\r\n/g, "\n")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "");
 
   // Fix malformed inline closers: \(\sqrt{2} \\) -> \(\sqrt{2}\)
   s = s.replace(/\\\(([\s\S]*?)\\\\\)/g, "\\($1\\)");
@@ -130,6 +131,29 @@ function normalizeMathDelimiters(text) {
   }
   if (inlineOpenBalance > 0) {
     s += "\\)".repeat(inlineOpenBalance);
+  }
+
+  // Defensive cleanup for unmatched display openers "\[".
+  let displayOpenBalance = 0;
+  for (let i = 0; i < s.length - 1; i++) {
+    if (s[i] === "\\" && s[i + 1] === "[") {
+      displayOpenBalance += 1;
+      i += 1;
+      continue;
+    }
+    if (s[i] === "\\" && s[i + 1] === "]") {
+      if (displayOpenBalance > 0) displayOpenBalance -= 1;
+      i += 1;
+    }
+  }
+  if (displayOpenBalance > 0) {
+    s += "\\]".repeat(displayOpenBalance);
+  }
+
+  // Defensive cleanup for unbalanced $$ display delimiters.
+  const doubleDollarMatches = s.match(/\$\$/g);
+  if (doubleDollarMatches && doubleDollarMatches.length % 2 !== 0) {
+    s += "$$";
   }
   return s;
 }
@@ -183,13 +207,17 @@ function mdToHtml(md) {
   const { masked, restore } = protectMathBlocks(md);
   if (!masked) return "";
   if (typeof marked !== "undefined" && typeof marked.parse === "function") {
-    return restore(marked.parse(masked, { breaks: true, gfm: true }));
+    try {
+      return restore(marked.parse(masked, { breaks: true, gfm: true }));
+    } catch (err) {
+      console.warn("Markdown parse failed, using safe fallback:", err);
+    }
   }
-  return restore(masked
+  return `<pre style="white-space:pre-wrap;color:var(--text-primary)">${restore(masked
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br>"));
+    .replace(/\n/g, "<br>"))}</pre>`;
 }
 
 function mdInlineToHtml(md) {
@@ -1753,4 +1781,156 @@ function checkPractice() {
   show(fb);
   fb.innerHTML = `<div style="text-align:center;padding:16px"><h3>🎯 ${correct}/${total} (${pct}%)</h3><p>${correct === total ? "🌟 Perfect!" : correct >= total * 0.6 ? "👍 Good job!" : "💪 Keep practicing!"}</p></div>`;
   $("btn-check-practice").disabled = true;
+}
+
+// Iteration 11 override: clearer comparative UX + weak-area drilldowns.
+async function loadComparativeAnalytics(learnerId) {
+  const summary = $("comparative-summary");
+  const metrics = $("comparative-metrics");
+  const signals = $("comparative-signals");
+  const actions = $("comparative-actions");
+  if (summary) summary.innerHTML = `<div style="color:var(--text-muted)">Loading comparative analytics...</div>`;
+  if (metrics) metrics.innerHTML = "";
+  if (signals) signals.innerHTML = "";
+  if (actions) actions.innerHTML = "";
+  try {
+    const data = await api(`/onboarding/comparative-analytics/${learnerId}`);
+    renderComparativeAnalytics(data);
+  } catch (err) {
+    console.warn("Comparative analytics load failed:", err);
+    renderComparativeAnalyticsFallback("Comparative analytics not available yet.");
+  }
+}
+
+function renderComparativeAnalytics(data) {
+  const summary = $("comparative-summary");
+  const metrics = $("comparative-metrics");
+  const signals = $("comparative-signals");
+  const actions = $("comparative-actions");
+  if (!summary || !metrics || !signals || !actions) return;
+
+  const ind = data.individual || {};
+  const cmp = data.comparative || {};
+  const avg = cmp.average_vs_cohort || {};
+  const cluster = cmp.similar_learner_cluster || {};
+  const hooks = data.hooks || {};
+  const ew = hooks.early_warning_signals || {};
+  const anonymized = !!data.anonymized;
+  const weakAreas = Array.isArray(ind.weak_areas) ? ind.weak_areas.slice(0, 6) : [];
+  const smallCohort = !anonymized || Number(data.cohort_size || 0) < 5;
+
+  summary.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div><strong>Cohort size:</strong> ${data.cohort_size ?? 0}</div>
+      <div><strong>Privacy mode:</strong> ${anonymized ? "Anonymized metrics enabled" : "Limited (cohort too small)"}</div>
+      <div><strong>Adaptive hint:</strong> ${hooks.adaptive_difficulty_hint || "maintain"}</div>
+    </div>
+    ${smallCohort ? `<div style="margin-top:8px;color:var(--warning)">Comparative ranks are hidden for small cohorts to avoid misleading signals.</div>` : ""}
+  `;
+  summary.classList.toggle("warning", smallCohort);
+
+  const percentile = cmp.percentile_ranking;
+  const learnerScore = Number(ind.topic_mastery_score || 0);
+  const completion = Number(ind.completion_rate_percent || 0);
+  const velocity = Number(ind.learning_velocity || 0);
+  const trend = Number((cmp.trend_over_time || {}).improvement_trend || ind.improvement_trend || 0);
+
+  metrics.innerHTML = `
+    <div class="comparative-card">
+      <div class="comparative-label">Mastery Score</div>
+      <div class="comparative-value">${(learnerScore * 100).toFixed(1)}%</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Percentile Rank <span class="help-tip" title="Your standing compared to the cohort. Higher percentile means you are performing better than more learners.">i</span></div>
+      <div class="comparative-value">${smallCohort ? "Hidden" : `${Number(percentile || 0).toFixed(1)}%`}</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Vs Cohort Delta <span class="help-tip" title="Difference between your mastery score and the cohort average. Positive means above average; negative means below average.">i</span></div>
+      <div class="comparative-value">${smallCohort ? "Hidden" : `${(Number(avg.delta || 0) * 100).toFixed(1)}%`}</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Completion Rate</div>
+      <div class="comparative-value">${completion.toFixed(1)}%</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Learning Velocity <span class="help-tip" title="How quickly you complete mastery milestones over recent activity windows. Higher means faster progression.">i</span></div>
+      <div class="comparative-value">${velocity.toFixed(2)}</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Improvement Trend</div>
+      <div class="comparative-value">${trend >= 0 ? "+" : ""}${(trend * 100).toFixed(1)}%</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Similar Cluster</div>
+      <div class="comparative-value">${cluster.cluster_size ?? "N/A"}</div>
+    </div>
+  `;
+
+  const signalRows = [
+    ["Low Mastery", !!ew.low_mastery],
+    ["High Timeline Drift", !!ew.timeline_drift_high],
+    ["Below Cohort Avg", !!ew.below_cohort_average],
+    ["Repeated Weak Performance", !!ew.repeated_weak_performance],
+  ];
+  signals.innerHTML = signalRows.map(([label, risk]) => `
+    <div class="comparative-card">
+      <div class="comparative-label">${label}</div>
+      <span class="signal-chip ${risk ? "risk" : "ok"}">${risk ? "Attention" : "Stable"}</span>
+    </div>
+  `).join("");
+
+  const weakAreaPills = weakAreas.length
+    ? weakAreas.map(area => `<button class="quick-pill" onclick="focusWeakArea('${String(area).replace(/'/g, "\\'")}')">${area}</button>`).join("")
+    : `<span style="color:var(--text-muted);font-size:0.85rem">No weak areas flagged right now.</span>`;
+  const recs = [];
+  if (ew.low_mastery) recs.push("Revisit a weak section and take a fresh section test.");
+  if (ew.timeline_drift_high) recs.push("Finish pending week tasks before attempting the final chapter test.");
+  if (ew.below_cohort_average) recs.push("Focus on consistency: 30-45 minutes daily for this week.");
+  if (ew.repeated_weak_performance) recs.push("Use explanation mode on wrong answers and retry similar questions.");
+  if (recs.length === 0) recs.push("Maintain current pace and continue chapter-wise progression.");
+
+  actions.innerHTML = `
+    <div class="comparative-action-card">
+      <div class="comparative-label">Weak Area Drilldown</div>
+      <div class="comparative-action-list">${weakAreaPills}</div>
+    </div>
+    <div class="comparative-action-card">
+      <div class="comparative-label">Recommended Next Moves</div>
+      <ul style="margin:8px 0 0 18px;color:var(--text-secondary);font-size:0.86rem">
+        ${recs.slice(0, 4).map(r => `<li>${r}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderComparativeAnalyticsFallback(message) {
+  const summary = $("comparative-summary");
+  const metrics = $("comparative-metrics");
+  const signals = $("comparative-signals");
+  const actions = $("comparative-actions");
+  if (!summary || !metrics || !signals || !actions) return;
+  summary.classList.remove("warning");
+  summary.innerHTML = `<div style="color:var(--text-muted)">${message || "Comparative analytics unavailable."}</div>`;
+  metrics.innerHTML = "";
+  signals.innerHTML = "";
+  actions.innerHTML = "";
+}
+
+function focusWeakArea(areaLabel) {
+  const area = String(areaLabel || "").trim();
+  if (!area) return;
+  const cards = Array.from(document.querySelectorAll("#current-tasks .task-card"));
+  let matched = 0;
+  cards.forEach(card => {
+    const chapter = String(card.dataset.chapter || "");
+    const isMatch = chapter.toLowerCase().includes(area.toLowerCase());
+    card.style.outline = isMatch ? "2px solid var(--warning)" : "";
+    card.style.outlineOffset = isMatch ? "2px" : "";
+    if (isMatch) matched += 1;
+  });
+  const tasksSection = $("section-tasks");
+  if (tasksSection) tasksSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (matched === 0) {
+    alert(`No current-week tasks found for ${area}. Try reviewing chapter cards below.`);
+  }
 }

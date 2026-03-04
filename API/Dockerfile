@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir -U pip uv
 
 # Use uv lockfile for reproducible builds across machines.
 COPY pyproject.toml uv.lock /app/
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --extra dev --no-install-project
 
 COPY . /app
 

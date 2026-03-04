@@ -496,6 +496,10 @@ body {
     padding: 16px;
     margin-bottom: 12px;
 }
+.comparative-summary.warning {
+    border-color: rgba(253, 203, 110, 0.6);
+    background: linear-gradient(180deg, rgba(253, 203, 110, 0.12), rgba(34, 37, 54, 0.9));
+}
 .comparative-metrics {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
@@ -524,6 +528,7 @@ body {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 10px;
+    margin-bottom: 12px;
 }
 .signal-chip {
     border-radius: 999px;
@@ -540,6 +545,37 @@ body {
     background: var(--success-light);
     color: var(--success);
 }
+.comparative-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 10px;
+}
+.comparative-action-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px;
+}
+.comparative-action-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+.quick-pill {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-light);
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 5px 10px;
+    font-size: 0.78rem;
+    cursor: pointer;
+    transition: var(--transition);
+}
+.quick-pill:hover {
+    border-color: var(--accent);
+    color: var(--accent-light);
+}
 
 /* Plan Timeline */
 .plan-timeline { display: flex; flex-direction: column; gap: 6px; }
@@ -552,6 +588,11 @@ body {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     transition: var(--transition);
+}
+.plan-week,
+.confidence-card,
+.comparative-card {
+    box-shadow: var(--shadow-sm);
 }
 .plan-week.current { border-color: var(--accent); background: rgba(108, 92, 231, 0.08); }
 .plan-week.completed { opacity: 0.7; }
