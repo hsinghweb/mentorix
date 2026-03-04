@@ -549,12 +549,14 @@ async function loadDashboard() {
   try {
     const data = await api(`/learning/dashboard/${learnerId}`);
     renderDashboard(data);
+    await loadComparativeAnalytics(learnerId);
   } catch (err) {
     console.error("Dashboard load failed:", err);
     // Show a minimal dashboard if the learning endpoint fails
     try {
       // Try onboarding endpoint as fallback
       renderDashboardFallback();
+      renderComparativeAnalyticsFallback("Comparative analytics unavailable");
     } catch (e2) {
       $("profile-card").innerHTML = `<div class="profile-stat"><div class="stat-value">⚠️</div><div class="stat-label">${err.message}</div></div>`;
     }
@@ -629,6 +631,98 @@ function renderDashboardFallback() {
             <div class="stat-label">Loading...</div>
         </div>
     `;
+}
+
+async function loadComparativeAnalytics(learnerId) {
+  try {
+    const data = await api(`/onboarding/comparative-analytics/${learnerId}`);
+    renderComparativeAnalytics(data);
+  } catch (err) {
+    console.warn("Comparative analytics load failed:", err);
+    renderComparativeAnalyticsFallback("Comparative analytics not available yet.");
+  }
+}
+
+function renderComparativeAnalytics(data) {
+  const summary = $("comparative-summary");
+  const metrics = $("comparative-metrics");
+  const signals = $("comparative-signals");
+  if (!summary || !metrics || !signals) return;
+
+  const ind = data.individual || {};
+  const cmp = data.comparative || {};
+  const avg = cmp.average_vs_cohort || {};
+  const cluster = cmp.similar_learner_cluster || {};
+  const hooks = data.hooks || {};
+  const ew = hooks.early_warning_signals || {};
+  const anonymized = !!data.anonymized;
+
+  summary.innerHTML = `
+    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div><strong>Cohort size:</strong> ${data.cohort_size ?? 0}</div>
+      <div><strong>Privacy mode:</strong> ${anonymized ? "Anonymized metrics enabled" : "Limited (cohort too small)"}</div>
+      <div><strong>Adaptive hint:</strong> ${hooks.adaptive_difficulty_hint || "maintain"}</div>
+    </div>
+  `;
+
+  const percentile = cmp.percentile_ranking;
+  const learnerScore = Number(ind.topic_mastery_score || 0);
+  const completion = Number(ind.completion_rate_percent || 0);
+  const velocity = Number(ind.learning_velocity || 0);
+  const trend = Number((cmp.trend_over_time || {}).improvement_trend || ind.improvement_trend || 0);
+  metrics.innerHTML = `
+    <div class="comparative-card">
+      <div class="comparative-label">Mastery Score</div>
+      <div class="comparative-value">${(learnerScore * 100).toFixed(1)}%</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Percentile Rank <span class="help-tip" title="Your standing compared to the cohort. Higher percentile means you are performing better than more learners.">ⓘ</span></div>
+      <div class="comparative-value">${percentile === null || percentile === undefined ? "N/A" : `${Number(percentile).toFixed(1)}%`}</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Vs Cohort Delta <span class="help-tip" title="Difference between your mastery score and the cohort average. Positive means above average; negative means below average.">ⓘ</span></div>
+      <div class="comparative-value">${avg.delta === null || avg.delta === undefined ? "N/A" : `${(Number(avg.delta) * 100).toFixed(1)}%`}</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Completion Rate</div>
+      <div class="comparative-value">${completion.toFixed(1)}%</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Learning Velocity <span class="help-tip" title="How quickly you complete mastery milestones over recent activity windows. Higher means faster progression.">ⓘ</span></div>
+      <div class="comparative-value">${velocity.toFixed(2)}</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Improvement Trend</div>
+      <div class="comparative-value">${trend >= 0 ? "+" : ""}${(trend * 100).toFixed(1)}%</div>
+    </div>
+    <div class="comparative-card">
+      <div class="comparative-label">Similar Cluster</div>
+      <div class="comparative-value">${cluster.cluster_size ?? "N/A"}</div>
+    </div>
+  `;
+
+  const signalRows = [
+    ["Low Mastery", !!ew.low_mastery],
+    ["High Timeline Drift", !!ew.timeline_drift_high],
+    ["Below Cohort Avg", !!ew.below_cohort_average],
+    ["Repeated Weak Performance", !!ew.repeated_weak_performance],
+  ];
+  signals.innerHTML = signalRows.map(([label, risk]) => `
+    <div class="comparative-card">
+      <div class="comparative-label">${label}</div>
+      <span class="signal-chip ${risk ? "risk" : "ok"}">${risk ? "Attention" : "Stable"}</span>
+    </div>
+  `).join("");
+}
+
+function renderComparativeAnalyticsFallback(message) {
+  const summary = $("comparative-summary");
+  const metrics = $("comparative-metrics");
+  const signals = $("comparative-signals");
+  if (!summary || !metrics || !signals) return;
+  summary.innerHTML = `<div style="color:var(--text-muted)">${message || "Comparative analytics unavailable."}</div>`;
+  metrics.innerHTML = "";
+  signals.innerHTML = "";
 }
 
 function renderTasks(tasks, weekNumber, weekLabel = null) {
