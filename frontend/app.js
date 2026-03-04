@@ -113,6 +113,24 @@ function normalizeMathDelimiters(text) {
 
   // Normalize accidental duplicated trailing slashes inside inline math.
   s = s.replace(/\\\(([^)]*?)\\\\\s*\\\)/g, "\\($1\\)");
+
+  // Defensive cleanup: auto-close unmatched inline math openers "\(".
+  // This prevents KaTeX from rendering the rest of the line as an error block.
+  let inlineOpenBalance = 0;
+  for (let i = 0; i < s.length - 1; i++) {
+    if (s[i] === "\\" && s[i + 1] === "(") {
+      inlineOpenBalance += 1;
+      i += 1;
+      continue;
+    }
+    if (s[i] === "\\" && s[i + 1] === ")") {
+      if (inlineOpenBalance > 0) inlineOpenBalance -= 1;
+      i += 1;
+    }
+  }
+  if (inlineOpenBalance > 0) {
+    s += "\\)".repeat(inlineOpenBalance);
+  }
   return s;
 }
 
