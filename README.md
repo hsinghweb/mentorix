@@ -16,6 +16,21 @@ Open:
 - Frontend: `http://localhost:5500`
 - API: `http://localhost:8000`
 
+## Iteration 11 Validation (Current)
+
+- Fast profile:
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\test_fast.ps1`
+- Full profile:
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\test_full.ps1 -BaseUrl http://localhost:8000`
+- Frontend math sanitization regression:
+  - `node frontend/tests/math_sanitize_cases.js`
+
+Operator docs:
+- `docs/iteration11_operator_runbook.md`
+- `docs/iteration11_migration_notes.md`
+- `docs/iteration11_rollback_checklist.md`
+- `docs/iteration11_rollout_validation.md`
+
 ## What This Demo Proves
 
 - **Autonomy:** session flow runs end-to-end (`start-session -> submit-answer -> dashboard`).
