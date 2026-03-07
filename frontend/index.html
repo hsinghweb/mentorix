@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mentorix — AI Math Tutor</title>
+    <title>Mentorix - AI Math Tutor</title>
     <meta name="description"
         content="Mentorix: Your personal AI tutor for Class 10 CBSE Mathematics. Adaptive learning, dynamic pacing, NCERT-grounded content.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -20,17 +20,15 @@
 </head>
 
 <body>
-
-    <!-- AUTH GATE -->
     <div id="auth-gate" class="auth-gate">
         <div class="auth-container">
             <div class="auth-brand">
-                <div class="brand-icon">📐</div>
+                <div class="brand-icon">M</div>
                 <h1>Mentorix</h1>
-                <p class="brand-tagline">Your AI Math Tutor • Class 10 CBSE</p>
+                <p class="brand-tagline">Your AI Math Tutor - Class 10 CBSE</p>
+                <p class="brand-mission">Agentic, Autonomous, and Adaptive Learning System</p>
             </div>
 
-            <!-- LOGIN PANEL -->
             <div id="panel-login" class="auth-panel">
                 <h2>Welcome Back</h2>
                 <form id="form-login" autocomplete="off">
@@ -50,10 +48,32 @@
                     <button type="submit" class="btn btn-primary btn-full">Log In</button>
                 </form>
                 <p class="auth-switch">New here? <a href="#" id="link-to-signup">Create an account</a></p>
+                <p class="auth-switch">Operator access? <a href="#" id="link-to-admin">Admin login</a></p>
                 <div id="login-error" class="error-msg hidden"></div>
             </div>
 
-            <!-- SIGNUP PANEL -->
+            <div id="panel-admin-login" class="auth-panel hidden">
+                <h2>Admin Control Room</h2>
+                <form id="form-admin-login" autocomplete="off">
+                    <div class="form-group">
+                        <label for="admin-username">Username</label>
+                        <input type="text" id="admin-username" placeholder="Admin username" value="admin" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="admin-password">Password</label>
+                        <input type="password" id="admin-password" placeholder="Admin password" value="admin" required>
+                    </div>
+                    <div class="form-group form-group--muted">
+                        <label for="api-base-url-admin">API URL <span class="label-optional">(optional)</span></label>
+                        <input type="text" id="api-base-url-admin" placeholder="http://localhost:8000"
+                            value="http://localhost:8000">
+                    </div>
+                    <button type="submit" class="btn btn-primary btn-full">Log In as Admin</button>
+                </form>
+                <p class="auth-switch">Back to student login? <a href="#" id="link-admin-to-login">Student login</a></p>
+                <div id="admin-login-error" class="error-msg hidden"></div>
+            </div>
+
             <div id="panel-signup" class="auth-panel hidden">
                 <h2>Create Your Account</h2>
                 <form id="form-signup" autocomplete="off">
@@ -100,16 +120,15 @@
                         <input type="text" id="api-base-url-signup" placeholder="http://localhost:8000"
                             value="http://localhost:8000">
                     </div>
-                    <button type="submit" class="btn btn-primary btn-full">Sign Up & Take Test</button>
+                    <button type="submit" class="btn btn-primary btn-full">Sign Up and Take Test</button>
                 </form>
                 <p class="auth-switch">Already have an account? <a href="#" id="link-to-login">Log in</a></p>
                 <div id="signup-error" class="error-msg hidden"></div>
             </div>
 
-            <!-- DIAGNOSTIC TEST PANEL -->
             <div id="panel-diagnostic" class="auth-panel hidden">
                 <div class="test-header">
-                    <h2>📝 Diagnostic Test</h2>
+                    <h2>Diagnostic Test</h2>
                     <div class="test-timer" id="test-timer">30:00</div>
                 </div>
                 <p class="test-subtitle">Answer all 25 questions. This helps us personalize your learning plan.</p>
@@ -120,43 +139,42 @@
                 <button id="btn-submit-test" class="btn btn-primary btn-full" disabled>Submit Test</button>
             </div>
 
-            <!-- RESULT PANEL -->
             <div id="panel-result" class="auth-panel hidden">
-                <h2>📊 Your Results</h2>
+                <h2>Your Results</h2>
                 <div id="result-content" class="result-content"></div>
-                <button id="btn-go-dashboard" class="btn btn-primary btn-full">Go to Dashboard →</button>
+                <button id="btn-go-dashboard" class="btn btn-primary btn-full">Go to Dashboard</button>
             </div>
         </div>
     </div>
 
-    <!-- MAIN APP -->
     <main id="app-main" class="hidden">
-        <!-- TOP NAV -->
         <nav class="top-nav">
             <div class="nav-brand">
-                <span class="nav-icon">📐</span>
+                <span class="nav-icon">M</span>
                 <span class="nav-title">Mentorix</span>
+                <span id="nav-role-badge" class="nav-role-badge hidden"></span>
             </div>
             <div class="nav-right">
+                <div id="admin-nav" class="admin-nav hidden">
+                    <button id="btn-admin-overview" class="btn btn-sm btn-outline">Overview</button>
+                    <button id="btn-admin-students" class="btn btn-sm btn-outline">Students</button>
+                    <button id="btn-admin-agents" class="btn btn-sm btn-outline">Agents</button>
+                </div>
                 <span id="nav-student-name" class="nav-student"></span>
                 <button id="btn-logout" class="btn btn-sm btn-outline">Logout</button>
             </div>
         </nav>
 
-        <!-- DASHBOARD -->
         <div id="screen-dashboard" class="screen">
-            <!-- Profile Summary Card -->
             <div class="profile-card" id="profile-card"></div>
 
-            <!-- Current Week Tasks -->
             <section class="section" id="section-tasks">
-                <h2 class="section-title">📋 This Week's Tasks</h2>
+                <h2 class="section-title">This Week's Tasks</h2>
                 <div id="current-tasks" class="tasks-grid"></div>
             </section>
 
-            <!-- Completion Status -->
             <section class="section" id="section-completion">
-                <h2 class="section-title">📚 Chapter Completion</h2>
+                <h2 class="section-title">Chapter Completion</h2>
                 <div class="progress-bar-container">
                     <div class="progress-bar" id="completion-bar"><span></span></div>
                     <span class="progress-label" id="completion-label">0%</span>
@@ -164,9 +182,8 @@
                 <div id="chapters-grid" class="chapters-grid"></div>
             </section>
 
-            <!-- Accuracy & Confidence -->
             <section class="section" id="section-confidence">
-                <h2 class="section-title">🎯 Accuracy & Mastery</h2>
+                <h2 class="section-title">Accuracy and Mastery</h2>
                 <div
                     style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px">
                     <canvas id="confidence-chart" height="200"></canvas>
@@ -175,36 +192,32 @@
                 <div id="confidence-grid" class="confidence-grid"></div>
             </section>
 
-            <!-- Comparative Analytics -->
             <section class="section" id="section-comparative">
-                <h2 class="section-title">📊 Comparative Analytics</h2>
+                <h2 class="section-title">Comparative Analytics</h2>
                 <div id="comparative-summary" class="comparative-summary"></div>
                 <div id="comparative-metrics" class="comparative-metrics"></div>
                 <div id="comparative-signals" class="comparative-signals"></div>
                 <div id="comparative-actions" class="comparative-actions"></div>
             </section>
 
-            <!-- Rough Plan -->
             <section class="section" id="section-plan">
-                <h2 class="section-title">🗓️ Learning Roadmap</h2>
+                <h2 class="section-title">Learning Roadmap</h2>
                 <div id="plan-timeline" class="plan-timeline"></div>
             </section>
 
             <section class="section" id="section-plan-history">
-                <h2 class="section-title">🧾 Plan History</h2>
+                <h2 class="section-title">Plan History</h2>
                 <div id="plan-history-list" class="revision-list"></div>
             </section>
 
-            <!-- Revision Queue -->
             <section class="section hidden" id="section-revision">
-                <h2 class="section-title">🔄 Revision Queue</h2>
+                <h2 class="section-title">Revision Queue</h2>
                 <div id="revision-list" class="revision-list"></div>
             </section>
         </div>
 
-        <!-- READING SCREEN -->
         <div id="screen-reading" class="screen hidden">
-            <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-reading">← Back to Dashboard</button>
+            <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-reading">Back to Dashboard</button>
             <div class="reading-header">
                 <h2 id="reading-chapter-title"></h2>
                 <div class="reading-timer" id="reading-timer">Time: 0:00</div>
@@ -213,9 +226,8 @@
             <div id="reading-status" class="reading-status"></div>
         </div>
 
-        <!-- TEST SCREEN -->
         <div id="screen-test" class="screen hidden">
-            <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-test">← Back to Dashboard</button>
+            <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-test">Back to Dashboard</button>
             <div class="test-header">
                 <h2 id="test-chapter-title"></h2>
                 <div class="test-timer" id="chapter-test-timer">20:00</div>
@@ -225,23 +237,51 @@
             <div id="test-result-feedback" class="test-feedback hidden"></div>
         </div>
 
-        <!-- PRACTICE SCREEN -->
         <div id="screen-practice" class="screen hidden">
-            <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-practice">← Back to Dashboard</button>
+            <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-practice">Back to Dashboard</button>
             <div class="reading-header">
-                <h2 id="practice-title">📝 Practice Questions</h2>
+                <h2 id="practice-title">Practice Questions</h2>
             </div>
             <div id="practice-questions" class="test-questions"></div>
             <div style="display:flex;gap:12px;margin-top:16px">
                 <button id="btn-check-practice" class="btn btn-primary" disabled>Check Answers</button>
-                <button id="btn-new-practice" class="btn btn-outline">🔄 New Questions</button>
+                <button id="btn-new-practice" class="btn btn-outline">New Questions</button>
             </div>
             <div id="practice-feedback" class="test-feedback hidden"></div>
         </div>
+
+        <div id="screen-admin" class="screen hidden">
+            <section class="section">
+                <h2 class="section-title">System Observability</h2>
+                <div id="admin-system-overview" class="admin-grid"></div>
+            </section>
+
+            <section class="section">
+                <div class="admin-section-header">
+                    <h2 class="section-title">Student Control Room</h2>
+                    <div id="admin-student-summary" class="admin-summary"></div>
+                </div>
+                <div class="admin-two-col">
+                    <div id="admin-student-list" class="admin-student-list"></div>
+                    <div id="admin-student-detail" class="admin-student-detail"></div>
+                </div>
+            </section>
+
+            <section class="section">
+                <h2 class="section-title">Multi-Agent Orchestration</h2>
+                <div id="admin-agent-overview" class="agent-grid"></div>
+            </section>
+        </div>
     </main>
+
+    <div id="source-overlay" class="overlay hidden">
+        <div class="overlay-card">
+            <button id="btn-close-source" class="overlay-close">&times;</button>
+            <div id="source-content"></div>
+        </div>
+    </div>
 
     <script src="./app.js"></script>
 </body>
 
 </html>
-

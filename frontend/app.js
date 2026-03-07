@@ -1,7 +1,8 @@
-// API and auth storage keys
+﻿// API and auth storage keys
 const TOKEN_KEY = "mentorix_token";
 const LEARNER_KEY = "mentorix_learner_id";
 const NAME_KEY = "mentorix_name";
+const ROLE_KEY = "mentorix_role";
 const API_BASE_KEY = "mentorix_api_base";
 
 function getApiBase() {
@@ -29,18 +30,22 @@ let testTimer = null;
 let testSeconds = 1200;        // 20 minutes
 let currentTestData = null;    // { test_id, questions, chapter, chapter_number }
 
-// ── HELPERS ─────────────────────────────────────────────────────────────────
+// -- HELPERS -----------------------------------------------------------------
 function getToken() { return localStorage.getItem(TOKEN_KEY); }
 function getLearnerId() { return localStorage.getItem(LEARNER_KEY); }
-function setAuth(token, learnerId, name) {
+function getRole() { return localStorage.getItem(ROLE_KEY) || "student"; }
+function setAuth(token, learnerId, name, role = "student") {
   localStorage.setItem(TOKEN_KEY, token);
-  localStorage.setItem(LEARNER_KEY, learnerId);
+  if (learnerId) localStorage.setItem(LEARNER_KEY, learnerId);
+  else localStorage.removeItem(LEARNER_KEY);
   localStorage.setItem(NAME_KEY, name);
+  localStorage.setItem(ROLE_KEY, role);
 }
 function clearAuth() {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(LEARNER_KEY);
   localStorage.removeItem(NAME_KEY);
+  localStorage.removeItem(ROLE_KEY);
 }
 
 async function api(path, options = {}) {
@@ -65,6 +70,12 @@ async function api(path, options = {}) {
 function $(id) { return document.getElementById(id); }
 function show(el) { el.classList.remove("hidden"); }
 function hide(el) { el.classList.add("hidden"); }
+function showAuthPanel(panelId) {
+  ["panel-login", "panel-admin-login", "panel-signup", "panel-diagnostic", "panel-result"].forEach(id => {
+    const el = $(id);
+    if (el) el.classList.toggle("hidden", id !== panelId);
+  });
+}
 
 function renderKaTeX(container) {
   if (typeof renderMathInElement === "function") {
@@ -297,7 +308,7 @@ function showFinalTestBlockedModal(chapterNumber, reasonCode, pendingTasks = [])
 }
 
 
-// ── INITIALIZATION ──────────────────────────────────────────────────────────
+// -- INITIALIZATION ----------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
   initWeeksDropdown();
   bindEvents();
@@ -317,8 +328,10 @@ function initWeeksDropdown() {
   const savedBase = typeof localStorage !== "undefined" && localStorage.getItem(API_BASE_KEY);
   if (savedBase) {
     const inp = $("api-base-url");
+    const inpAdmin = $("api-base-url-admin");
     const inp2 = $("api-base-url-signup");
     if (inp) inp.value = savedBase;
+    if (inpAdmin) inpAdmin.value = savedBase;
     if (inp2) inp2.value = savedBase;
   }
 }
@@ -326,10 +339,16 @@ function initWeeksDropdown() {
 function bindEvents() {
   // Auth
   $("form-login").addEventListener("submit", handleLogin);
+  $("form-admin-login").addEventListener("submit", handleAdminLogin);
   $("form-signup").addEventListener("submit", handleSignup);
-  $("link-to-signup").addEventListener("click", e => { e.preventDefault(); hide($("panel-login")); show($("panel-signup")); });
-  $("link-to-login").addEventListener("click", e => { e.preventDefault(); hide($("panel-signup")); show($("panel-login")); });
+  $("link-to-signup").addEventListener("click", e => { e.preventDefault(); showAuthPanel("panel-signup"); });
+  $("link-to-login").addEventListener("click", e => { e.preventDefault(); showAuthPanel("panel-login"); });
+  $("link-to-admin").addEventListener("click", e => { e.preventDefault(); showAuthPanel("panel-admin-login"); });
+  $("link-admin-to-login").addEventListener("click", e => { e.preventDefault(); showAuthPanel("panel-login"); });
   $("btn-logout").addEventListener("click", handleLogout);
+  if ($("btn-admin-overview")) $("btn-admin-overview").addEventListener("click", () => window.scrollTo({ top: 0, behavior: "smooth" }));
+  if ($("btn-admin-students")) $("btn-admin-students").addEventListener("click", () => $("admin-student-list")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  if ($("btn-admin-agents")) $("btn-admin-agents").addEventListener("click", () => $("admin-agent-overview")?.scrollIntoView({ behavior: "smooth", block: "start" }));
 
   // Diagnostic
   $("btn-submit-test").addEventListener("click", handleSubmitDiagnostic);
@@ -345,19 +364,43 @@ function bindEvents() {
   // Practice screen
   if ($("btn-back-from-practice")) $("btn-back-from-practice").addEventListener("click", backToDashboard);
   if ($("btn-check-practice")) $("btn-check-practice").addEventListener("click", checkPractice);
+  if ($("btn-close-source")) $("btn-close-source").addEventListener("click", closeSourceOverlay);
+  if ($("source-overlay")) $("source-overlay").addEventListener("click", e => {
+    if (e.target === $("source-overlay")) closeSourceOverlay();
+  });
 }
 
 function checkAuthState() {
-  if (getToken() && getLearnerId()) {
+  if (!getToken()) return;
+  const role = getRole();
+  if (role === "admin") {
     hide($("auth-gate"));
     show($("app-main"));
-    $("nav-student-name").textContent = localStorage.getItem(NAME_KEY) || "Student";
+    configureNavForRole("admin", localStorage.getItem(NAME_KEY) || "Admin");
+    loadAdminDashboard();
+    return;
+  }
+  if (getLearnerId()) {
+    hide($("auth-gate"));
+    show($("app-main"));
+    configureNavForRole("student", localStorage.getItem(NAME_KEY) || "Student");
     loadDashboard();
   }
 }
 
+function configureNavForRole(role, displayName) {
+  $("nav-student-name").textContent = displayName || (role === "admin" ? "Admin" : "Student");
+  const badge = $("nav-role-badge");
+  const adminNav = $("admin-nav");
+  if (badge) {
+    badge.textContent = role === "admin" ? "Admin" : "Student";
+    badge.classList.remove("hidden");
+  }
+  if (adminNav) adminNav.classList.toggle("hidden", role !== "admin");
+}
 
-// ── AUTH ─────────────────────────────────────────────────────────────────────
+
+// -- AUTH ---------------------------------------------------------------------
 async function handleLogin(e) {
   e.preventDefault();
   const errEl = $("login-error");
@@ -373,11 +416,37 @@ async function handleLogin(e) {
       },
     });
     setApiBase(base);
-    setAuth(data.token, data.learner_id, data.name);
+    setAuth(data.token, data.learner_id, data.name, data.role || "student");
     hide($("auth-gate"));
     show($("app-main"));
-    $("nav-student-name").textContent = data.name;
+    configureNavForRole(data.role || "student", data.name);
     loadDashboard();
+  } catch (err) {
+    errEl.textContent = err.message;
+    show(errEl);
+  }
+}
+
+async function handleAdminLogin(e) {
+  e.preventDefault();
+  const errEl = $("admin-login-error");
+  hide(errEl);
+
+  try {
+    const adminBase = $("api-base-url-admin")?.value?.trim();
+    if (adminBase) setApiBase(adminBase.replace(/\/+$/, ""));
+    const data = await api("/auth/admin-login", {
+      method: "POST",
+      body: {
+        username: $("admin-username").value.trim(),
+        password: $("admin-password").value,
+      },
+    });
+    setAuth(data.token, null, data.name || data.username || "Admin", data.role || "admin");
+    hide($("auth-gate"));
+    show($("app-main"));
+    configureNavForRole("admin", data.name || data.username || "Admin");
+    loadAdminDashboard();
   } catch (err) {
     errEl.textContent = err.message;
     show(errEl);
@@ -435,13 +504,11 @@ function handleLogout() {
   if (testTimer) clearInterval(testTimer);
   hide($("app-main"));
   show($("auth-gate"));
-  hide($("panel-diagnostic"));
-  hide($("panel-result"));
-  show($("panel-login"));
+  showAuthPanel("panel-login");
 }
 
 
-// ── DIAGNOSTIC ──────────────────────────────────────────────────────────────
+// -- DIAGNOSTIC --------------------------------------------------------------
 function renderDiagnosticQuestions(questions) {
   const container = $("test-questions");
   container.innerHTML = "";
@@ -576,7 +643,7 @@ function renderResult(result) {
             <div class="result-score-label">${correct} correct</div>
         </div>
         <div class="result-plan-note">
-            📅 You chose <strong>${result.selected_timeline_weeks} weeks</strong>.
+            You chose <strong>${result.selected_timeline_weeks} weeks</strong>.
             Based on your performance, we suggest <strong>${result.recommended_timeline_weeks} weeks</strong>.
             ${result.timeline_recommendation_note || ""}
         </div>
@@ -586,11 +653,11 @@ function renderResult(result) {
 }
 
 
-// ── DASHBOARD ───────────────────────────────────────────────────────────────
+// -- DASHBOARD ---------------------------------------------------------------
 async function loadDashboard() {
   showScreen("dashboard");
   const learnerId = getLearnerId();
-  $("nav-student-name").textContent = localStorage.getItem(NAME_KEY) || "Student";
+  configureNavForRole("student", localStorage.getItem(NAME_KEY) || "Student");
 
   try {
     const data = await api(`/learning/dashboard/${learnerId}`);
@@ -604,7 +671,7 @@ async function loadDashboard() {
       renderDashboardFallback();
       renderComparativeAnalyticsFallback("Comparative analytics unavailable");
     } catch (e2) {
-      $("profile-card").innerHTML = `<div class="profile-stat"><div class="stat-value">⚠️</div><div class="stat-label">${err.message}</div></div>`;
+      $("profile-card").innerHTML = `<div class="profile-stat"><div class="stat-value">Error</div><div class="stat-label">${err.message}</div></div>`;
     }
   }
 }
@@ -613,7 +680,7 @@ function renderDashboard(data) {
   // Profile card
   $("profile-card").innerHTML = `
         <div class="profile-stat">
-            <div class="stat-value">📐</div>
+            <div class="stat-value">Student</div>
             <div class="stat-label">${data.student_name}</div>
         </div>
         <div class="profile-stat">
@@ -630,11 +697,11 @@ function renderDashboard(data) {
         </div>
         <div class="profile-stat">
             <div class="stat-value">${data.diagnostic_score !== null ? (data.diagnostic_score * 100).toFixed(0) + "%" : "—"}</div>
-            <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline onboarding assessment score used to personalize your plan. This is not your weekly performance score.">ⓘ</span></div>
+            <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline onboarding assessment score used to personalize your plan. This is not your weekly performance score.">?</span></div>
         </div>
         <div class="profile-stat">
             <div class="stat-value">${data.selected_weeks || "—"}/${data.suggested_weeks || "—"}</div>
-            <div class="stat-label">Chosen / Suggested Wks <span class="help-tip" title="Chosen weeks are your preferred timeline. Suggested weeks are adaptive and can increase or decrease with your consistency and scores.">ⓘ</span></div>
+            <div class="stat-label">Chosen / Suggested Wks <span class="help-tip" title="Chosen weeks are your preferred timeline. Suggested weeks are adaptive and can increase or decrease with your consistency and scores.">?</span></div>
         </div>
     `;
 
@@ -662,14 +729,14 @@ function renderDashboard(data) {
     hide($("section-revision"));
   }
 
-  // Check if week is complete (all tasks done) → show advance button
+  // Check if week is complete (all tasks done) ? show advance button
   checkWeekComplete(data.current_week_tasks, data.learner_id);
 }
 
 function renderDashboardFallback() {
   $("profile-card").innerHTML = `
         <div class="profile-stat">
-            <div class="stat-value">📐</div>
+            <div class="stat-value">Student</div>
             <div class="stat-label">${localStorage.getItem(NAME_KEY) || "Student"}</div>
         </div>
         <div class="profile-stat">
@@ -722,11 +789,11 @@ function renderComparativeAnalytics(data) {
       <div class="comparative-value">${(learnerScore * 100).toFixed(1)}%</div>
     </div>
     <div class="comparative-card">
-      <div class="comparative-label">Percentile Rank <span class="help-tip" title="Your standing compared to the cohort. Higher percentile means you are performing better than more learners.">ⓘ</span></div>
+      <div class="comparative-label">Percentile Rank <span class="help-tip" title="Your standing compared to the cohort. Higher percentile means you are performing better than more learners.">?</span></div>
       <div class="comparative-value">${percentile === null || percentile === undefined ? "N/A" : `${Number(percentile).toFixed(1)}%`}</div>
     </div>
     <div class="comparative-card">
-      <div class="comparative-label">Vs Cohort Delta <span class="help-tip" title="Difference between your mastery score and the cohort average. Positive means above average; negative means below average.">ⓘ</span></div>
+      <div class="comparative-label">Vs Cohort Delta <span class="help-tip" title="Difference between your mastery score and the cohort average. Positive means above average; negative means below average.">?</span></div>
       <div class="comparative-value">${avg.delta === null || avg.delta === undefined ? "N/A" : `${(Number(avg.delta) * 100).toFixed(1)}%`}</div>
     </div>
     <div class="comparative-card">
@@ -734,7 +801,7 @@ function renderComparativeAnalytics(data) {
       <div class="comparative-value">${completion.toFixed(1)}%</div>
     </div>
     <div class="comparative-card">
-      <div class="comparative-label">Learning Velocity <span class="help-tip" title="How quickly you complete mastery milestones over recent activity windows. Higher means faster progression.">ⓘ</span></div>
+      <div class="comparative-label">Learning Velocity <span class="help-tip" title="How quickly you complete mastery milestones over recent activity windows. Higher means faster progression.">?</span></div>
       <div class="comparative-value">${velocity.toFixed(2)}</div>
     </div>
     <div class="comparative-card">
@@ -774,8 +841,8 @@ function renderComparativeAnalyticsFallback(message) {
 function renderTasks(tasks, weekNumber, weekLabel = null) {
   const container = $("current-tasks");
   $("section-tasks").querySelector(".section-title").textContent = weekLabel
-    ? `📋 ${weekLabel} Tasks`
-    : `📋 Week ${weekNumber} Tasks`;
+    ? `${weekLabel} Tasks`
+    : `Week ${weekNumber} Tasks`;
 
   if (!tasks || tasks.length === 0) {
     container.innerHTML = `<div class="loading-overlay"><p>No tasks yet. Complete onboarding to get started!</p></div>`;
@@ -797,7 +864,7 @@ function renderTasks(tasks, weekNumber, weekLabel = null) {
         <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
         ${dayTasks.map(t => {
           const isChapterLevel = t.chapter_level;
-          const icon = t.task_type === "read" ? "📖" : (isChapterLevel ? "📋" : "📝");
+          const icon = t.task_type === "read" ? "Read" : (isChapterLevel ? "Final" : "Quiz");
           const statusCls = t.status;
           const statusLabel = t.status.replace(/_/g, " ");
           const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
@@ -820,7 +887,7 @@ function renderTasks(tasks, weekNumber, weekLabel = null) {
 
   container.innerHTML = tasks.map(t => {
     const isChapterLevel = t.chapter_level;
-    const icon = t.task_type === "read" ? "📖" : (isChapterLevel ? "📋" : "📝");
+    const icon = t.task_type === "read" ? "Read" : (isChapterLevel ? "Final" : "Quiz");
     const statusCls = t.status;
     const statusLabel = t.status.replace(/_/g, " ");
     const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
@@ -879,7 +946,7 @@ function checkWeekComplete(tasks, learnerId) {
     container.innerHTML += `
             <div style="text-align:center; margin-top:16px;">
                 <button class="btn btn-success" id="btn-advance-week" style="padding:14px 28px; font-size:1rem;">
-                    🎉 All done! Advance to next week →
+                    All done! Advance to next week
                 </button>
             </div>
         `;
@@ -897,7 +964,7 @@ async function advanceWeek(learnerId) {
     loadDashboard();
   } catch (err) {
     alert("Error: " + err.message);
-    if (btn) { btn.disabled = false; btn.textContent = "🎉 Advance to next week →"; }
+    if (btn) { btn.disabled = false; btn.textContent = "Advance to next week"; }
   }
 }
 
@@ -975,7 +1042,7 @@ function renderConfidence(confData) {
                 <div class="confidence-bar">
                     <div class="confidence-bar-fill" style="width:${pct}%; background:${barColor}"></div>
                 </div>
-                <div class="confidence-score">Score: ${pct}% • Attempts: ${ch.attempt_count}${ch.revision_queued ? " • 🔄 Revision" : ""}</div>
+                <div class="confidence-score">Score: ${pct}% • Attempts: ${ch.attempt_count}${ch.revision_queued ? " • ? Revision" : ""}</div>
             </div>
         `;
   }).join("");
@@ -1004,7 +1071,7 @@ function renderPlan(plan, currentWeek) {
 function renderRevision(revisions) {
   $("revision-list").innerHTML = revisions.map(r => `
         <div class="revision-item">
-            <div class="revision-icon">🔄</div>
+            <div class="revision-icon">Plan</div>
             <div class="revision-info">
                 <div class="revision-chapter">${r.chapter}</div>
                 <div class="revision-reason">${r.reason}</div>
@@ -1014,7 +1081,7 @@ function renderRevision(revisions) {
 }
 
 
-// ── READING ─────────────────────────────────────────────────────────────────
+// -- READING -----------------------------------------------------------------
 async function openReading(chapterNumber, taskId) {
   showScreen("reading");
   if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
@@ -1039,20 +1106,20 @@ async function openReading(chapterNumber, taskId) {
       readingTaskCompleted = true;
       if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
       $("reading-status").className = "reading-status complete";
-      $("reading-status").textContent = "✅ Reading complete! You can go back to dashboard.";
+      $("reading-status").textContent = "? Reading complete! You can go back to dashboard.";
       return;
     }
     const hintedSeconds = parseMinSecondsFromReason(completion.reason);
     if (hintedSeconds) requiredReadingSeconds = Math.max(requiredReadingSeconds, hintedSeconds);
     const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
     $("reading-status").className = "reading-status in-progress";
-    $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+    $("reading-status").textContent = `Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
   };
 
   $("reading-chapter-title").textContent = "Loading...";
   $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating reading material from NCERT...</p></div>`;
   $("reading-status").className = "reading-status in-progress";
-  $("reading-status").textContent = "📖 Calculating required read time...";
+  $("reading-status").textContent = "Calculating required read time...";
 
   // Start timer
   $("reading-timer").textContent = "Time: 0:00";
@@ -1085,21 +1152,26 @@ async function openReading(chapterNumber, taskId) {
     const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
     if (!readingTaskCompleted) {
       $("reading-status").className = "reading-status in-progress";
-      $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+      $("reading-status").textContent = `Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
     }
 
     const sourceBadge = content.source === "cached"
-      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
-      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
-    $("reading-chapter-title").innerHTML = `📖 ${content.chapter_title} ${sourceBadge}`;
-    $("reading-content").innerHTML = mdToHtml(content.content);
+      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">CACHED</span>`
+      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">FRESH</span>`;
+    $("reading-chapter-title").innerHTML = `Chapter: ${content.chapter_title} ${sourceBadge}`;
+    $("reading-content").innerHTML = `
+      <div class="source-link-row">
+        <button class="btn btn-sm btn-outline" onclick="openChapterSource(${chapterNumber}, '${String(content.chapter_title || "").replace(/'/g, "\\'")}')">View chapter source overview</button>
+      </div>
+      ${mdToHtml(content.content)}
+    `;
     renderKaTeX($("reading-content"));
     if (readingTaskCompleted) {
       $("reading-status").className = "reading-status complete";
       $("reading-status").innerHTML = `
-        ✅ Reading complete
-        <button onclick="openReading(${chapterNumber}, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Reload</button>
-        <button onclick="regenerateChapterReading(${chapterNumber}, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--info);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">✨ Regenerate</button>
+        ? Reading complete
+        <button onclick="openReading(${chapterNumber}, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">Reload</button>
+        <button onclick="regenerateChapterReading(${chapterNumber}, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--info);color:white;border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">? Regenerate</button>
       `;
     }
   } catch (err) {
@@ -1133,7 +1205,7 @@ function backToDashboard() {
 }
 
 
-// ── CHAPTER TEST ────────────────────────────────────────────────────────────
+// -- CHAPTER TEST ------------------------------------------------------------
 async function openTest(chapterNumber, taskId = null, regenerate = false) {
   showScreen("test");
   testSeconds = 1200;
@@ -1167,13 +1239,13 @@ async function openTest(chapterNumber, taskId = null, regenerate = false) {
 
     let sourceBadge = "";
     if (regenerate) {
-      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">🔄 REGENERATED</span>`;
+      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">REGENERATED</span>`;
     } else if (testResp.source === "cached") {
-      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`;
+      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">CACHED</span>`;
     } else {
-      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
+      sourceBadge = `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">FRESH</span>`;
     }
-    $("test-chapter-title").innerHTML = `📝 Test: ${testResp.chapter} ${sourceBadge}`;
+    $("test-chapter-title").innerHTML = `Test: ${testResp.chapter} ${sourceBadge}`;
     renderChapterTestQuestions(testResp.questions);
     startChapterTestTimer();
   } catch (err) {
@@ -1304,12 +1376,12 @@ async function handleSubmitChapterTest() {
     }).join("");
 
     feedbackEl.innerHTML = `
-            <h3>${result.score >= 0.6 ? "🎉" : "💪"} Score: ${result.correct}/${result.total} (${(result.score * 100).toFixed(0)}%)</h3>
+            <h3>${result.score >= 0.6 ? "Passed" : "Needs Work"} Score: ${result.correct}/${result.total} (${(result.score * 100).toFixed(0)}%)</h3>
             <p>${result.message}</p>
             <div style="margin-top:14px; display:flex; gap:10px; justify-content:center;">
-                <button class="btn btn-primary" onclick="${retakeAction}">🔄 Retake Test</button>
-                <button class="btn btn-outline" onclick="${regenerateAction}">✨ Regenerate</button>
-                <button class="btn btn-secondary" onclick="backToDashboard()">← Dashboard</button>
+                <button class="btn btn-primary" onclick="${retakeAction}">Retake Test</button>
+                <button class="btn btn-outline" onclick="${regenerateAction}">? Regenerate</button>
+                <button class="btn btn-secondary" onclick="backToDashboard()">Dashboard</button>
             </div>
             <div style="margin-top:14px;text-align:left">
               <h4 style="margin-bottom:8px">Question Review</h4>
@@ -1327,7 +1399,7 @@ async function handleSubmitChapterTest() {
 }
 
 
-// ── CHAPTER DETAIL DRILL-DOWN ───────────────────────────────────────────────
+// -- CHAPTER DETAIL DRILL-DOWN -----------------------------------------------
 async function openChapterDetail(chapterNumber) {
   const learnerId = getLearnerId();
   if (!learnerId) return;
@@ -1348,7 +1420,7 @@ async function openChapterDetail(chapterNumber) {
 
     const sectionsHtml = sections.map(s => {
       const pct = (s.best_score * 100).toFixed(0);
-      const readIcon = s.reading_completed ? "✅" : "⬜";
+      const readIcon = s.reading_completed ? "?" : "?";
       return `
         <div style="background:var(--bg-elevated);border-radius:var(--radius-sm);padding:14px 16px;margin-bottom:10px;border-left:4px solid ${bandColor(s.mastery_band)};border:1px solid var(--border);border-left:4px solid ${bandColor(s.mastery_band)}">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
@@ -1369,7 +1441,7 @@ async function openChapterDetail(chapterNumber) {
     overlay.innerHTML = `
       <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-lg);max-width:620px;width:92%;max-height:82vh;overflow-y:auto;padding:28px;position:relative;box-shadow:var(--shadow);">
         <button onclick="document.getElementById('chapter-detail-overlay').remove()" style="position:absolute;top:14px;right:18px;background:var(--bg-elevated);border:1px solid var(--border);width:32px;height:32px;border-radius:50%;font-size:1.1rem;cursor:pointer;color:var(--text-secondary);display:flex;align-items:center;justify-content:center;font-family:var(--font)">&times;</button>
-        <h3 style="margin-bottom:6px;color:var(--text-primary);font-size:1.25rem">📚 Ch ${chapterNumber}: ${data.chapter_title}</h3>
+        <h3 style="margin-bottom:6px;color:var(--text-primary);font-size:1.25rem">Chapter ${chapterNumber}: ${data.chapter_title}</h3>
         <p style="color:var(--text-muted);margin-bottom:20px;font-size:0.85rem">${sections.length} subsections • Progress status overview</p>
         ${sectionsHtml}
       </div>
@@ -1401,8 +1473,8 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
   $("reading-content").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>${regenerate ? "Regenerating fresh content from NCERT..." : "Loading section reading material..."}</p></div>`;
   $("reading-status").className = "reading-status in-progress";
   $("reading-status").textContent = readingTaskId
-    ? "📖 Calculating required read time..."
-    : "📖 Reading section content...";
+    ? "Calculating required read time..."
+    : "Reading section content...";
 
   $("reading-timer").textContent = "Time: 0:00";
   let requiredReadingSeconds = 60;
@@ -1420,9 +1492,9 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
       if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
       $("reading-status").className = "reading-status complete";
       $("reading-status").innerHTML = `
-        📖 Reading complete
-        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
-        <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
+        Reading complete
+        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">Regenerate</button>
+        <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">Dashboard</button>
       `;
       return;
     }
@@ -1430,7 +1502,7 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
     if (hintedSeconds) requiredReadingSeconds = Math.max(requiredReadingSeconds, hintedSeconds);
     const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
     $("reading-status").className = "reading-status in-progress";
-    $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+    $("reading-status").textContent = `Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
   };
 
   readingTimer = setInterval(async () => {
@@ -1462,24 +1534,29 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
     const requiredMinutes = Math.max(1, Math.ceil(requiredReadingSeconds / 60));
     if (readingTaskId && !sectionTaskCompleted) {
       $("reading-status").className = "reading-status in-progress";
-      $("reading-status").textContent = `📖 Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
+      $("reading-status").textContent = `Keep reading... (min ${requiredMinutes} minute${requiredMinutes > 1 ? "s" : ""})`;
     }
 
     const sourceBadge = content.source === "cached"
-      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
-      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
+      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">CACHED</span>`
+      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">FRESH</span>`;
 
-    $("reading-chapter-title").innerHTML = `📖 ${content.section_id} - ${content.section_title} ${sourceBadge}`;
-    $("reading-content").innerHTML = mdToHtml(content.content);
+    $("reading-chapter-title").innerHTML = `Section ${content.section_id} - ${content.section_title} ${sourceBadge}`;
+    $("reading-content").innerHTML = `
+      <div class="source-link-row">
+        <button class="btn btn-sm btn-outline" onclick="openSourceSection(${chapterNumber}, '${sectionId}', '${String(content.section_title || "").replace(/'/g, "\\'")}')">View original NCERT section</button>
+      </div>
+      ${mdToHtml(content.content)}
+    `;
     renderKaTeX($("reading-content"));
 
     if (!readingTaskId) {
       if (readingTimer) { clearInterval(readingTimer); readingTimer = null; }
       $("reading-status").className = "reading-status complete";
       $("reading-status").innerHTML = `
-        📖 Reading complete
-        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">🔄 Regenerate</button>
-        <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">← Dashboard</button>
+        Reading complete
+        <button onclick="openSectionReading(${chapterNumber}, '${sectionId}', true, ${readingTaskId ? `'${readingTaskId}'` : "null"})" style="margin-left:12px;padding:4px 12px;font-size:0.8rem;background:var(--warning);color:var(--bg-primary);border:none;border-radius:var(--radius-sm);cursor:pointer;font-weight:600">Regenerate</button>
+        <button onclick="showScreen('dashboard');loadDashboard()" style="margin-left:8px;padding:4px 12px;font-size:0.8rem;background:var(--bg-elevated);color:var(--text-secondary);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">Dashboard</button>
       `;
     }
   } catch (err) {
@@ -1516,27 +1593,226 @@ async function openSectionTest(chapterNumber, sectionId, regenerate = false, tas
     };
 
     const sourceBadge = testResp.source === "cached"
-      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">📦 CACHED</span>`
-      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">✨ FRESH</span>`;
+      ? `<span style="display:inline-block;padding:2px 8px;background:var(--success-light);color:var(--success);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">CACHED</span>`
+      : `<span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">FRESH</span>`;
 
-    $("test-chapter-title").innerHTML = `📝 ${testResp.section_id} - ${testResp.section_title} ${sourceBadge}`;
+    $("test-chapter-title").innerHTML = `Section Test: ${testResp.section_id} - ${testResp.section_title} ${sourceBadge}`;
     renderChapterTestQuestions(testResp.questions);
+    $("chapter-test-questions").insertAdjacentHTML(
+      "afterbegin",
+      `<div class="source-link-row"><button class="btn btn-sm btn-outline" onclick="openSourceSection(${chapterNumber}, '${sectionId}', '${String(testResp.section_title || "").replace(/'/g, "\\'")}')">Open original NCERT section</button></div>`
+    );
     startChapterTestTimer();
   } catch (err) {
     $("chapter-test-questions").innerHTML = `<p style="color:var(--danger)">Error generating section test: ${err.message}</p>`;
   }
 }
 
+async function loadAdminDashboard() {
+  showScreen("admin");
+  configureNavForRole("admin", localStorage.getItem(NAME_KEY) || "Admin");
+  const overviewEl = $("admin-system-overview");
+  const summaryEl = $("admin-student-summary");
+  const listEl = $("admin-student-list");
+  const detailEl = $("admin-student-detail");
+  const agentsEl = $("admin-agent-overview");
+  if (overviewEl) overviewEl.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading system overview...</p></div>`;
+  if (listEl) listEl.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading students...</p></div>`;
+  if (agentsEl) agentsEl.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading agent activity...</p></div>`;
+  try {
+    const [system, students, agents] = await Promise.all([
+      api("/admin/system-overview"),
+      api("/admin/students"),
+      api("/admin/agents/overview"),
+    ]);
+    renderAdminSystemOverview(system);
+    renderAdminStudentList(students);
+    renderAdminAgentOverview(agents);
+    if (summaryEl) {
+      const studentRows = students.students || [];
+      const riskCount = studentRows.filter(s => (s.risk_flags || []).length > 0).length;
+      summaryEl.innerHTML = `
+        <div class="comparative-card"><div class="comparative-label">Students</div><div class="comparative-value">${students.total || 0}</div></div>
+        <div class="comparative-card"><div class="comparative-label">At Risk</div><div class="comparative-value">${riskCount}</div></div>
+        <div class="comparative-card"><div class="comparative-label">Scheduler</div><div class="comparative-value">${system.service?.scheduler_enabled ? "Enabled" : "Disabled"}</div></div>
+      `;
+    }
+    const firstLearnerId = (students.students || [])[0]?.learner_id;
+    if (firstLearnerId) await loadAdminStudentDetail(firstLearnerId);
+    else if (detailEl) detailEl.innerHTML = `<div class="admin-meta">No students available.</div>`;
+  } catch (err) {
+    if (overviewEl) overviewEl.innerHTML = `<div class="admin-meta">${err.message}</div>`;
+    if (summaryEl) summaryEl.innerHTML = "";
+    if (listEl) listEl.innerHTML = "";
+    if (detailEl) detailEl.innerHTML = "";
+    if (agentsEl) agentsEl.innerHTML = "";
+  }
+}
 
-// ── SCREEN MANAGEMENT ───────────────────────────────────────────────────────────────────
+function renderAdminSystemOverview(data) {
+  const el = $("admin-system-overview");
+  if (!el) return;
+  const traffic = data.traffic || {};
+  const service = data.service || {};
+  const infra = data.infrastructure || {};
+  const req = traffic.request_metrics || {};
+  const mcp = req.mcp || {};
+  el.innerHTML = `
+    <div class="comparative-card"><div class="comparative-label">Environment</div><div class="comparative-value">${service.environment || "local"}</div></div>
+    <div class="comparative-card"><div class="comparative-label">Active Runs</div><div class="comparative-value">${service.active_runs ?? 0}</div></div>
+    <div class="comparative-card"><div class="comparative-label">Scheduled Jobs</div><div class="comparative-value">${service.scheduled_jobs ?? 0}</div></div>
+    <div class="comparative-card"><div class="comparative-label">Requests</div><div class="comparative-value">${req.requests_total ?? 0}</div></div>
+    <div class="comparative-card"><div class="comparative-label">Failure Rate</div><div class="comparative-value">${req.failure_rate ?? 0}</div></div>
+    <div class="comparative-card"><div class="comparative-label">MCP Calls</div><div class="comparative-value">${mcp.mcp_calls_total ?? 0}</div></div>
+    <div class="comparative-card"><div class="comparative-label">Redis</div><div class="comparative-value">${infra.redis?.connected ? "Connected" : "Down"}</div></div>
+    <div class="comparative-card"><div class="comparative-label">Email</div><div class="comparative-value">${infra.email?.mode || "unknown"}</div></div>
+  `;
+}
+
+function renderAdminStudentList(data) {
+  const el = $("admin-student-list");
+  if (!el) return;
+  const students = data.students || [];
+  if (!students.length) {
+    el.innerHTML = `<div class="admin-meta">No student records found.</div>`;
+    return;
+  }
+  el.innerHTML = students.map(student => `
+    <button class="admin-student-row" data-learner-id="${student.learner_id}" style="width:100%;text-align:left;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:10px;cursor:pointer">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:center">
+        <div>
+          <div style="font-weight:700;color:var(--text-primary)">${student.name || "Student"}</div>
+          <div class="admin-meta">${student.username || "No username"} | Progress ${student.progress_percentage ?? 0}%</div>
+        </div>
+        <div class="task-status-badge ${student.risk_flags?.length ? "blocked" : "completed"}">${student.risk_flags?.length ? "Needs attention" : "Stable"}</div>
+      </div>
+    </button>
+  `).join("");
+  el.querySelectorAll("[data-learner-id]").forEach(btn => {
+    btn.addEventListener("click", () => loadAdminStudentDetail(btn.dataset.learnerId));
+  });
+}
+
+async function loadAdminStudentDetail(learnerId) {
+  const el = $("admin-student-detail");
+  if (!el) return;
+  el.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading student detail...</p></div>`;
+  try {
+    const data = await api(`/admin/students/${learnerId}`);
+    const learner = data.learner || {};
+    const profile = data.profile || {};
+    const comparative = data.comparative || {};
+    const weakAreas = (comparative.individual?.weak_areas || []).slice(0, 5);
+    el.innerHTML = `
+      <div style="margin-bottom:16px">
+        <h3 style="margin-bottom:4px">${learner.name || "Student"}</h3>
+        <div class="admin-meta">${learner.username || "No username"} | Grade ${learner.grade_level || "N/A"}</div>
+      </div>
+      <div class="admin-grid">
+        <div class="comparative-card"><div class="comparative-label">Progress</div><div class="comparative-value">${profile.progress_percentage ?? 0}%</div></div>
+        <div class="comparative-card"><div class="comparative-label">Selected Weeks</div><div class="comparative-value">${profile.selected_timeline_weeks ?? "N/A"}</div></div>
+        <div class="comparative-card"><div class="comparative-label">Forecast Weeks</div><div class="comparative-value">${profile.current_forecast_weeks ?? "N/A"}</div></div>
+        <div class="comparative-card"><div class="comparative-label">Timeline Delta</div><div class="comparative-value">${profile.timeline_delta_weeks ?? 0}</div></div>
+      </div>
+      <div style="margin-top:16px">
+        <div style="font-weight:700;margin-bottom:8px">Weak areas</div>
+        <div class="comparative-action-list">${weakAreas.length ? weakAreas.map(area => `<span class="quick-pill">${area}</span>`).join("") : `<span class="admin-meta">No weak areas flagged.</span>`}</div>
+      </div>
+      <div style="margin-top:16px">
+        <div style="font-weight:700;margin-bottom:8px">Recent events</div>
+        ${(data.recent_events || []).slice(0, 5).map(event => `<div class="admin-meta">${event.event_type} | ${event.created_at || ""}</div>`).join("") || `<div class="admin-meta">No recent events.</div>`}
+      </div>
+    `;
+  } catch (err) {
+    el.innerHTML = `<div class="admin-meta">${err.message}</div>`;
+  }
+}
+
+function renderAdminAgentOverview(data) {
+  const el = $("admin-agent-overview");
+  if (!el) return;
+  const agents = data.agents || [];
+  el.innerHTML = agents.map(agent => `
+    <div class="comparative-card">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+        <div>
+          <div class="comparative-label">${agent.title}</div>
+          <div class="admin-meta">${agent.purpose}</div>
+        </div>
+        <span class="signal-chip ${agent.status === "working" ? "risk" : "ok"}">${agent.status}</span>
+      </div>
+      <div class="admin-meta" style="margin-top:10px">Hint: ${agent.status_hint || "Awaiting next trigger"}</div>
+      <div class="admin-meta">Latest: ${agent.latest_decision_type || "No recent decision"}</div>
+    </div>
+  `).join("");
+}
+
+
+// -- SCREEN MANAGEMENT -------------------------------------------------------------------
 function showScreen(screenName) {
   document.querySelectorAll(".screen").forEach(s => s.classList.add("hidden"));
   const screen = $(`screen-${screenName}`);
   if (screen) screen.classList.remove("hidden");
 }
 
+function closeSourceOverlay() {
+  const overlay = $("source-overlay");
+  if (!overlay) return;
+  hide(overlay);
+}
 
-// ── DAILY PLAN ────────────────────────────────────────────────────────────────────────
+async function openSourceSection(chapterNumber, sectionId, sectionTitle = "") {
+  const overlay = $("source-overlay");
+  const container = $("source-content");
+  if (!overlay || !container) return;
+  show(overlay);
+  container.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading original NCERT section...</p></div>`;
+  try {
+    const learnerId = getLearnerId();
+    const learnerQuery = learnerId ? `?learner_id=${encodeURIComponent(learnerId)}` : "";
+    const data = await api(`/learning/source-section/${chapterNumber}/${encodeURIComponent(sectionId)}${learnerQuery}`);
+    container.innerHTML = `
+      <div class="source-link-row">
+        <span class="task-status-badge completed">Original NCERT</span>
+      </div>
+      <h2 style="margin-bottom:6px">Section ${data.section_id} - ${data.section_title || sectionTitle || sectionId}</h2>
+      <div class="admin-meta" style="margin-bottom:14px">${data.chapter_title} | ${data.chunk_count} grounded chunk(s)</div>
+      <div class="reading-content" style="max-height:none">${mdToHtml(data.source_content)}</div>
+      <div class="admin-meta" style="margin-top:12px">This is the original textbook-grounded source content, separate from the adaptive generated lesson.</div>
+    `;
+    renderKaTeX(container);
+  } catch (err) {
+    container.innerHTML = `<div class="admin-meta">${err.message}</div>`;
+  }
+}
+
+async function openChapterSource(chapterNumber, chapterTitle = "") {
+  const overlay = $("source-overlay");
+  const container = $("source-content");
+  if (!overlay || !container) return;
+  show(overlay);
+  container.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading chapter source overview...</p></div>`;
+  try {
+    const learnerId = getLearnerId();
+    const learnerQuery = learnerId ? `?learner_id=${encodeURIComponent(learnerId)}` : "";
+    const data = await api(`/learning/source-chapter/${chapterNumber}${learnerQuery}`);
+    container.innerHTML = `
+      <div class="source-link-row">
+        <span class="task-status-badge completed">Original NCERT</span>
+      </div>
+      <h2 style="margin-bottom:6px">Chapter ${data.chapter_number} - ${data.chapter_title || chapterTitle || `Chapter ${chapterNumber}`}</h2>
+      <div class="admin-meta" style="margin-bottom:14px">${data.chunk_count} grounded chunk(s)</div>
+      <div class="reading-content" style="max-height:none">${mdToHtml(data.source_content)}</div>
+      <div class="admin-meta" style="margin-top:12px">This is the original chapter-level textbook-grounded source overview, separate from the adaptive generated lesson.</div>
+    `;
+    renderKaTeX(container);
+  } catch (err) {
+    container.innerHTML = `<div class="admin-meta">${err.message}</div>`;
+  }
+}
+
+
+// -- DAILY PLAN ------------------------------------------------------------------------
 function renderDailyPlan(tasks) {
   const container = $("daily-plan-content");
   if (!container) return;
@@ -1554,7 +1830,7 @@ function renderDailyPlan(tasks) {
       <div style="margin-bottom:14px">
         <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
         ${dayTasks.map(t => {
-        const icon = t.task_type === "read" ? "📖" : (t.chapter_level ? "📋" : "📝");
+        const icon = t.task_type === "read" ? "Read" : (t.chapter_level ? "Final" : "Quiz");
         const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
         return `
           <div class="task-card pending" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} style="cursor:pointer;border-left:3px solid var(--accent);margin-bottom:8px">
@@ -1575,12 +1851,12 @@ function renderDailyPlan(tasks) {
   const todayTasks = pending.slice(0, 4);
 
   if (todayTasks.length === 0) {
-    container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted)">✨ All caught up! No pending tasks for today.</div>`;
+    container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text-muted)">All caught up! No pending tasks for today.</div>`;
     return;
   }
 
   container.innerHTML = todayTasks.map((t, i) => {
-    const icon = t.task_type === "read" ? "📖" : (t.chapter_level ? "📋" : "📝");
+    const icon = t.task_type === "read" ? "Read" : (t.chapter_level ? "Final" : "Quiz");
     const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
     return `
       <div class="task-card pending" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} style="cursor:pointer;border-left:3px solid var(--accent)">
@@ -1615,7 +1891,7 @@ async function regenerateChapterReading(chapterNumber, taskId) {
         task_id: taskId || null,
       },
     });
-    $("reading-chapter-title").innerHTML = `📖 ${content.chapter_title} <span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">🔄 REGENERATED</span>`;
+    $("reading-chapter-title").innerHTML = `Chapter: ${content.chapter_title} <span style="display:inline-block;padding:2px 8px;background:var(--info-light);color:var(--info);border-radius:12px;font-size:0.7rem;font-weight:600;margin-left:8px">REGENERATED</span>`;
     $("reading-content").innerHTML = mdToHtml(content.content);
     renderKaTeX($("reading-content"));
   } catch (err) {
@@ -1639,7 +1915,7 @@ async function explainQuestion(questionId, selectedIndex = -1, regenerate = fals
         regenerate: !!regenerate,
       },
     });
-    const source = resp.source === "cached" ? "📦 cached" : "✨ generated";
+    const source = resp.source === "cached" ? "cached" : "generated";
     target.innerHTML = `
       <div style="border-left:3px solid var(--info);padding-left:10px">
         <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:6px">${source}</div>
@@ -1667,7 +1943,7 @@ async function renderPlanHistory(learnerId) {
     }
     el.innerHTML = versions.map(v => `
       <div class="revision-item">
-        <div class="revision-icon">🕒</div>
+        <div class="revision-icon">Plan</div>
         <div class="revision-info">
           <div class="revision-chapter">Version ${v.version_number} • Week ${v.current_week}</div>
           <div class="revision-reason">${v.reason || "plan_update"} • ${(v.created_at || "").replace("T", " ").slice(0, 19)}</div>
@@ -1702,7 +1978,7 @@ async function renderConfidenceTrend(learnerId) {
   if (!el) return;
   try {
     const trend = await api(`/learning/confidence-trend/${learnerId}`);
-    const arrow = trend.trend === "up" ? "↗" : (trend.trend === "down" ? "↘" : "→");
+    const arrow = trend.trend === "up" ? "?" : (trend.trend === "down" ? "?" : "?");
     const latest = ((trend.latest_score || 0) * 100).toFixed(0);
     const n = (trend.points || []).length;
     el.textContent = `${arrow} Confidence trend: ${trend.trend} • Latest ${latest}% • ${n} attempts tracked`;
@@ -1712,12 +1988,12 @@ async function renderConfidenceTrend(learnerId) {
 }
 
 
-// ── PRACTICE QUESTIONS ────────────────────────────────────────────────────────────────
+// -- PRACTICE QUESTIONS ----------------------------------------------------------------
 let practiceData = null;
 
 async function openPractice(chapterNumber, sectionId) {
   showScreen("practice");
-  $("practice-title").textContent = `📝 Practice: §${sectionId}`;
+  $("practice-title").textContent = `Practice: Section ${sectionId}`;
   $("practice-questions").innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Generating practice questions...</p></div>`;
   $("btn-check-practice").disabled = true;
   hide($("practice-feedback"));
@@ -1767,11 +2043,11 @@ function checkPractice() {
         correct++;
         resultDiv.style.background = "var(--success-light)";
         resultDiv.style.color = "var(--success)";
-        resultDiv.textContent = "✅ Correct!";
+        resultDiv.textContent = "? Correct!";
       } else {
         resultDiv.style.background = "var(--danger-light)";
         resultDiv.style.color = "var(--danger)";
-        resultDiv.textContent = `❌ Incorrect. Answer: ${(q.options || [])[correctIdx] || "N/A"}`;
+        resultDiv.textContent = `? Incorrect. Answer: ${(q.options || [])[correctIdx] || "N/A"}`;
       }
     }
   });
@@ -1779,7 +2055,7 @@ function checkPractice() {
   const pct = ((correct / total) * 100).toFixed(0);
   const fb = $("practice-feedback");
   show(fb);
-  fb.innerHTML = `<div style="text-align:center;padding:16px"><h3>🎯 ${correct}/${total} (${pct}%)</h3><p>${correct === total ? "🌟 Perfect!" : correct >= total * 0.6 ? "👍 Good job!" : "💪 Keep practicing!"}</p></div>`;
+  fb.innerHTML = `<div style="text-align:center;padding:16px"><h3>Score ${correct}/${total} (${pct}%)</h3><p>${correct === total ? "Perfect!" : correct >= total * 0.6 ? "Good job!" : "Keep practicing!"}</p></div>`;
   $("btn-check-practice").disabled = true;
 }
 
@@ -1934,3 +2210,5 @@ function focusWeakArea(areaLabel) {
     alert(`No current-week tasks found for ${area}. Try reviewing chapter cards below.`);
   }
 }
+
+

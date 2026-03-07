@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.password import hash_password, verify_password
-from app.core.jwt_auth import create_token
+from app.core.jwt_auth import create_admin_token, create_token
+from app.core.settings import settings
 from app.memory.cache import redis_client
 from app.memory.database import get_db
 from app.models.entities import Learner, LearnerProfile, StudentAuth
@@ -60,6 +61,19 @@ class AuthResponse(BaseModel):
     learner_id: str
     username: str
     name: str
+    role: str = "student"
+
+
+class AdminLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class AdminAuthResponse(BaseModel):
+    token: str
+    username: str
+    name: str
+    role: str = "admin"
 
 
 @router.post("/start-signup", response_model=StartSignupResponse)
@@ -118,6 +132,7 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
             learner_id=str(existing.learner_id),
             username=existing.username,
             name=existing.name,
+            role="student",
         )
 
     duplicate_email = (
@@ -161,6 +176,7 @@ async def signup(payload: SignupRequest, db: AsyncSession = Depends(get_db)):
         learner_id=str(learner.id),
         username=auth.username,
         name=auth.name,
+        role="student",
     )
 
 
@@ -178,4 +194,20 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
         learner_id=str(auth.learner_id),
         username=auth.username,
         name=auth.name,
+        role="student",
+    )
+
+
+@router.post("/admin-login", response_model=AdminAuthResponse)
+async def admin_login(payload: AdminLoginRequest):
+    username = payload.username.strip()
+    password = payload.password
+    if username != settings.admin_username or password != settings.admin_password:
+        raise HTTPException(status_code=401, detail="Invalid admin username or password.")
+
+    return AdminAuthResponse(
+        token=create_admin_token(username),
+        username=username,
+        name="Admin",
+        role="admin",
     )

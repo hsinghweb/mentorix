@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     jwt_secret: str = "mentorix-dev-secret-change-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 60 * 24 * 7  # 7 days
+    admin_username: str = "admin"
+    admin_password: str = "admin"
 
     max_state_transitions: int = 10
     max_adaptation_shifts_per_concept: int = 2

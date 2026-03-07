@@ -23,6 +23,7 @@ from app.core.timeline import (
 )
 from app.memory.cache import redis_client
 from app.memory.database import get_db
+from app.agents.decision_logger import log_agent_decision
 from app.mcp.client import execute_mcp
 from app.mcp.contracts import MCPRequest
 from app.models.entities import (
@@ -1293,6 +1294,24 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         engagement_minutes=payload.time_spent_minutes,
         extra={"diagnostic_score": score, "math_9_percent": profile.math_9_percent},
     )
+    await log_agent_decision(
+        db=db,
+        learner_id=use_learner_id,
+        agent_name="onboarding",
+        decision_type="onboarding_plan_created",
+        chapter=week_1.chapter,
+        input_snapshot={
+            "diagnostic_score": score,
+            "selected_timeline_weeks": selected_timeline_weeks,
+            "math_9_percent": profile.math_9_percent,
+        },
+        output_payload={
+            "recommended_timeline_weeks": recommended_timeline_weeks,
+            "current_forecast_weeks": current_forecast_weeks,
+            "timeline_delta_weeks": timeline_delta_weeks,
+            "week_1_chapter": week_1.chapter,
+        },
+    )
     await db.commit()
 
     token = create_token(use_learner_id, _auth_for_token.username) if _auth_for_token else None
@@ -1605,6 +1624,24 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
             pacing_status=pacing_status,
             reason=decision,
         )
+    )
+    await log_agent_decision(
+        db=db,
+        learner_id=payload.learner_id,
+        agent_name="planner",
+        decision_type="weekly_replan_decision",
+        chapter=chapter,
+        input_snapshot={
+            "score": score,
+            "threshold": threshold,
+            "attempt_count": attempt_count,
+        },
+        output_payload={
+            "decision": decision,
+            "current_forecast_weeks": current_forecast_weeks,
+            "timeline_delta_weeks": timeline_delta_weeks,
+            "pacing_status": pacing_status,
+        },
     )
     await db.commit()
 

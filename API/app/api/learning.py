@@ -226,6 +226,24 @@ class ExplainQuestionResponse(BaseModel):
     source: str  # "cached" | "llm" | "fallback"
 
 
+class SourceSectionResponse(BaseModel):
+    chapter_number: int
+    chapter_title: str
+    section_id: str
+    section_title: str
+    source_type: str = "ncert"
+    source_content: str
+    chunk_count: int = 0
+
+
+class SourceChapterResponse(BaseModel):
+    chapter_number: int
+    chapter_title: str
+    source_type: str = "ncert"
+    source_content: str
+    chunk_count: int = 0
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _chapter_info(chapter_number: int) -> dict:
@@ -1484,6 +1502,17 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
                 payload.test_id,
                 payload.question_id,
             )
+            await log_agent_decision(
+                db=db,
+                learner_id=payload.learner_id,
+                agent_name="assessment",
+                decision_type="question_explained",
+                chapter=chapter,
+                section_id=section_id,
+                input_snapshot={"mode": "cached", "question_id": payload.question_id},
+                output_payload={"source": "cached"},
+            )
+            await db.commit()
             return ExplainQuestionResponse(
                 learner_id=str(payload.learner_id),
                 test_id=payload.test_id,
@@ -1609,6 +1638,17 @@ async def explain_test_question(payload: ExplainQuestionRequest, db: AsyncSessio
             "explanation": explanation,
         },
     )
+    await log_agent_decision(
+        db=db,
+        learner_id=payload.learner_id,
+        agent_name="assessment",
+        decision_type="question_explained",
+        chapter=chapter,
+        section_id=section_id,
+        input_snapshot={"mode": "generated" if source == "llm" else "fallback", "question_id": payload.question_id},
+        output_payload={"source": source},
+    )
+    await db.commit()
 
     return ExplainQuestionResponse(
         learner_id=str(payload.learner_id),
@@ -1753,6 +1793,97 @@ async def get_chapter_sections(chapter_number: int, learner_id: UUID, db: AsyncS
     }
 
 
+@router.get("/source-section/{chapter_number}/{section_id}", response_model=SourceSectionResponse)
+async def get_source_section_content(
+    chapter_number: int,
+    section_id: str,
+    learner_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the original NCERT-grounded subsection content used for adaptive generation."""
+    ch_info = _chapter_info(chapter_number)
+    section_title = section_id
+    for item in ch_info.get("subtopics", []):
+        if item["id"] == section_id:
+            section_title = item["title"]
+            break
+
+    stmt = (
+        select(EmbeddingChunk.content)
+        .where(
+            EmbeddingChunk.chapter_number == chapter_number,
+            EmbeddingChunk.section_id == section_id,
+        )
+        .order_by(EmbeddingChunk.chunk_index.asc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    text_parts = [str(row).strip() for row in rows if isinstance(row, str) and str(row).strip()]
+    if not text_parts:
+        raise HTTPException(status_code=404, detail="NCERT source content not found for this section.")
+
+    source_content = "\n\n".join(text_parts)
+    if learner_id is not None:
+        await log_agent_decision(
+            db=db,
+            learner_id=learner_id,
+            agent_name="content",
+            decision_type="source_section_requested",
+            chapter=chapter_display_name(chapter_number),
+            section_id=section_id,
+            input_snapshot={"chapter_number": chapter_number, "section_id": section_id},
+            output_payload={"chunk_count": len(text_parts), "section_title": section_title},
+        )
+        await db.commit()
+
+    return SourceSectionResponse(
+        chapter_number=chapter_number,
+        chapter_title=ch_info["title"],
+        section_id=section_id,
+        section_title=section_title,
+        source_content=_format_math_for_display(source_content),
+        chunk_count=len(text_parts),
+    )
+
+
+@router.get("/source-chapter/{chapter_number}", response_model=SourceChapterResponse)
+async def get_source_chapter_content(
+    chapter_number: int,
+    learner_id: UUID | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the original chapter-grounded NCERT content used for chapter-level reading."""
+    ch_info = _chapter_info(chapter_number)
+    stmt = (
+        select(EmbeddingChunk.content)
+        .where(EmbeddingChunk.chapter_number == chapter_number)
+        .order_by(EmbeddingChunk.chunk_index.asc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    text_parts = [str(row).strip() for row in rows if isinstance(row, str) and str(row).strip()]
+    if not text_parts:
+        raise HTTPException(status_code=404, detail="NCERT source content not found for this chapter.")
+
+    source_content = "\n\n".join(text_parts)
+    if learner_id is not None:
+        await log_agent_decision(
+            db=db,
+            learner_id=learner_id,
+            agent_name="content",
+            decision_type="source_chapter_requested",
+            chapter=chapter_display_name(chapter_number),
+            input_snapshot={"chapter_number": chapter_number},
+            output_payload={"chunk_count": len(text_parts), "chapter_title": ch_info["title"]},
+        )
+        await db.commit()
+
+    return SourceChapterResponse(
+        chapter_number=chapter_number,
+        chapter_title=ch_info["title"],
+        source_content=_format_math_for_display(source_content),
+        chunk_count=len(text_parts),
+    )
+
+
 @router.post("/content/section")
 async def get_section_content(payload: SubsectionContentRequest, db: AsyncSession = Depends(get_db)):
     """Generate reading content for a specific subsection, grounded on section-level chunk."""
@@ -1814,6 +1945,16 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 if sp.status == "not_started":
                     sp.status = "reading_done"
             await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+            await log_agent_decision(
+                db=db,
+                learner_id=payload.learner_id,
+                agent_name="content",
+                decision_type="section_content_served",
+                chapter=chapter_key,
+                section_id=payload.section_id,
+                input_snapshot={"mode": "cached", "chapter_number": payload.chapter_number},
+                output_payload={"source": "cached", "tone": cached.get("tone", "normal")},
+            )
             await db.commit()
             return {
                 "chapter_number": payload.chapter_number,
@@ -1853,6 +1994,16 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
         )
         required_read_seconds = _estimate_read_seconds(fallback_content, combined_ability)
         await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+        await log_agent_decision(
+            db=db,
+            learner_id=payload.learner_id,
+            agent_name="content",
+            decision_type="section_content_served",
+            chapter=chapter_key,
+            section_id=payload.section_id,
+            input_snapshot={"mode": "fallback", "chapter_number": payload.chapter_number},
+            output_payload={"source": "fallback", "tone": tone_config["tone"]},
+        )
         await db.commit()
         return {
             "chapter_number": payload.chapter_number,
@@ -1912,6 +2063,16 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 section_title, generated_content, tone_config["tone"], required_read_seconds=required_read_seconds,
             )
             await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+            await log_agent_decision(
+                db=db,
+                learner_id=payload.learner_id,
+                agent_name="content",
+                decision_type="section_content_served",
+                chapter=chapter_key,
+                section_id=payload.section_id,
+                input_snapshot={"mode": "generated", "chapter_number": payload.chapter_number, "tone": tone_config["tone"]},
+                output_payload={"source": "llm", "required_read_seconds": required_read_seconds},
+            )
             await db.commit()
             return {
                 "chapter_number": payload.chapter_number,
@@ -1928,6 +2089,16 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
     rag_content = f"# {section_title}\n\n## Key Concepts\n\n{context}\n\n*Content sourced from NCERT textbook.*"
     required_read_seconds = _estimate_read_seconds(rag_content, combined_ability)
     await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+    await log_agent_decision(
+        db=db,
+        learner_id=payload.learner_id,
+        agent_name="content",
+        decision_type="section_content_served",
+        chapter=chapter_key,
+        section_id=payload.section_id,
+        input_snapshot={"mode": "rag_only", "chapter_number": payload.chapter_number},
+        output_payload={"source": "rag_only", "required_read_seconds": required_read_seconds},
+    )
     await db.commit()
     return {
         "chapter_number": payload.chapter_number,
@@ -1989,6 +2160,17 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 "answer_key": cached["answer_key"],
                 "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
             }
+            await log_agent_decision(
+                db=db,
+                learner_id=payload.learner_id,
+                agent_name="assessment",
+                decision_type="section_test_generated",
+                chapter=chapter_key,
+                section_id=payload.section_id,
+                input_snapshot={"mode": "cached", "chapter_number": payload.chapter_number},
+                output_payload={"source": "cached", "question_count": len(cached_questions)},
+            )
+            await db.commit()
             return {
                 "learner_id": str(payload.learner_id),
                 "chapter": chapter_key,
@@ -2114,6 +2296,17 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
         str(payload.learner_id), payload.chapter_number, payload.section_id,
         section_title, test_id, questions_dicts, answer_key,
     )
+    await log_agent_decision(
+        db=db,
+        learner_id=payload.learner_id,
+        agent_name="assessment",
+        decision_type="section_test_generated",
+        chapter=chapter_key,
+        section_id=payload.section_id,
+        input_snapshot={"mode": "generated", "chapter_number": payload.chapter_number},
+        output_payload={"source": "llm", "question_count": len(questions_dicts)},
+    )
+    await db.commit()
 
     return {
         "learner_id": str(payload.learner_id),

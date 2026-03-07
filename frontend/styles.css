@@ -60,6 +60,15 @@ body {
 }
 .brand-icon {
     font-size: 56px;
+    width: 88px;
+    height: 88px;
+    margin: 0 auto 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 24px;
+    background: linear-gradient(135deg, rgba(108, 92, 231, 0.18), rgba(116, 185, 255, 0.18));
+    border: 1px solid var(--border-light);
     margin-bottom: 12px;
     filter: drop-shadow(0 0 20px var(--accent-glow));
 }
@@ -76,6 +85,12 @@ body {
     color: var(--text-secondary);
     font-size: 0.95rem;
     margin-top: 4px;
+}
+.brand-mission {
+    color: var(--accent-light);
+    font-size: 0.9rem;
+    margin-top: 10px;
+    font-weight: 600;
 }
 .auth-panel {
     background: var(--bg-card);
@@ -332,6 +347,20 @@ body {
 .nav-title { font-size: 1.2rem; font-weight: 700; color: var(--accent-light); }
 .nav-right { display: flex; align-items: center; gap: 16px; }
 .nav-student { font-size: 0.9rem; color: var(--text-secondary); }
+.nav-role-badge {
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--info-light);
+    color: var(--info);
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+.admin-nav {
+    display: flex;
+    gap: 8px;
+}
 
 /* ── Dashboard ── */
 .screen { padding: 24px 28px; max-width: 1100px; margin: 0 auto; }
@@ -556,6 +585,14 @@ body {
     border-radius: var(--radius-sm);
     padding: 12px;
 }
+.comparative-card.simple {
+    padding: 16px;
+}
+.comparative-explainer {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+    margin-top: 6px;
+}
 .comparative-action-list {
     display: flex;
     flex-wrap: wrap;
@@ -675,6 +712,157 @@ body {
 .reading-status.complete { background: var(--success-light); color: var(--success); }
 .reading-status.in-progress { background: var(--info-light); color: var(--info); }
 
+.source-link-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 12px;
+}
+
+.admin-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+    gap: 12px;
+}
+.admin-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow-sm);
+}
+.admin-card h3,
+.admin-card h4 {
+    font-size: 0.95rem;
+    margin-bottom: 8px;
+}
+.admin-stat {
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--accent-light);
+}
+.admin-meta {
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+.admin-two-col {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    gap: 14px;
+}
+.admin-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+.admin-summary {
+    color: var(--text-secondary);
+    font-size: 0.86rem;
+}
+.admin-student-list,
+.admin-student-detail {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    min-height: 280px;
+}
+.admin-student-item {
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-elevated);
+    cursor: pointer;
+    transition: var(--transition);
+    margin-bottom: 10px;
+}
+.admin-student-item:hover,
+.admin-student-item.active {
+    border-color: var(--accent);
+    transform: translateX(3px);
+}
+.risk-badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+.risk-badge {
+    padding: 4px 8px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    background: var(--warning-light);
+    color: var(--warning);
+}
+.agent-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 12px;
+}
+.agent-card {
+    background: linear-gradient(180deg, rgba(42, 46, 66, 0.96), rgba(34, 37, 54, 0.96));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow-sm);
+}
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+.status-badge.idle {
+    background: rgba(107, 113, 144, 0.14);
+    color: var(--text-muted);
+}
+.status-badge.working {
+    background: var(--info-light);
+    color: var(--info);
+}
+.status-badge.completed {
+    background: var(--success-light);
+    color: var(--success);
+}
+.overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 10, 16, 0.82);
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    backdrop-filter: blur(4px);
+}
+.overlay-card {
+    width: min(860px, 100%);
+    max-height: 84vh;
+    overflow: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    position: relative;
+    box-shadow: var(--shadow);
+}
+.overlay-close {
+    position: absolute;
+    top: 12px;
+    right: 14px;
+    width: 34px;
+    height: 34px;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-elevated);
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+
 /* ── Test Feedback ── */
 .test-feedback {
     margin-top: 20px;
@@ -725,4 +913,6 @@ body {
     .profile-card { grid-template-columns: repeat(2, 1fr); }
     .chapters-grid, .confidence-grid { grid-template-columns: 1fr; }
     .top-nav { padding: 12px 16px; }
+    .admin-nav { display: none; }
+    .admin-two-col { grid-template-columns: 1fr; }
 }
