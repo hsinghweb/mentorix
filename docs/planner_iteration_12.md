@@ -138,3 +138,44 @@
 - [x] `python -m py_compile API/app/api/auth.py API/app/api/admin.py API/app/api/learning.py API/app/api/onboarding.py API/app/core/jwt_auth.py API/app/core/settings.py`
 - [x] `node --check frontend/app.js`
 - [x] `PYTHONPATH=API python -c "import app.api.admin, app.api.auth, app.api.learning, app.api.onboarding"`
+
+---
+
+## 5. Adaptive Week Progression and Timeline Compression [P0]
+
+- [x] Fix week advancement so a chapter completed in `completed_first_attempt` state is treated as fully completed for next-week planning.
+- [x] Ensure Week 2 does not repeat Chapter 1 when Chapter 1 is already completed in Week 1.
+- [x] Rebuild future rough-plan weeks from actual chapter progression state instead of appending stale onboarding plan rows.
+- [x] Generate next-week tasks from the first truly incomplete chapter in syllabus order.
+- [x] Preserve past committed weeks while re-planning future weeks.
+- [x] Add actual week-start override support so when a week is completed early, the next week can begin immediately.
+- [x] Use actual week-start overrides for dashboard/plan/schedule week labels and calendar ranges.
+- [x] Update scheduled completion date calculation so early completion visibly pulls the end date forward.
+- [x] Keep active-pace completion estimation alongside scheduled timeline date.
+- [x] Add targeted regression tests for chapter rollover and early-start week-date compression.
+
+### Acceptance
+
+- [x] If Chapter 1 is completed in Week 1, Week 2 starts with Chapter 2 tasks, not Chapter 1 again.
+- [x] A `completed_first_attempt` chapter is treated as completed everywhere relevant to progression.
+- [x] Finishing a week early can start the next week immediately in the displayed timeline.
+- [x] Plan/progress/schedule views show recalculated week date ranges after early completion.
+- [x] Completion date becomes earlier when the learner finishes weeks ahead of nominal calendar pace.
+
+---
+
+## 6. Post-Audit Improvements (GPT-5.3 Recheck) [P2]
+
+- [x] Remove duplicated comparative analytics renderer blocks in `frontend/app.js` and keep a single source of truth.
+- [x] Add one backend integration test that advances week from a `completed_first_attempt` chapter and asserts Week 2 chapter assignment is correct.
+- [x] Add one API regression test to verify `week_start_overrides` shifts week labels/dates after early completion.
+- [x] Add one UI regression check to confirm the displayed scheduled completion date changes after early week completion.
+- [x] Add structured planner logs for week advancement: previous forecast, new forecast, and whether early-start override was applied.
+- [x] Add a short operator note in docs for `week_start_overrides` payload semantics and rollback expectations.
+
+### Acceptance
+
+- [x] No duplicated comparative analytics render functions remain in frontend.
+- [x] Week advancement regressions are covered by both unit and integration-level tests.
+- [x] Timeline date compression is validated at API and UI levels.
+- [x] Week advancement behavior is easier to diagnose from logs and docs.

@@ -214,6 +214,13 @@ function formatTime(seconds) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+function formatIsoDateLabel(isoDate) {
+  if (!isoDate) return "N/A";
+  const d = new Date(isoDate);
+  if (Number.isNaN(d.getTime())) return String(isoDate);
+  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
 function mdToHtml(md) {
   const { masked, restore } = protectMathBlocks(md);
   if (!masked) return "";
@@ -669,7 +676,7 @@ async function loadDashboard() {
     try {
       // Try onboarding endpoint as fallback
       renderDashboardFallback();
-      renderComparativeAnalyticsFallback("Comparative analytics unavailable");
+      _renderComparativeAnalyticsFallbackLatest("Comparative analytics unavailable");
     } catch (e2) {
       $("profile-card").innerHTML = `<div class="profile-stat"><div class="stat-value">Error</div><div class="stat-label">${err.message}</div></div>`;
     }
@@ -702,6 +709,14 @@ function renderDashboard(data) {
         <div class="profile-stat">
             <div class="stat-value">${data.selected_weeks || "—"}/${data.suggested_weeks || "—"}</div>
             <div class="stat-label">Chosen / Suggested Wks <span class="help-tip" title="Chosen weeks are your preferred timeline. Suggested weeks are adaptive and can increase or decrease with your consistency and scores.">?</span></div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date)}</div>
+            <div class="stat-label">Scheduled Completion <span class="help-tip" title="Expected completion date using your currently scheduled week timeline. This date shifts earlier or later when weeks are replanned.">?</span></div>
+        </div>
+        <div class="profile-stat">
+            <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date_active_pace)}</div>
+            <div class="stat-label">Active Pace ETA <span class="help-tip" title="Estimated completion date based on your recent actual learning pace.">?</span></div>
         </div>
     `;
 
@@ -744,98 +759,6 @@ function renderDashboardFallback() {
             <div class="stat-label">Loading...</div>
         </div>
     `;
-}
-
-async function loadComparativeAnalytics(learnerId) {
-  try {
-    const data = await api(`/onboarding/comparative-analytics/${learnerId}`);
-    renderComparativeAnalytics(data);
-  } catch (err) {
-    console.warn("Comparative analytics load failed:", err);
-    renderComparativeAnalyticsFallback("Comparative analytics not available yet.");
-  }
-}
-
-function renderComparativeAnalytics(data) {
-  const summary = $("comparative-summary");
-  const metrics = $("comparative-metrics");
-  const signals = $("comparative-signals");
-  if (!summary || !metrics || !signals) return;
-
-  const ind = data.individual || {};
-  const cmp = data.comparative || {};
-  const avg = cmp.average_vs_cohort || {};
-  const cluster = cmp.similar_learner_cluster || {};
-  const hooks = data.hooks || {};
-  const ew = hooks.early_warning_signals || {};
-  const anonymized = !!data.anonymized;
-
-  summary.innerHTML = `
-    <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
-      <div><strong>Cohort size:</strong> ${data.cohort_size ?? 0}</div>
-      <div><strong>Privacy mode:</strong> ${anonymized ? "Anonymized metrics enabled" : "Limited (cohort too small)"}</div>
-      <div><strong>Adaptive hint:</strong> ${hooks.adaptive_difficulty_hint || "maintain"}</div>
-    </div>
-  `;
-
-  const percentile = cmp.percentile_ranking;
-  const learnerScore = Number(ind.topic_mastery_score || 0);
-  const completion = Number(ind.completion_rate_percent || 0);
-  const velocity = Number(ind.learning_velocity || 0);
-  const trend = Number((cmp.trend_over_time || {}).improvement_trend || ind.improvement_trend || 0);
-  metrics.innerHTML = `
-    <div class="comparative-card">
-      <div class="comparative-label">Mastery Score</div>
-      <div class="comparative-value">${(learnerScore * 100).toFixed(1)}%</div>
-    </div>
-    <div class="comparative-card">
-      <div class="comparative-label">Percentile Rank <span class="help-tip" title="Your standing compared to the cohort. Higher percentile means you are performing better than more learners.">?</span></div>
-      <div class="comparative-value">${percentile === null || percentile === undefined ? "N/A" : `${Number(percentile).toFixed(1)}%`}</div>
-    </div>
-    <div class="comparative-card">
-      <div class="comparative-label">Vs Cohort Delta <span class="help-tip" title="Difference between your mastery score and the cohort average. Positive means above average; negative means below average.">?</span></div>
-      <div class="comparative-value">${avg.delta === null || avg.delta === undefined ? "N/A" : `${(Number(avg.delta) * 100).toFixed(1)}%`}</div>
-    </div>
-    <div class="comparative-card">
-      <div class="comparative-label">Completion Rate</div>
-      <div class="comparative-value">${completion.toFixed(1)}%</div>
-    </div>
-    <div class="comparative-card">
-      <div class="comparative-label">Learning Velocity <span class="help-tip" title="How quickly you complete mastery milestones over recent activity windows. Higher means faster progression.">?</span></div>
-      <div class="comparative-value">${velocity.toFixed(2)}</div>
-    </div>
-    <div class="comparative-card">
-      <div class="comparative-label">Improvement Trend</div>
-      <div class="comparative-value">${trend >= 0 ? "+" : ""}${(trend * 100).toFixed(1)}%</div>
-    </div>
-    <div class="comparative-card">
-      <div class="comparative-label">Similar Cluster</div>
-      <div class="comparative-value">${cluster.cluster_size ?? "N/A"}</div>
-    </div>
-  `;
-
-  const signalRows = [
-    ["Low Mastery", !!ew.low_mastery],
-    ["High Timeline Drift", !!ew.timeline_drift_high],
-    ["Below Cohort Avg", !!ew.below_cohort_average],
-    ["Repeated Weak Performance", !!ew.repeated_weak_performance],
-  ];
-  signals.innerHTML = signalRows.map(([label, risk]) => `
-    <div class="comparative-card">
-      <div class="comparative-label">${label}</div>
-      <span class="signal-chip ${risk ? "risk" : "ok"}">${risk ? "Attention" : "Stable"}</span>
-    </div>
-  `).join("");
-}
-
-function renderComparativeAnalyticsFallback(message) {
-  const summary = $("comparative-summary");
-  const metrics = $("comparative-metrics");
-  const signals = $("comparative-signals");
-  if (!summary || !metrics || !signals) return;
-  summary.innerHTML = `<div style="color:var(--text-muted)">${message || "Comparative analytics unavailable."}</div>`;
-  metrics.innerHTML = "";
-  signals.innerHTML = "";
 }
 
 function renderTasks(tasks, weekNumber, weekLabel = null) {
@@ -2071,14 +1994,14 @@ async function loadComparativeAnalytics(learnerId) {
   if (actions) actions.innerHTML = "";
   try {
     const data = await api(`/onboarding/comparative-analytics/${learnerId}`);
-    renderComparativeAnalytics(data);
+    _renderComparativeAnalyticsLatest(data);
   } catch (err) {
     console.warn("Comparative analytics load failed:", err);
-    renderComparativeAnalyticsFallback("Comparative analytics not available yet.");
+    _renderComparativeAnalyticsFallbackLatest("Comparative analytics not available yet.");
   }
 }
 
-function renderComparativeAnalytics(data) {
+function _renderComparativeAnalyticsLatest(data) {
   const summary = $("comparative-summary");
   const metrics = $("comparative-metrics");
   const signals = $("comparative-signals");
@@ -2179,7 +2102,7 @@ function renderComparativeAnalytics(data) {
   `;
 }
 
-function renderComparativeAnalyticsFallback(message) {
+function _renderComparativeAnalyticsFallbackLatest(message) {
   const summary = $("comparative-summary");
   const metrics = $("comparative-metrics");
   const signals = $("comparative-signals");

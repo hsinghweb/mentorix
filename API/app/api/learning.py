@@ -1,4 +1,4 @@
-"""
+﻿"""
 Learning API: content delivery, test generation, task completion, weekly cycle, dashboard.
 
 This module provides the student-facing learning endpoints that drive the core
@@ -30,7 +30,8 @@ from app.core.timeline import (
     canonical_today,
     estimate_completion_date,
     format_week_label,
-    week_bounds_from_onboarding,
+    scheduled_completion_date,
+    week_bounds_from_plan,
 )
 from app.data.syllabus_structure import SYLLABUS_CHAPTERS, chapter_display_name
 from app.mcp.client import execute_mcp
@@ -85,7 +86,7 @@ async def _generate_text_with_mcp(prompt: str, *, role: str = "content_generator
     return (str(text) if text else None), meta
 
 
-# ── Pydantic models ──────────────────────────────────────────────────────────
+# â”€â”€ Pydantic models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class ContentRequest(BaseModel):
     learner_id: UUID
@@ -244,7 +245,7 @@ class SourceChapterResponse(BaseModel):
     chunk_count: int = 0
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _chapter_info(chapter_number: int) -> dict:
     for ch in SYLLABUS_CHAPTERS:
@@ -320,6 +321,136 @@ def _profile_onboarding_date(profile: LearnerProfile):
     return profile.onboarding_date or canonical_today()
 
 
+def _chapter_is_completed(status: str | None) -> bool:
+    return str(status or "").startswith("completed")
+
+
+def _extract_week_start_overrides(plan_payload: dict | None) -> dict:
+    if not isinstance(plan_payload, dict):
+        return {}
+    overrides = plan_payload.get("week_start_overrides")
+    return overrides if isinstance(overrides, dict) else {}
+
+
+def _chapter_number_from_label(chapter_label: str | None) -> int | None:
+    match = re.search(r"(\d+)", str(chapter_label or ""))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _remaining_chapter_numbers(progressions: list[ChapterProgression]) -> list[int]:
+    completed = {
+        _chapter_number_from_label(p.chapter)
+        for p in progressions
+        if _chapter_is_completed(p.status)
+    }
+    return [
+        int(ch["number"])
+        for ch in SYLLABUS_CHAPTERS
+        if int(ch["number"]) not in completed
+    ]
+
+
+def _build_replanned_weeks(*, current_week: int, total_weeks: int, remaining_chapters: list[int]) -> list[dict]:
+    weeks: list[dict] = []
+    for offset, week_number in enumerate(range(1, max(1, int(total_weeks)) + 1), start=0):
+        if week_number < current_week:
+            continue
+        chapter_index = week_number - current_week
+        if chapter_index < len(remaining_chapters):
+            chapter_number = remaining_chapters[chapter_index]
+            chapter_info = _chapter_info(chapter_number)
+            weeks.append(
+                {
+                    "week": week_number,
+                    "chapter": chapter_display_name(chapter_number),
+                    "focus": chapter_info["title"],
+                }
+            )
+        else:
+            weeks.append(
+                {
+                    "week": week_number,
+                    "chapter": "Revision",
+                    "focus": "mixed revision and weak-topic reinforcement",
+                }
+            )
+    return weeks
+
+
+def _merge_replanned_future(
+    existing_weeks: list[dict],
+    *,
+    current_week: int,
+    total_weeks: int,
+    remaining_chapters: list[int],
+) -> list[dict]:
+    preserved = [
+        {"week": int(entry.get("week")), "chapter": entry.get("chapter"), "focus": entry.get("focus")}
+        for entry in existing_weeks
+        if isinstance(entry.get("week"), int) and int(entry.get("week")) < current_week
+    ]
+    future = _build_replanned_weeks(
+        current_week=current_week,
+        total_weeks=total_weeks,
+        remaining_chapters=remaining_chapters,
+    )
+    return preserved + future
+
+
+def _build_week_tasks_for_chapter(*, learner_id: UUID, week_number: int, chapter_number: int) -> list[Task]:
+    chapter_key = chapter_display_name(chapter_number)
+    chapter_info = _chapter_info(chapter_number)
+    subtopics = chapter_info.get("subtopics", [])
+    tasks: list[Task] = []
+    sort = 0
+    for subtopic in subtopics:
+        sort += 1
+        tasks.append(
+            Task(
+                learner_id=learner_id,
+                week_number=week_number,
+                chapter=chapter_key,
+                task_type="read",
+                title=f"Read: {subtopic['id']} {subtopic['title']}",
+                sort_order=sort,
+                status="pending",
+                is_locked=False,
+                proof_policy={"type": "reading_time", "min_seconds": 120, "section_id": subtopic["id"]},
+            )
+        )
+        sort += 1
+        tasks.append(
+            Task(
+                learner_id=learner_id,
+                week_number=week_number,
+                chapter=chapter_key,
+                task_type="test",
+                title=f"Test: {subtopic['id']} {subtopic['title']}",
+                sort_order=sort,
+                status="pending",
+                is_locked=False,
+                proof_policy={"type": "section_test", "threshold": COMPLETION_THRESHOLD, "section_id": subtopic["id"]},
+            )
+        )
+    sort += 1
+    tasks.append(
+        Task(
+            learner_id=learner_id,
+            week_number=week_number,
+            chapter=chapter_key,
+            task_type="test",
+            title=f"Chapter Test: {chapter_info['title']}",
+            sort_order=sort,
+            status="pending",
+            is_locked=False,
+            proof_policy={"type": "test_score", "threshold": COMPLETION_THRESHOLD, "chapter_level": True},
+        )
+    )
+    return tasks
+
+
 async def _apply_dynamic_reading_requirement(
     db: AsyncSession,
     learner_id: UUID,
@@ -353,7 +484,7 @@ def _looks_like_math_fragment(fragment: str) -> bool:
     s = str(fragment or "").strip()
     if not s:
         return False
-    if any(ch in s for ch in ["\\", "^", "_", "=", "+", "-", "*", "/", "×", "÷", "<", ">"]):
+    if any(ch in s for ch in ["\\", "^", "_", "=", "+", "-", "*", "/", "Ã—", "Ã·", "<", ">"]):
         return True
     if re.fullmatch(r"[a-zA-Z]\d*", s):
         return True
@@ -474,7 +605,7 @@ def _repair_unwrapped_math_fragments(text: str) -> str:
                 return expr
             return f"\\({expr}\\)"
         repaired = re.sub(
-            r"(?<!\\\()(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*\s*(?:=|\+|-|\*|/|\^|×|÷|<|>)\s*[A-Za-z0-9_\\][A-Za-z0-9_\\\s+\-*/^×÷<>{}]*)",
+            r"(?<!\\\()(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*\s*(?:=|\+|-|\*|/|\^|Ã—|Ã·|<|>)\s*[A-Za-z0-9_\\][A-Za-z0-9_\\\s+\-*/^Ã—Ã·<>{}]*)",
             wrap_expr,
             repaired,
         )
@@ -494,10 +625,10 @@ def _count_unwrapped_math_like(text: str) -> int:
     for is_math, chunk in _split_math_blocks(text):
         if is_math:
             continue
-        count += len(re.findall(r"\(\s*[a-zA-Z0-9_\\^{}=+\-*/×÷<>\s]{1,80}\s*\)", chunk))
+        count += len(re.findall(r"\(\s*[a-zA-Z0-9_\\^{}=+\-*/Ã—Ã·<>\s]{1,80}\s*\)", chunk))
         count += len(re.findall(r"(?<!\\\()([A-Za-z0-9_]+\s*/\s*[A-Za-z0-9_]+)(?!\\\))", chunk))
         count += len(re.findall(r"(?<!\\\()([A-Za-z]\s+divides\s+[A-Za-z0-9_\\^{}]+)", chunk, flags=re.IGNORECASE))
-        count += len(re.findall(r"(?<!\\\()([A-Za-z][A-Za-z0-9_]*\s*(?:=|\+|-|\*|/|\^|×|÷)\s*[A-Za-z0-9_\\][A-Za-z0-9_\\\s+\-*/^×÷{}]*)", chunk))
+        count += len(re.findall(r"(?<!\\\()([A-Za-z][A-Za-z0-9_]*\s*(?:=|\+|-|\*|/|\^|Ã—|Ã·)\s*[A-Za-z0-9_\\][A-Za-z0-9_\\\s+\-*/^Ã—Ã·{}]*)", chunk))
     return count
 
 
@@ -749,11 +880,11 @@ async def _get_canonical_section_context(
     return ""
 
 
-# ── In-memory test store (for simplicity; keyed by test_id) ─────────────────
+# â”€â”€ In-memory test store (for simplicity; keyed by test_id) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _test_store: dict[str, dict] = {}
 
 
-# ── ENDPOINTS ─────────────────────────────────────────────────────────────────
+# â”€â”€ ENDPOINTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 # 1. Get reading content for a chapter
 @router.post("/content", response_model=ContentResponse)
@@ -816,7 +947,7 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     context = "\n\n".join(chunks[:5]) if chunks else ""
 
     if not context:
-        # No embeddings available for this chapter — provide a structured fallback
+        # No embeddings available for this chapter â€” provide a structured fallback
         content = (
             f"# {chapter_name}\n\n"
             f"This chapter covers the following topics:\n\n"
@@ -1726,10 +1857,10 @@ async def complete_reading(payload: CompleteReadingRequest, db: AsyncSession = D
         await redis_client.delete(f"learning:dashboard:{payload.learner_id}")
     except Exception:
         pass
-    return CompleteReadingResponse(task_id=str(task.id), accepted=True, reason="Reading completed! ✅")
+    return CompleteReadingResponse(task_id=str(task.id), accepted=True, reason="Reading completed! âœ…")
 
 
-# ── SUBSECTION ENDPOINTS ─────────────────────────────────────────────────────
+# â”€â”€ SUBSECTION ENDPOINTS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 async def _ensure_subsection_rows(db: AsyncSession, learner_id: UUID, chapter_number: int):
     """Lazily create SubsectionProgression rows for all subsections of a chapter."""
@@ -2323,21 +2454,21 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
 # 5. Check if week is complete and advance
 @router.post("/week/advance", response_model=WeekCompleteResponse)
 async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
-    """Check if all tasks for current week are done, then create next week."""
+    """Check if all tasks for current week are done, then create the next committed week."""
     profile = await _get_profile(db, learner_id)
     plan = await _get_plan(db, learner_id)
     if not plan:
         raise HTTPException(status_code=404, detail="No plan found. Complete onboarding first.")
 
     current_week = plan.current_week
-
-    # Check if all tasks for current week are completed
-    tasks = (await db.execute(
-        select(Task).where(
-            Task.learner_id == learner_id,
-            Task.week_number == current_week,
+    tasks = (
+        await db.execute(
+            select(Task).where(
+                Task.learner_id == learner_id,
+                Task.week_number == current_week,
+            )
         )
-    )).scalars().all()
+    ).scalars().all()
 
     incomplete = [t for t in tasks if t.status != "completed"]
     if incomplete:
@@ -2346,156 +2477,150 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             detail=f"Week {current_week} has {len(incomplete)} incomplete task(s). Complete all tasks first.",
         )
 
-    # Determine which chapters were completed this week (rough_plan or weeks)
-    plan_payload = plan.plan_payload or {}
+    plan_payload = dict(plan.plan_payload or {})
     raw_weeks = plan_payload.get("rough_plan", []) or plan_payload.get("weeks", [])
     week_chapters = [e.get("chapter", "") for e in raw_weeks if e.get("week") == current_week]
 
-    completed_chapters = []
-    revision_chapters = []
-    for ch in week_chapters:
-        cp = (await db.execute(
-            select(ChapterProgression).where(
-                ChapterProgression.learner_id == learner_id,
-                ChapterProgression.chapter == ch,
+    completed_chapters: list[str] = []
+    revision_chapters: list[str] = []
+    for chapter_label in week_chapters:
+        cp = (
+            await db.execute(
+                select(ChapterProgression).where(
+                    ChapterProgression.learner_id == learner_id,
+                    ChapterProgression.chapter == chapter_label,
+                )
             )
-        )).scalar_one_or_none()
-        if cp:
-            if cp.revision_queued:
-                revision_chapters.append(ch)
-            if cp.status == "completed":
-                completed_chapters.append(ch)
+        ).scalar_one_or_none()
+        if not cp:
+            continue
+        if cp.revision_queued:
+            revision_chapters.append(chapter_label)
+        if _chapter_is_completed(cp.status):
+            completed_chapters.append(chapter_label)
 
-    # Update profile snapshot
-    db.add(LearnerProfileSnapshot(
-        learner_id=learner_id,
-        reason=f"week_{current_week}_complete",
-        payload={
-            "week": current_week,
-            "mastery": dict(profile.concept_mastery or {}),
-            "cognitive_depth": profile.cognitive_depth,
-        },
-    ))
+    db.add(
+        LearnerProfileSnapshot(
+            learner_id=learner_id,
+            reason=f"week_{current_week}_complete",
+            payload={
+                "week": current_week,
+                "mastery": dict(profile.concept_mastery or {}),
+                "cognitive_depth": profile.cognitive_depth,
+            },
+        )
+    )
 
-    # Recalculate plan: update forecast
     new_week = current_week + 1
     plan.current_week = new_week
 
-    # Recalculate total weeks based on remaining chapters
-    all_progressions = (await db.execute(
-        select(ChapterProgression).where(ChapterProgression.learner_id == learner_id)
-    )).scalars().all()
-    completed_count = sum(1 for p in all_progressions if p.status == "completed")
-    remaining_chapters = 14 - completed_count
+    all_progressions = (
+        await db.execute(
+            select(ChapterProgression).where(ChapterProgression.learner_id == learner_id)
+        )
+    ).scalars().all()
+    remaining_chapter_numbers = _remaining_chapter_numbers(all_progressions)
+    remaining_chapters = len(remaining_chapter_numbers)
 
-    # Dynamic pacing
-    selected = profile.selected_timeline_weeks or 14
+    selected = int(profile.selected_timeline_weeks or 14)
+    prior_forecast = int(profile.current_forecast_weeks or plan.total_weeks or selected)
     if remaining_chapters <= 0:
         plan.total_weeks = current_week
     else:
-        estimated_total = current_week + remaining_chapters
-        plan.total_weeks = max(selected, estimated_total)
+        workload_floor = current_week + remaining_chapters
+        acceleration_credit = max(0, prior_forecast - current_week - remaining_chapters)
+        plan.total_weeks = max(new_week, workload_floor - min(acceleration_credit, 1))
 
-    # Create next week plan entry (rough_plan is source of truth from onboarding)
-    weeks_list = list(plan_payload.get("rough_plan", []) or plan_payload.get("weeks", []))
-    next_chapter_number = None
-    for ch_data in SYLLABUS_CHAPTERS:
-        ch_key = chapter_display_name(ch_data["number"])
-        cp = None
-        for p in all_progressions:
-            if p.chapter == ch_key:
-                cp = p
-                break
-        if cp is None or cp.status != "completed":
-            next_chapter_number = ch_data["number"]
-            break
+    onboarding_date = _profile_onboarding_date(profile)
+    week_start_overrides = dict(_extract_week_start_overrides(plan_payload))
+    _, current_week_end = week_bounds_from_plan(onboarding_date, current_week, week_start_overrides)
+    today = canonical_today()
+    early_start_applied = False
+    if today <= current_week_end:
+        week_start_overrides[str(new_week)] = today.isoformat()
+        early_start_applied = True
+
+    weeks_list = _merge_replanned_future(
+        list(raw_weeks),
+        current_week=new_week,
+        total_weeks=plan.total_weeks,
+        remaining_chapters=remaining_chapter_numbers,
+    )
+    next_chapter_number = remaining_chapter_numbers[0] if remaining_chapter_numbers else None
+    pacing_status = "ahead" if plan.total_weeks < selected else ("behind" if plan.total_weeks > selected else "on_track")
+    logger.info(
+        "event=week_advance_replan learner=%s current_week=%s new_week=%s prev_forecast=%s new_forecast=%s selected_weeks=%s next_chapter=%s early_start_applied=%s",
+        learner_id,
+        current_week,
+        new_week,
+        prior_forecast,
+        int(plan.total_weeks),
+        selected,
+        next_chapter_number,
+        early_start_applied,
+    )
+
+    timeline_payload = dict(plan_payload.get("timeline", {}))
+    timeline_payload.update(
+        {
+            "selected_timeline_weeks": selected,
+            "recommended_timeline_weeks": profile.recommended_timeline_weeks or selected,
+            "current_forecast_weeks": int(plan.total_weeks),
+            "timeline_delta_weeks": int(plan.total_weeks - selected),
+            "pacing_status": pacing_status,
+        }
+    )
+    plan.plan_payload = {
+        **plan_payload,
+        "rough_plan": weeks_list,
+        "weeks": weeks_list,
+        "week_start_overrides": week_start_overrides,
+        "timeline": timeline_payload,
+    }
 
     if next_chapter_number:
-        next_ch_key = chapter_display_name(next_chapter_number)
-        next_ch_info = _chapter_info(next_chapter_number)
-
-        # Check if this week entry already exists
-        existing_week = any(e.get("week") == new_week for e in weeks_list)
-        if not existing_week:
-            weeks_list.append({
-                "week": new_week,
-                "chapter": next_ch_key,
-                "focus": next_ch_info["title"],
-            })
-            plan.plan_payload = {**plan_payload, "rough_plan": weeks_list, "weeks": weeks_list}
-
-        # Create tasks for new week
-        existing_tasks = (await db.execute(
-            select(Task).where(
-                Task.learner_id == learner_id,
-                Task.week_number == new_week,
+        existing_tasks = (
+            await db.execute(
+                select(Task).where(
+                    Task.learner_id == learner_id,
+                    Task.week_number == new_week,
+                )
             )
-        )).scalars().all()
+        ).scalars().all()
         if not existing_tasks:
-            subtopics = next_ch_info.get("subtopics", [])
-            sort = 0
-            for st in subtopics:
-                sort += 1
-                # Reading task for every subsection
-                db.add(Task(
-                    learner_id=learner_id,
-                    week_number=new_week,
-                    chapter=next_ch_key,
-                    task_type="read",
-                    title=f"Read: {st['id']} {st['title']}",
-                    sort_order=sort,
-                    status="pending",
-                    is_locked=False,
-                    proof_policy={"type": "reading_time", "min_seconds": 120, "section_id": st["id"]},
-                ))
-                # Test task for every subsection, including Summary.
-                sort += 1
-                db.add(Task(
-                    learner_id=learner_id,
-                    week_number=new_week,
-                    chapter=next_ch_key,
-                    task_type="test",
-                    title=f"Test: {st['id']} {st['title']}",
-                    sort_order=sort,
-                    status="pending",
-                    is_locked=False,
-                    proof_policy={"type": "section_test", "threshold": COMPLETION_THRESHOLD, "section_id": st["id"]},
-                ))
-            # Final chapter-level test (unlocked after all subsections done)
-            sort += 1
-            db.add(Task(
+            for task in _build_week_tasks_for_chapter(
                 learner_id=learner_id,
                 week_number=new_week,
-                chapter=next_ch_key,
-                task_type="test",
-                title=f"📋 Chapter Test: {next_ch_info['title']}",
-                sort_order=sort,
-                status="pending",
-                is_locked=False,
-                proof_policy={"type": "test_score", "threshold": COMPLETION_THRESHOLD, "chapter_level": True},
-            ))
+                chapter_number=next_chapter_number,
+            ):
+                db.add(task)
 
-    # Create plan version
-    db.add(WeeklyPlanVersion(
-        weekly_plan_id=plan.id,
-        learner_id=learner_id,
-        version_number=(current_week + 1),
-        current_week=new_week,
-        plan_payload=plan.plan_payload,
-        reason=f"week_{current_week}_completed",
-    ))
+    profile.current_forecast_weeks = int(plan.total_weeks)
+    profile.timeline_delta_weeks = int(plan.total_weeks - selected)
 
-    # Forecast entry
-    db.add(WeeklyForecast(
-        learner_id=learner_id,
-        week_number=new_week,
-        selected_timeline_weeks=selected,
-        recommended_timeline_weeks=profile.recommended_timeline_weeks or selected,
-        current_forecast_weeks=plan.total_weeks,
-        timeline_delta_weeks=plan.total_weeks - selected,
-        pacing_status="ahead" if plan.total_weeks < selected else ("behind" if plan.total_weeks > selected else "on_track"),
-        reason=f"week_{current_week}_complete_advance",
-    ))
+    db.add(
+        WeeklyPlanVersion(
+            weekly_plan_id=plan.id,
+            learner_id=learner_id,
+            version_number=(current_week + 1),
+            current_week=new_week,
+            plan_payload=plan.plan_payload,
+            reason=f"week_{current_week}_completed",
+        )
+    )
+
+    db.add(
+        WeeklyForecast(
+            learner_id=learner_id,
+            week_number=new_week,
+            selected_timeline_weeks=selected,
+            recommended_timeline_weeks=profile.recommended_timeline_weeks or selected,
+            current_forecast_weeks=int(plan.total_weeks),
+            timeline_delta_weeks=int(plan.total_weeks - selected),
+            pacing_status=pacing_status,
+            reason=f"week_{current_week}_complete_advance",
+        )
+    )
 
     await db.commit()
     pace_reasoning = (
@@ -2515,9 +2640,9 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
                 "selected_timeline_weeks": selected,
             },
             output_payload={
-                "total_weeks": plan.total_weeks,
-                "timeline_delta_weeks": plan.total_weeks - selected,
-                "pacing_status": "ahead" if plan.total_weeks < selected else ("behind" if plan.total_weeks > selected else "on_track"),
+                "total_weeks": int(plan.total_weeks),
+                "timeline_delta_weeks": int(plan.total_weeks - selected),
+                "pacing_status": pacing_status,
             },
             reasoning=pace_reasoning,
         )
@@ -2529,7 +2654,7 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     if next_chapter_number:
         message += f"Week {new_week} is ready with {_chapter_info(next_chapter_number)['title']}."
     else:
-        message += "You've completed all chapters! 🎉"
+        message += "You've completed all chapters!"
 
     try:
         await redis_client.delete(f"learning:dashboard:{learner_id}")
@@ -2626,6 +2751,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
     rough_plan = []
     onboarding_date = _profile_onboarding_date(profile)
     timeline_visualization = []
+    week_start_overrides = _extract_week_start_overrides(plan.plan_payload if plan else {})
     if plan and plan.plan_payload:
         raw = plan.plan_payload.get("rough_plan", []) or plan.plan_payload.get("weeks", [])
         cw = plan.current_week or 1
@@ -2633,7 +2759,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             w = entry.get("week", 0)
             if not isinstance(w, int) or w <= 0:
                 continue
-            week_start, week_end = week_bounds_from_onboarding(onboarding_date, w)
+            week_start, week_end = week_bounds_from_plan(onboarding_date, w, week_start_overrides)
             week_label = format_week_label(w, week_start, week_end)
             rough_plan.append({
                 "week": w,
@@ -2651,6 +2777,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
                         week_number=w,
                         is_current=(w == cw),
                         is_past=(w < cw),
+                        week_start_overrides=week_start_overrides,
                     ),
                     "chapter": entry.get("chapter"),
                     "focus": entry.get("focus"),
@@ -2659,7 +2786,7 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
 
     # Current week tasks
     current_week = plan.current_week if plan else 1
-    current_week_start, current_week_end = week_bounds_from_onboarding(onboarding_date, current_week)
+    current_week_start, current_week_end = week_bounds_from_plan(onboarding_date, current_week, week_start_overrides)
     completion = estimate_completion_date(
         onboarding_date=onboarding_date,
         current_week=current_week,
@@ -2717,8 +2844,10 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         current_week_start_date=current_week_start.isoformat(),
         current_week_end_date=current_week_end.isoformat(),
         total_weeks=plan.total_weeks if plan else 14,
-        completion_estimate_date=(
-            onboarding_date + timedelta(days=((int(profile.current_forecast_weeks or (plan.total_weeks if plan else 14)) * 7) - 1))
+        completion_estimate_date=scheduled_completion_date(
+            onboarding_date=onboarding_date,
+            total_weeks_forecast=(profile.current_forecast_weeks or (plan.total_weeks if plan else 14)),
+            week_start_overrides=week_start_overrides,
         ).isoformat(),
         completion_estimate_date_active_pace=completion["estimated_completion_date"],
         completion_estimate_weeks_active_pace=completion["completion_estimate_weeks_active_pace"],
@@ -2822,4 +2951,5 @@ async def get_agent_decisions(learner_id: UUID, limit: int = 50, db: AsyncSessio
             for d in decisions
         ],
     }
+
 
