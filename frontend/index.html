@@ -165,6 +165,8 @@
             </div>
         </nav>
 
+        <div id="breadcrumb-nav" class="breadcrumb-bar hidden"></div>
+
         <div id="screen-dashboard" class="screen">
             <div class="profile-card" id="profile-card"></div>
 
@@ -217,6 +219,7 @@
         </div>
 
         <div id="screen-reading" class="screen hidden">
+            <div id="reading-breadcrumb" class="breadcrumb-bar"></div>
             <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-reading">Back to Dashboard</button>
             <div class="reading-header">
                 <h2 id="reading-chapter-title"></h2>
@@ -227,6 +230,7 @@
         </div>
 
         <div id="screen-test" class="screen hidden">
+            <div id="test-breadcrumb" class="breadcrumb-bar"></div>
             <button class="btn btn-sm btn-outline btn-back" id="btn-back-from-test">Back to Dashboard</button>
             <div class="test-header">
                 <h2 id="test-chapter-title"></h2>
@@ -252,7 +256,11 @@
 
         <div id="screen-admin" class="screen hidden">
             <section class="section">
-                <h2 class="section-title">System Observability</h2>
+                <div class="admin-section-header">
+                    <h2 class="section-title">System Observability</h2>
+                    <button id="btn-admin-refresh" class="btn btn-sm btn-outline" title="Refresh system data">↻ Refresh</button>
+                </div>
+                <div id="admin-last-updated" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px"></div>
                 <div id="admin-system-overview" class="admin-grid"></div>
             </section>
 
@@ -261,6 +269,7 @@
                     <h2 class="section-title">Student Control Room</h2>
                     <div id="admin-student-summary" class="admin-summary"></div>
                 </div>
+                <input type="text" id="admin-student-search" class="admin-search-input" placeholder="Search students by name...">
                 <div class="admin-two-col">
                     <div id="admin-student-list" class="admin-student-list"></div>
                     <div id="admin-student-detail" class="admin-student-detail"></div>

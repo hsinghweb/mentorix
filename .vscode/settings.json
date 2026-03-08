@@ -1,0 +1,30 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/API/.venv/bin/python",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/API"
+    ],
+    "python.linting.enabled": true,
+    "python.linting.ruffEnabled": true,
+    "editor.formatOnSave": true,
+    "[python]": {
+        "editor.codeActionsOnSave": {
+            "source.organizeImports.ruff": "explicit",
+            "source.fixAll.ruff": "explicit"
+        }
+    },
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/*.pyc": true,
+        ".mypy_cache": true,
+        ".ruff_cache": true
+    },
+    "files.associations": {
+        "*.env": "properties",
+        "*.env.*": "properties"
+    },
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/__pycache__": true,
+        "data/system": true
+    }
+}

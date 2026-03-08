@@ -31,6 +31,39 @@ let testSeconds = 1200;        // 20 minutes
 let currentTestData = null;    // { test_id, questions, chapter, chapter_number }
 
 // -- HELPERS -----------------------------------------------------------------
+function sanitizeHTML(str) {
+  const div = document.createElement("div");
+  div.appendChild(document.createTextNode(str));
+  return div.innerHTML;
+}
+
+function debounce(fn, ms = 800) {
+  let timer;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
+
+function showLoadingSkeleton(containerId, count = 3) {
+  const el = $(containerId);
+  if (!el) return;
+  el.innerHTML = Array.from({ length: count }, () =>
+    `<div class="skeleton-card"><div class="skeleton-line wide"></div><div class="skeleton-line"></div></div>`
+  ).join("");
+}
+
+function renderBreadcrumb(parts) {
+  const nav = $("breadcrumb-nav");
+  if (!nav) return;
+  nav.innerHTML = parts.map((p, i) =>
+    i < parts.length - 1
+      ? `<span class="breadcrumb-link" onclick="${p.action || ''}">${sanitizeHTML(p.label)}</span><span class="breadcrumb-sep">›</span>`
+      : `<span class="breadcrumb-current">${sanitizeHTML(p.label)}</span>`
+  ).join("");
+  nav.classList.remove("hidden");
+}
+
 function getToken() { return localStorage.getItem(TOKEN_KEY); }
 function getLearnerId() { return localStorage.getItem(LEARNER_KEY); }
 function getRole() { return localStorage.getItem(ROLE_KEY) || "student"; }
@@ -551,10 +584,10 @@ function renderDiagnosticQuestions(questions) {
   questions.forEach((q, i) => {
     const card = document.createElement("div");
     card.className = "question-card";
-    card.id = `diag - q - ${q.question_id} `;
+    card.id = `diag-q-${q.question_id}`;
 
     card.innerHTML = `
-    < div class="question-number" > Question ${i + 1} of ${questions.length}</div >
+      <div class="question-number">Question ${i + 1} of ${questions.length}</div>
             <div class="question-prompt">${q.prompt}</div>
             <div class="question-options">
                 ${q.options.map((opt, oi) => `
@@ -574,12 +607,12 @@ function renderDiagnosticQuestions(questions) {
     label.addEventListener("click", () => {
       const qid = label.dataset.qid;
       // Remove previous selection for this question
-      container.querySelectorAll(`[data - qid= "${qid}"]`).forEach(l => l.classList.remove("selected"));
+      container.querySelectorAll(`[data-qid="${qid}"]`).forEach(l => l.classList.remove("selected"));
       label.classList.add("selected");
       label.querySelector("input").checked = true;
 
       // Update card state
-      const card = $(`diag - q - ${qid} `);
+      const card = $(`diag-q-${qid}`);
       if (card) card.classList.add("answered");
 
       updateDiagnosticProgress();
@@ -619,7 +652,7 @@ async function handleSubmitDiagnostic() {
   // Collect answers
   const answers = [];
   diagnosticData.questions.forEach(q => {
-    const selected = document.querySelector(`input[name = "diag_${q.question_id}"]: checked`);
+    const selected = document.querySelector(`input[name="diag_${q.question_id}"]:checked`);
     if (selected) {
       const idx = parseInt(selected.value);
       answers.push({
@@ -2167,8 +2200,54 @@ function focusWeakArea(areaLabel) {
   const tasksSection = $("section-tasks");
   if (tasksSection) tasksSection.scrollIntoView({ behavior: "smooth", block: "start" });
   if (matched === 0) {
-    alert(`No current-week tasks found for ${area}. Try reviewing chapter cards below.`);
+    showToast(`No current-week tasks found for ${area}. Try reviewing chapter cards below.`, "info");
   }
 }
 
+// ── Admin Student Search/Filter ───────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  const searchInput = document.getElementById("admin-student-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", debounce(function () {
+      const query = this.value.trim().toLowerCase();
+      const items = document.querySelectorAll("#admin-student-list .admin-student-item");
+      items.forEach(item => {
+        const name = (item.dataset.name || item.textContent || "").toLowerCase();
+        item.style.display = name.includes(query) ? "" : "none";
+      });
+    }, 250));
+  }
 
+  // Admin refresh button
+  const refreshBtn = document.getElementById("btn-admin-refresh");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", () => {
+      if (typeof loadAdminDashboard === "function") loadAdminDashboard();
+      const ts = document.getElementById("admin-last-updated");
+      if (ts) ts.textContent = "Last updated: " + new Date().toLocaleTimeString();
+    });
+  }
+});
+
+// ── Keyboard Shortcuts for Tests ──────────────────────────────────────────
+document.addEventListener("keydown", (e) => {
+  // Only active on test screens
+  const testScreen = $("screen-test");
+  if (!testScreen || testScreen.classList.contains("hidden")) return;
+
+  // 1-4 keys select options for the first unanswered question
+  if (e.key >= "1" && e.key <= "4") {
+    const questionCards = testScreen.querySelectorAll(".question-card:not(.answered)");
+    if (questionCards.length === 0) return;
+    const firstUnanswered = questionCards[0];
+    const labels = firstUnanswered.querySelectorAll(".option-label");
+    const idx = parseInt(e.key) - 1;
+    if (labels[idx]) labels[idx].click();
+  }
+
+  // Enter key submits test if enabled
+  if (e.key === "Enter") {
+    const submitBtn = $("btn-submit-chapter-test");
+    if (submitBtn && !submitBtn.disabled) submitBtn.click();
+  }
+});

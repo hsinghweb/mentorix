@@ -2842,12 +2842,13 @@ async def advance_week(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             )
         ).scalars().all()
         if not existing_tasks:
-            for task in _build_week_tasks_for_chapter(
+            new_tasks = list(_build_week_tasks_for_chapter(
                 learner_id=learner_id,
                 week_number=new_week,
                 chapter_number=next_chapter_number,
-            ):
-                db.add(task)
+            ))
+            if new_tasks:
+                db.add_all(new_tasks)
 
     profile.current_forecast_weeks = int(plan.total_weeks)
     profile.timeline_delta_weeks = int(plan.total_weeks - selected)
