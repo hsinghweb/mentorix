@@ -110,178 +110,8 @@ function showAuthPanel(panelId) {
   });
 }
 
-function renderKaTeX(container) {
-  if (typeof renderMathInElement === "function") {
-    renderMathInElement(container, {
-      delimiters: [
-        { left: "$", right: "$", display: false },
-        { left: "\\(", right: "\\)", display: false },
-        { left: "\\[", right: "\\]", display: true },
-        { left: "$$", right: "$$", display: true },
-      ],
-      throwOnError: false,
-    });
-  }
-}
-
-function normalizeMathDelimiters(text) {
-  if (!text) return "";
-  let s = String(text)
-    .replace(/\\\\\(/g, "\\(")
-    .replace(/\\\\\)/g, "\\)")
-    .replace(/\\\\\[/g, "\\[")
-    .replace(/\\\\\]/g, "\\]")
-    // Heuristic fallback: wrap plain parenthesized LaTeX commands so KaTeX can render.
-    .replace(/\(\s*(\\[A-Za-z]+[^()\n]{0,220})\s*\)/g, "\\($1\\)")
-    .replace(/\r\n/g, "\n")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "");
-
-  // Fix malformed inline closers: \(\sqrt{2} \\) -> \(\sqrt{2}\)
-  s = s.replace(/\\\(([\s\S]*?)\\\\\)/g, "\\($1\\)");
-
-  // Fix bare LaTeX fragments that end with closer but are not wrapped:
-  // \sqrt{2}\) or \sqrt{2}\\) -> \(\sqrt{2}\)
-  s = s.replace(
-    /(^|[\s,;:([{\-])((?:\\[A-Za-z]+(?:\{[^{}]*\}|[A-Za-z0-9._^+-])*)+)\\\)/g,
-    (m, p1, p2, offset, full) => {
-      const at = Number(offset || 0) + String(p1 || "").length;
-      if (at >= 2 && String(full).slice(at - 2, at) === "\\(") return m;
-      return `${p1}\\(${p2.replace(/\\\)$/, "")}\\)`;
-    }
-  );
-
-  // Fix orphan opener for single symbol: "\(p is ..." -> "\(p\) is ..."
-  s = s.replace(
-    /\\\(\s*([A-Za-z0-9][A-Za-z0-9_^{}]*)\s+([A-Za-z])/g,
-    "\\($1\\) $2"
-  );
-
-  // Normalize accidental duplicated trailing slashes inside inline math.
-  s = s.replace(/\\\(([^)]*?)\\\\\s*\\\)/g, "\\($1\\)");
-
-  // Defensive cleanup: auto-close unmatched inline math openers "\(".
-  // This prevents KaTeX from rendering the rest of the line as an error block.
-  let inlineOpenBalance = 0;
-  for (let i = 0; i < s.length - 1; i++) {
-    if (s[i] === "\\" && s[i + 1] === "(") {
-      inlineOpenBalance += 1;
-      i += 1;
-      continue;
-    }
-    if (s[i] === "\\" && s[i + 1] === ")") {
-      if (inlineOpenBalance > 0) inlineOpenBalance -= 1;
-      i += 1;
-    }
-  }
-  if (inlineOpenBalance > 0) {
-    s += "\\)".repeat(inlineOpenBalance);
-  }
-
-  // Defensive cleanup for unmatched display openers "\[".
-  let displayOpenBalance = 0;
-  for (let i = 0; i < s.length - 1; i++) {
-    if (s[i] === "\\" && s[i + 1] === "[") {
-      displayOpenBalance += 1;
-      i += 1;
-      continue;
-    }
-    if (s[i] === "\\" && s[i + 1] === "]") {
-      if (displayOpenBalance > 0) displayOpenBalance -= 1;
-      i += 1;
-    }
-  }
-  if (displayOpenBalance > 0) {
-    s += "\\]".repeat(displayOpenBalance);
-  }
-
-  // Defensive cleanup for unbalanced $$ display delimiters.
-  const doubleDollarMatches = s.match(/\$\$/g);
-  if (doubleDollarMatches && doubleDollarMatches.length % 2 !== 0) {
-    s += "$$";
-  }
-  return s;
-}
-
-function protectMathBlocks(text) {
-  const source = normalizeMathDelimiters(text);
-  const tokens = [];
-  let idx = 0;
-  const sanitizeMathToken = (token) => {
-    let t = String(token || "");
-    if (t.startsWith("\\(") && t.endsWith("\\)")) {
-      let inner = t.slice(2, -2).trim();
-      // Repair malformed inline math like: \(\sqrt{2} \\)
-      inner = inner.replace(/\\\\\s*$/, "").trim();
-      return `\\(${inner}\\)`;
-    }
-    if (t.startsWith("\\[") && t.endsWith("\\]")) {
-      let inner = t.slice(2, -2).trim();
-      inner = inner.replace(/\\\\\s*$/, "").trim();
-      return `\\[${inner}\\]`;
-    }
-    return t;
-  };
-  const put = (m) => {
-    const key = `@@MATH_BLOCK_${idx++}@@`;
-    tokens.push([key, sanitizeMathToken(m)]);
-    return key;
-  };
-  const masked = source
-    .replace(/\\\([\s\S]*?\\\)/g, put)
-    .replace(/\\\[[\s\S]*?\\\]/g, put)
-    .replace(/\$\$[\s\S]*?\$\$/g, put)
-    .replace(/\$[^$\n]+\$/g, put);
-  return {
-    masked,
-    restore: (html) => {
-      let out = String(html || "");
-      for (const [key, value] of tokens) out = out.split(key).join(value);
-      return out;
-    },
-  };
-}
-
-function formatTime(seconds) {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function formatIsoDateLabel(isoDate) {
-  if (!isoDate) return "N/A";
-  const d = new Date(isoDate);
-  if (Number.isNaN(d.getTime())) return String(isoDate);
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
-
-function mdToHtml(md) {
-  const { masked, restore } = protectMathBlocks(md);
-  if (!masked) return "";
-  if (typeof marked !== "undefined" && typeof marked.parse === "function") {
-    try {
-      return restore(marked.parse(masked, { breaks: true, gfm: true }));
-    } catch (err) {
-      console.warn("Markdown parse failed, using safe fallback:", err);
-    }
-  }
-  return `<pre style="white-space:pre-wrap;color:var(--text-primary)">${restore(masked
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br>"))}</pre>`;
-}
-
-function mdInlineToHtml(md) {
-  const { masked, restore } = protectMathBlocks(md);
-  if (!masked) return "";
-  if (typeof marked !== "undefined" && typeof marked.parseInline === "function") {
-    return restore(marked.parseInline(masked));
-  }
-  return restore(masked
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;"));
-}
+// Rendering functions (renderKaTeX, normalizeMathDelimiters, protectMathBlocks,
+// mdToHtml, mdInlineToHtml) extracted to renderer.js
 
 function extractChapterNumber(chapterLabel) {
   if (!chapterLabel) return null;
@@ -1093,6 +923,10 @@ async function openReading(chapterNumber, taskId) {
   const attemptMarkReadingComplete = async () => {
     if (readingTaskCompleted || completionInFlight) return;
     completionInFlight = true;
+    if (!confirm("You have met the minimum reading time. Mark this section as complete?")) {
+      completionInFlight = false;
+      return;
+    }
     const completion = await completeReading();
     completionInFlight = false;
     if (completion.ok) {
@@ -1478,6 +1312,10 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
   const attemptMarkSectionReadingComplete = async () => {
     if (sectionTaskCompleted || completionInFlight) return;
     completionInFlight = true;
+    if (!confirm("You have met the minimum reading time. Mark this section as complete?")) {
+      completionInFlight = false;
+      return;
+    }
     const completion = await completeReading();
     completionInFlight = false;
     if (completion.ok) {

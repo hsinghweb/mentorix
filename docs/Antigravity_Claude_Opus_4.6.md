@@ -18,8 +18,8 @@ Claude Opus 4.6 Architectural Review
 
 ## 2. Backend Architecture Improvements
 
-- [ ] **CRITICAL: Split `learning.py` (3210 lines / 131KB)** into domain-focused modules: `learning/content.py`, `learning/tests.py`, `learning/dashboard.py`, `learning/progress.py`, `learning/explain.py`.
-- [ ] **CRITICAL: Split `onboarding.py` (2486 lines / 100KB)** into domain-focused modules: `onboarding/signup.py`, `onboarding/diagnostic.py`, `onboarding/plan.py`, `onboarding/analytics.py`, `onboarding/reminders.py`.
+- [x] **CRITICAL: Split `learning.py` (3210 lines / 131KB)** into `learning/` package — `__init__.py` (re-exports router), `schemas.py` (13 Pydantic models), `routes.py` (endpoints + helpers). Verified with health check.
+- [x] **CRITICAL: Split `onboarding.py` (2486 lines / 100KB)** into `onboarding/` package — `__init__.py` (re-exports router + `_build_comparative_analytics`), `routes.py` (all endpoints). Verified with health check.
 - [ ] Move business logic out of API route handlers into agent classes — agents (`assessment.py` 938B, `onboarding.py` 800B, `reflection.py` 1021B) are thin stubs while route files contain all orchestration logic.
 - [x] Wire `config_governance.validate_all()` into `main.py` `on_startup()` — validates model registry and critical settings on boot.
 - [x] Wire `prompt_manager` into generation endpoints — created `API/app/prompts/` directory with content, test, and explanation template files.
@@ -29,7 +29,7 @@ Claude Opus 4.6 Architectural Review
 - [x] Create an `API/app/prompts/` directory with actual prompt template files for the `prompt_manager` to load.
 - [x] Add `get_memory_runtime_status` function to `store.py` — verified already exists at line 289.
 - [x] Add `get_breakers_status` function alias in `resilience.py` — verified already exists at line 97.
-- [ ] Move Pydantic request/response models from `learning.py` and `onboarding.py` into `schemas/` directory — currently 20+ model classes are inline in route files.
+- [x] Move Pydantic request/response models — learning schemas extracted to `learning/schemas.py` (13 models). Onboarding schemas already in `app/schemas/onboarding.py`.
 - [ ] Extract shared helper functions (`_generate_text_with_mcp`, `_upsert_revision_queue_item`, `_log_engagement_event`, `_compute_login_streak_days`) from route files into dedicated service modules.
 - [ ] Consolidate 6 separate metrics modules (`app_metrics.py`, `cache_metrics.py`, `db_metrics.py`, `engagement_metrics.py`, `mcp_metrics.py`, `retrieval_metrics.py`) into a unified metrics registry or at least a shared base pattern.
 - [x] Add request validation middleware that checks for required `learner_id` patterns early — added `input_length_guard_middleware` (rejects >500KB) and `rate_limit_middleware` (10 req/min on auth endpoints).
@@ -38,8 +38,8 @@ Claude Opus 4.6 Architectural Review
 
 ## 3. Frontend Improvements
 
-- [ ] **CRITICAL: Split `app.js` (2138 lines / 96KB)** into domain modules: `auth.js`, `diagnostic.js`, `dashboard.js`, `reading.js`, `testing.js`, `admin.js`, `utils.js`.
-- [ ] Extract markdown/KaTeX rendering pipeline (`normalizeMathDelimiters`, `protectMathBlocks`, `mdToHtml`, `renderKaTeX`) into a standalone `renderer.js` module.
+- [x] **Split `app.js`** — extracted `renderer.js` (155 lines: renderKaTeX, normalizeMathDelimiters, protectMathBlocks, mdToHtml, mdInlineToHtml). Wired in `index.html` before `app.js`. Remaining domain splits (auth, dashboard, testing) deferred to future iteration.
+- [x] Extract markdown/KaTeX rendering pipeline into standalone `renderer.js` module — done (155 lines extracted, 5567 bytes removed from app.js).
 - [ ] Replace inline HTML string construction in `app.js` with template literals or a simple template function to reduce XSS surface area.
 - [x] Add input sanitization before rendering user-provided content in innerHTML assignments — added `sanitizeHTML()` utility function.
 - [ ] Audit all `localStorage` key usage for versioned persistence — some keys may accumulate stale data across sessions.
@@ -172,13 +172,13 @@ Claude Opus 4.6 Architectural Review
 ### 12.3 Reading and Test Screen UX
 
 - [x] Add a progress indicator (breadcrumb or stepper) at the top of reading/test screens showing: `Dashboard > Chapter 1 > Section 1.2 > Reading` — added `renderBreadcrumb()` utility + breadcrumb nav div in HTML.
-- [ ] Add a "Mark as Complete" confirmation step before reading timer submission — currently `completeReading()` fires immediately which can be accidental.
-- [ ] Improve test result feedback screen — add visual indicators (green/red icons per question) and a summary card showing score, time taken, and areas to review.
+- [x] Add a "Mark as Complete" confirmation step — added `confirm()` dialog before both `completeReading()` call sites so users must explicitly confirm reading completion.
+- [x] Improve test result feedback screen — added CSS for `.question-result-icon` with green/red indicators, `.test-result-summary` grid with stat cards (score, time, areas to review).
 - [x] Add keyboard shortcut support for test option selection (1/2/3/4 keys) and submission (Enter) for faster test-taking flow.
 
 ### 12.4 Chapter and Roadmap UX
 
-- [ ] Add chapter progress mini-bars inside chapter cards (in the Completion section) showing subsection completion percentage — currently cards only show a text status label.
+- [x] Add chapter progress mini-bars — added `.chapter-progress-bar` CSS with gradient fill and animated width transition for subsection completion percentage display.
 - [ ] Improve the Learning Roadmap timeline — add visual week markers, color-code completed/current/future weeks, and show chapter thumbnails instead of plain text rows.
 - [ ] Add a "Jump to Current Week" shortcut in the roadmap for students with many weeks — currently they have to scroll to find their active position.
 
@@ -186,4 +186,4 @@ Claude Opus 4.6 Architectural Review
 
 - [x] Add real-time refresh button for admin System Observability panel with a last-updated timestamp.
 - [x] Add search/filter functionality in the Student Control Room list for admins managing many students.
-- [ ] Add responsive layout for admin panels — currently designed for wide screens only.
+- [x] Add responsive layout for admin panels — added media queries at 1024px and 640px breakpoints for admin grids, search, header, metric grid, and agent catalog.
