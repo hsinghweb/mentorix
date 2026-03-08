@@ -1,3 +1,12 @@
+import warnings
+
+warnings.warn(
+    "orchestrator.engine is unused — no modules import StateEngine. "
+    "Consider removing in next cleanup iteration.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 from dataclasses import dataclass
 from typing import Dict
 

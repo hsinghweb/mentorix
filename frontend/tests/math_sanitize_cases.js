@@ -3,11 +3,12 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const appPath = path.join(__dirname, "..", "app.js");
-const source = fs.readFileSync(appPath, "utf8");
+// normalizeMathDelimiters was extracted from app.js into renderer.js
+const rendererPath = path.join(__dirname, "..", "renderer.js");
+const source = fs.readFileSync(rendererPath, "utf8");
 const match = source.match(/function normalizeMathDelimiters\(text\)\s*\{[\s\S]*?\n\}/);
 if (!match) {
-  throw new Error("normalizeMathDelimiters function not found in frontend/app.js");
+  throw new Error("normalizeMathDelimiters function not found in frontend/renderer.js");
 }
 
 const script = new vm.Script(`${match[0]}; normalizeMathDelimiters;`);

@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -18,6 +19,8 @@ from app.core.bootstrap import initialize_database
 from app.core.app_metrics import metrics_middleware
 from app.core.errors import (
     http_exception_handler,
+    input_length_guard_middleware,
+    rate_limit_middleware,
     request_id_middleware,
     unhandled_exception_handler,
     validation_exception_handler,
@@ -28,38 +31,20 @@ from app.memory.database import SessionLocal, engine
 from app.mcp.providers import register_default_mcp_providers
 from app.rag.grounding_ingest import ensure_grounding_ready, run_grounding_ingestion
 from app.runtime.persistence import snapshot_persistence
+from app.core.config_governance import validate_all as validate_config
 from fastapi import HTTPException
 
 
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Mentorix API", version="0.1.0")
-app.include_router(health_router)
-app.include_router(auth_router)
-app.include_router(scheduler_router)
-app.include_router(metrics_router)
-app.include_router(grounding_router)
-app.include_router(admin_router)
-app.include_router(onboarding_router)
-app.include_router(learning_router)
-app.middleware("http")(api_key_auth_middleware)
-app.middleware("http")(request_id_middleware)
-app.middleware("http")(metrics_middleware)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.add_exception_handler(HTTPException, http_exception_handler)
-app.add_exception_handler(RequestValidationError, validation_exception_handler)
-app.add_exception_handler(Exception, unhandled_exception_handler)
 
-
-@app.on_event("startup")
-async def on_startup():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    drift_errors = validate_config(fail_fast=False)
+    if drift_errors:
+        logger.warning("Config drift detected (%d issues) — check logs above", len(drift_errors))
     register_default_mcp_providers()
     async with SessionLocal() as session:
         await initialize_database(session, engine)
@@ -73,10 +58,39 @@ async def on_startup():
     snapshot_persistence.load_snapshot()
     if settings.scheduler_enabled:
         await scheduler_service.start()
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
+    yield
+    # Shutdown
     snapshot_persistence.save_snapshot()
     if settings.scheduler_enabled:
         await scheduler_service.stop()
+
+
+app = FastAPI(title="Mentorix API", version="0.1.0", lifespan=lifespan)
+app.include_router(health_router)
+app.include_router(auth_router)
+app.include_router(scheduler_router)
+app.include_router(metrics_router)
+app.include_router(grounding_router)
+app.include_router(admin_router)
+app.include_router(onboarding_router)
+app.include_router(learning_router)
+app.middleware("http")(api_key_auth_middleware)
+app.middleware("http")(request_id_middleware)
+app.middleware("http")(metrics_middleware)
+app.middleware("http")(input_length_guard_middleware)
+app.middleware("http")(rate_limit_middleware)
+# CORS: restrict origins in non-dev environments
+_cors_origins = ["*"] if settings.app_env == "dev" else [
+    "http://localhost:5500",
+    "http://127.0.0.1:5500",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.add_exception_handler(HTTPException, http_exception_handler)
+app.add_exception_handler(RequestValidationError, validation_exception_handler)
+app.add_exception_handler(Exception, unhandled_exception_handler)

@@ -26,7 +26,22 @@ def _after_cursor_execute(conn, cursor, statement, parameters, context, executem
             pass
 
 
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+# Connection Pool Tuning
+# ──────────────────────
+# pool_pre_ping: checks connections are alive before use (handles DB restarts)
+# pool_size: max persistent connections in the pool (default 5)
+# max_overflow: additional temporary connections when pool is full (default 10)
+# pool_recycle: recycle connections after N seconds to prevent stale connections
+#
+# For production with concurrent requests, increase pool_size to 10-20.
+# For development (low concurrency), defaults are fine.
+engine = create_async_engine(
+    settings.database_url,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+    pool_recycle=1800,  # 30 minutes
+)
 event.listen(engine.sync_engine, "before_cursor_execute", _before_cursor_execute)
 event.listen(engine.sync_engine, "after_cursor_execute", _after_cursor_execute)
 SessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)

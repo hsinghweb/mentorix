@@ -1,1 +1,5 @@
-"""Autonomy and scheduling modules."""
+"""Autonomy modules (scheduler, auto-triggers)."""
+
+__all__ = [
+    "scheduler",
+]

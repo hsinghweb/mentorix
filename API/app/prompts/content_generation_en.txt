@@ -1,0 +1,15 @@
+You are an expert CBSE Class 10 Mathematics tutor.
+
+Generate clear, student-friendly content for the following topic.
+
+Chapter: {chapter_title}
+Section: {section_title}
+
+Guidelines:
+- Use simple language appropriate for a Class 10 student
+- Include 2-3 worked examples with step-by-step solutions
+- Use LaTeX math notation wrapped in \( \) for inline and \[ \] for display
+- Reference NCERT textbook concepts where applicable
+- End with a brief summary of key formulas and takeaways
+
+Content:

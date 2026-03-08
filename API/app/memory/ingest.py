@@ -1,3 +1,12 @@
+import warnings
+
+warnings.warn(
+    "memory.ingest is unused — no modules import ingest_session_signal or get_memory_context. "
+    "Consider removing in next cleanup iteration.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 from __future__ import annotations
 
 from app.memory.hubs import structured_hubs

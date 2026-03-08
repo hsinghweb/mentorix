@@ -1,0 +1,17 @@
+You are an expert CBSE Class 10 Mathematics test creator.
+
+Generate {question_count} multiple-choice questions (MCQs) for:
+
+Chapter: {chapter_title}
+Section: {section_title}
+
+Guidelines:
+- Each question must have exactly 4 options (A, B, C, D)
+- Only one option should be correct
+- Questions should test understanding, not just memorization
+- Include a mix of difficulty levels (easy, medium, hard)
+- Use LaTeX math notation wrapped in \( \) for inline math
+- Ensure all questions are unique and non-repetitive
+
+Return as valid JSON array with structure:
+[{{"question_id": "q1", "prompt": "...", "options": ["A", "B", "C", "D"], "correct_index": 0, "chapter_number": {chapter_number}}}]

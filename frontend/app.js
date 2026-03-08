@@ -1,9 +1,27 @@
-﻿// API and auth storage keys
+// API and auth storage keys
 const TOKEN_KEY = "mentorix_token";
 const LEARNER_KEY = "mentorix_learner_id";
 const NAME_KEY = "mentorix_name";
 const ROLE_KEY = "mentorix_role";
 const API_BASE_KEY = "mentorix_api_base";
+const LS_VERSION_KEY = "mentorix_ls_version";
+const LS_CURRENT_VERSION = "2";
+
+// Versioned localStorage cleanup: wipe stale keys on version bump
+(function cleanupStaleLocalStorage() {
+  const v = localStorage.getItem(LS_VERSION_KEY);
+  if (v !== LS_CURRENT_VERSION) {
+    const keepKeys = [TOKEN_KEY, LEARNER_KEY, NAME_KEY, ROLE_KEY, API_BASE_KEY, LS_VERSION_KEY];
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("mentorix_") && !keepKeys.includes(key)) toRemove.push(key);
+    }
+    toRemove.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem(LS_VERSION_KEY, LS_CURRENT_VERSION);
+    if (toRemove.length) console.info("Cleared", toRemove.length, "stale localStorage keys");
+  }
+})();
 
 function getApiBase() {
   if (typeof document !== "undefined") {
@@ -31,6 +49,59 @@ let testSeconds = 1200;        // 20 minutes
 let currentTestData = null;    // { test_id, questions, chapter, chapter_number }
 
 // -- HELPERS -----------------------------------------------------------------
+function sanitizeHTML(str) {
+  const div = document.createElement("div");
+  div.appendChild(document.createTextNode(str));
+  return div.innerHTML;
+}
+
+function debounce(fn, ms = 800) {
+  let timer;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
+
+/** Format seconds as MM:SS for timer display (e.g. 1800 -> "30:00"). */
+function formatTime(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+/** Format ISO date string for display (e.g. "2026-03-15" -> "Mar 15, 2026"). Returns "—" if null/undefined/invalid. */
+function formatIsoDateLabel(isoDate) {
+  if (isoDate == null || isoDate === "") return "\u2014";
+  try {
+    const d = new Date(isoDate);
+    if (Number.isNaN(d.getTime())) return "\u2014";
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return "\u2014";
+  }
+}
+
+function showLoadingSkeleton(containerId, count = 3) {
+  const el = $(containerId);
+  if (!el) return;
+  el.innerHTML = Array.from({ length: count }, () =>
+    `<div class="skeleton-card"><div class="skeleton-line wide"></div><div class="skeleton-line"></div></div>`
+  ).join("");
+}
+
+function renderBreadcrumb(parts) {
+  const nav = $("breadcrumb-nav");
+  if (!nav) return;
+  nav.innerHTML = parts.map((p, i) =>
+    i < parts.length - 1
+      ? `<span class="breadcrumb-link" onclick="${p.action || ''}">${sanitizeHTML(p.label)}</span><span class="breadcrumb-sep">›</span>`
+      : `<span class="breadcrumb-current">${sanitizeHTML(p.label)}</span>`
+  ).join("");
+  nav.classList.remove("hidden");
+}
+
 function getToken() { return localStorage.getItem(TOKEN_KEY); }
 function getLearnerId() { return localStorage.getItem(LEARNER_KEY); }
 function getRole() { return localStorage.getItem(ROLE_KEY) || "student"; }
@@ -68,8 +139,8 @@ async function api(path, options = {}) {
 }
 
 function $(id) { return document.getElementById(id); }
-function show(el) { el.classList.remove("hidden"); }
-function hide(el) { el.classList.add("hidden"); }
+function show(el) { if (el) el.classList.remove("hidden"); }
+function hide(el) { if (el) el.classList.add("hidden"); }
 function showAuthPanel(panelId) {
   ["panel-login", "panel-admin-login", "panel-signup", "panel-diagnostic", "panel-result"].forEach(id => {
     const el = $(id);
@@ -77,178 +148,8 @@ function showAuthPanel(panelId) {
   });
 }
 
-function renderKaTeX(container) {
-  if (typeof renderMathInElement === "function") {
-    renderMathInElement(container, {
-      delimiters: [
-        { left: "$", right: "$", display: false },
-        { left: "\\(", right: "\\)", display: false },
-        { left: "\\[", right: "\\]", display: true },
-        { left: "$$", right: "$$", display: true },
-      ],
-      throwOnError: false,
-    });
-  }
-}
-
-function normalizeMathDelimiters(text) {
-  if (!text) return "";
-  let s = String(text)
-    .replace(/\\\\\(/g, "\\(")
-    .replace(/\\\\\)/g, "\\)")
-    .replace(/\\\\\[/g, "\\[")
-    .replace(/\\\\\]/g, "\\]")
-    // Heuristic fallback: wrap plain parenthesized LaTeX commands so KaTeX can render.
-    .replace(/\(\s*(\\[A-Za-z]+[^()\n]{0,220})\s*\)/g, "\\($1\\)")
-    .replace(/\r\n/g, "\n")
-    .replace(/[\u200B-\u200D\uFEFF]/g, "");
-
-  // Fix malformed inline closers: \(\sqrt{2} \\) -> \(\sqrt{2}\)
-  s = s.replace(/\\\(([\s\S]*?)\\\\\)/g, "\\($1\\)");
-
-  // Fix bare LaTeX fragments that end with closer but are not wrapped:
-  // \sqrt{2}\) or \sqrt{2}\\) -> \(\sqrt{2}\)
-  s = s.replace(
-    /(^|[\s,;:([{\-])((?:\\[A-Za-z]+(?:\{[^{}]*\}|[A-Za-z0-9._^+-])*)+)\\\)/g,
-    (m, p1, p2, offset, full) => {
-      const at = Number(offset || 0) + String(p1 || "").length;
-      if (at >= 2 && String(full).slice(at - 2, at) === "\\(") return m;
-      return `${p1}\\(${p2.replace(/\\\)$/, "")}\\)`;
-    }
-  );
-
-  // Fix orphan opener for single symbol: "\(p is ..." -> "\(p\) is ..."
-  s = s.replace(
-    /\\\(\s*([A-Za-z0-9][A-Za-z0-9_^{}]*)\s+([A-Za-z])/g,
-    "\\($1\\) $2"
-  );
-
-  // Normalize accidental duplicated trailing slashes inside inline math.
-  s = s.replace(/\\\(([^)]*?)\\\\\s*\\\)/g, "\\($1\\)");
-
-  // Defensive cleanup: auto-close unmatched inline math openers "\(".
-  // This prevents KaTeX from rendering the rest of the line as an error block.
-  let inlineOpenBalance = 0;
-  for (let i = 0; i < s.length - 1; i++) {
-    if (s[i] === "\\" && s[i + 1] === "(") {
-      inlineOpenBalance += 1;
-      i += 1;
-      continue;
-    }
-    if (s[i] === "\\" && s[i + 1] === ")") {
-      if (inlineOpenBalance > 0) inlineOpenBalance -= 1;
-      i += 1;
-    }
-  }
-  if (inlineOpenBalance > 0) {
-    s += "\\)".repeat(inlineOpenBalance);
-  }
-
-  // Defensive cleanup for unmatched display openers "\[".
-  let displayOpenBalance = 0;
-  for (let i = 0; i < s.length - 1; i++) {
-    if (s[i] === "\\" && s[i + 1] === "[") {
-      displayOpenBalance += 1;
-      i += 1;
-      continue;
-    }
-    if (s[i] === "\\" && s[i + 1] === "]") {
-      if (displayOpenBalance > 0) displayOpenBalance -= 1;
-      i += 1;
-    }
-  }
-  if (displayOpenBalance > 0) {
-    s += "\\]".repeat(displayOpenBalance);
-  }
-
-  // Defensive cleanup for unbalanced $$ display delimiters.
-  const doubleDollarMatches = s.match(/\$\$/g);
-  if (doubleDollarMatches && doubleDollarMatches.length % 2 !== 0) {
-    s += "$$";
-  }
-  return s;
-}
-
-function protectMathBlocks(text) {
-  const source = normalizeMathDelimiters(text);
-  const tokens = [];
-  let idx = 0;
-  const sanitizeMathToken = (token) => {
-    let t = String(token || "");
-    if (t.startsWith("\\(") && t.endsWith("\\)")) {
-      let inner = t.slice(2, -2).trim();
-      // Repair malformed inline math like: \(\sqrt{2} \\)
-      inner = inner.replace(/\\\\\s*$/, "").trim();
-      return `\\(${inner}\\)`;
-    }
-    if (t.startsWith("\\[") && t.endsWith("\\]")) {
-      let inner = t.slice(2, -2).trim();
-      inner = inner.replace(/\\\\\s*$/, "").trim();
-      return `\\[${inner}\\]`;
-    }
-    return t;
-  };
-  const put = (m) => {
-    const key = `@@MATH_BLOCK_${idx++}@@`;
-    tokens.push([key, sanitizeMathToken(m)]);
-    return key;
-  };
-  const masked = source
-    .replace(/\\\([\s\S]*?\\\)/g, put)
-    .replace(/\\\[[\s\S]*?\\\]/g, put)
-    .replace(/\$\$[\s\S]*?\$\$/g, put)
-    .replace(/\$[^$\n]+\$/g, put);
-  return {
-    masked,
-    restore: (html) => {
-      let out = String(html || "");
-      for (const [key, value] of tokens) out = out.split(key).join(value);
-      return out;
-    },
-  };
-}
-
-function formatTime(seconds) {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
-}
-
-function formatIsoDateLabel(isoDate) {
-  if (!isoDate) return "N/A";
-  const d = new Date(isoDate);
-  if (Number.isNaN(d.getTime())) return String(isoDate);
-  return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-}
-
-function mdToHtml(md) {
-  const { masked, restore } = protectMathBlocks(md);
-  if (!masked) return "";
-  if (typeof marked !== "undefined" && typeof marked.parse === "function") {
-    try {
-      return restore(marked.parse(masked, { breaks: true, gfm: true }));
-    } catch (err) {
-      console.warn("Markdown parse failed, using safe fallback:", err);
-    }
-  }
-  return `<pre style="white-space:pre-wrap;color:var(--text-primary)">${restore(masked
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/\n/g, "<br>"))}</pre>`;
-}
-
-function mdInlineToHtml(md) {
-  const { masked, restore } = protectMathBlocks(md);
-  if (!masked) return "";
-  if (typeof marked !== "undefined" && typeof marked.parseInline === "function") {
-    return restore(marked.parseInline(masked));
-  }
-  return restore(masked
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;"));
-}
+// Rendering functions (renderKaTeX, normalizeMathDelimiters, protectMathBlocks,
+// mdToHtml, mdInlineToHtml) extracted to renderer.js
 
 function extractChapterNumber(chapterLabel) {
   if (!chapterLabel) return null;
@@ -289,6 +190,32 @@ function parseMinSecondsFromReason(reasonText) {
   return mins * 60;
 }
 
+function showToast(message, type = "info") {
+  const existing = document.getElementById("mentorix-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.id = "mentorix-toast";
+  const bgColor = type === "success" ? "var(--accent)" : type === "error" ? "#e74c3c" : "var(--bg-elevated)";
+  const textColor = type === "info" ? "var(--text-primary)" : "#fff";
+  toast.style.cssText = `position:fixed;top:24px;right:24px;z-index:9999;padding:14px 24px;border-radius:var(--radius);background:${bgColor};color:${textColor};font-weight:600;font-size:0.9rem;box-shadow:0 6px 24px rgba(0,0,0,0.25);opacity:0;transform:translateY(-12px);transition:opacity .3s,transform .3s;max-width:420px;`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => { toast.style.opacity = "1"; toast.style.transform = "translateY(0)"; });
+  setTimeout(() => {
+    toast.style.opacity = "0"; toast.style.transform = "translateY(-12px)";
+    setTimeout(() => toast.remove(), 350);
+  }, 3500);
+}
+
+function showScreen(screenId) {
+  document.querySelectorAll(".screen").forEach(s => { s.classList.add("hidden"); s.classList.remove("screen-fade-in"); });
+  const target = $("screen-" + screenId);
+  if (target) {
+    target.classList.remove("hidden");
+    target.classList.add("screen-fade-in");
+  }
+}
+
 function showFinalTestBlockedModal(chapterNumber, reasonCode, pendingTasks = []) {
   const existing = document.getElementById("final-test-blocked-overlay");
   if (existing) existing.remove();
@@ -317,9 +244,11 @@ function showFinalTestBlockedModal(chapterNumber, reasonCode, pendingTasks = [])
 
 // -- INITIALIZATION ----------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
+  // Always start fresh — clear stale auth so user sees login page on every visit
+  clearAuth();
   initWeeksDropdown();
   bindEvents();
-  checkAuthState();
+  showAuthPanel("panel-login");
 });
 
 function initWeeksDropdown() {
@@ -526,7 +455,7 @@ function renderDiagnosticQuestions(questions) {
     card.id = `diag-q-${q.question_id}`;
 
     card.innerHTML = `
-            <div class="question-number">Question ${i + 1} of ${questions.length}</div>
+      <div class="question-number">Question ${i + 1} of ${questions.length}</div>
             <div class="question-prompt">${q.prompt}</div>
             <div class="question-options">
                 ${q.options.map((opt, oi) => `
@@ -537,7 +466,7 @@ function renderDiagnosticQuestions(questions) {
                     </label>
                 `).join("")}
             </div>
-        `;
+  `;
     container.appendChild(card);
   });
 
@@ -608,13 +537,14 @@ async function handleSubmitDiagnostic() {
         signup_draft_id: diagnosticData.signup_draft_id,
         diagnostic_attempt_id: diagnosticData.attempt_id,
         answers: answers,
-        time_spent_minutes: Math.ceil((1800 - diagnosticSeconds) / 60),
+        time_spent_minutes: Math.max(1, Math.ceil((1800 - diagnosticSeconds) / 60)),
       },
     });
 
-    // Save auth if token returned
+    // Save auth if token returned (ensure learner_id is string for localStorage)
     if (result.token) {
-      setAuth(result.token, result.learner_id, localStorage.getItem(NAME_KEY) || $("signup-name").value);
+      const learnerId = result.learner_id != null ? String(result.learner_id) : null;
+      setAuth(result.token, learnerId, localStorage.getItem(NAME_KEY) || ($("signup-name") && $("signup-name").value) || "Student");
     }
 
     // Show result
@@ -666,106 +596,156 @@ async function loadDashboard() {
   const learnerId = getLearnerId();
   configureNavForRole("student", localStorage.getItem(NAME_KEY) || "Student");
 
+  const profileCard = $("profile-card");
+  const tasksContainer = $("current-tasks");
+  if (profileCard) {
+    profileCard.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading dashboard...</p></div>`;
+  }
+  if (tasksContainer) {
+    tasksContainer.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading tasks...</p></div>`;
+  }
+
+  if (!learnerId) {
+    if (profileCard) profileCard.innerHTML = `<div class="profile-stat"><div class="stat-value">Session</div><div class="stat-label">Please log in again. Your session may have expired.</div></div>`;
+    if (tasksContainer) tasksContainer.innerHTML = `<div class="loading-overlay"><p>Log in to see your tasks.</p></div>`;
+    _renderComparativeAnalyticsFallbackLatest("Log in to see comparative analytics.");
+    return;
+  }
+
   try {
     const data = await api(`/learning/dashboard/${learnerId}`);
     renderDashboard(data);
     await loadComparativeAnalytics(learnerId);
   } catch (err) {
     console.error("Dashboard load failed:", err);
-    // Show a minimal dashboard if the learning endpoint fails
     try {
-      // Try onboarding endpoint as fallback
-      renderDashboardFallback();
-      _renderComparativeAnalyticsFallbackLatest("Comparative analytics unavailable");
+      renderDashboardFallback(err.message);
+      _renderComparativeAnalyticsFallbackLatest("Comparative analytics unavailable.");
     } catch (e2) {
-      $("profile-card").innerHTML = `<div class="profile-stat"><div class="stat-value">Error</div><div class="stat-label">${err.message}</div></div>`;
+      if (profileCard) profileCard.innerHTML = `<div class="profile-stat"><div class="stat-value">Error</div><div class="stat-label">${err.message}</div></div>`;
     }
   }
 }
 
 function renderDashboard(data) {
-  // Profile card
+  if (!data || typeof data !== "object") {
+    renderDashboardFallback("Invalid response from server.");
+    return;
+  }
+  const completionPct = Number(data.overall_completion_percent) ?? 0;
+  const studentName = data.student_name || "Student";
+  const currentWeek = data.current_week ?? 1;
+  const currentWeekLabel = data.current_week_label || `Week ${currentWeek}`;
+  const overallMastery = Number(data.overall_mastery_percent) ?? 0;
+  const diagnosticScore = data.diagnostic_score != null ? data.diagnostic_score : null;
+  const selectedWeeks = data.selected_weeks ?? null;
+  const suggestedWeeks = data.suggested_weeks ?? null;
+  const completionEstimateDate = data.completion_estimate_date ?? null;
+  const circumference = 2 * Math.PI * 36;
+  const dashOffset = circumference - (circumference * Math.min(100, Math.max(0, completionPct)) / 100);
   $("profile-card").innerHTML = `
-        <div class="profile-stat">
-            <div class="stat-value">Student</div>
-            <div class="stat-label">${data.student_name}</div>
+    <div class="profile-welcome">
+      <h2 style="margin:0;font-size:1.25rem;font-weight:700;color:var(--text-primary)">Welcome back, ${sanitizeHTML(studentName)}!</h2>
+      <span style="color:var(--text-muted);font-size:0.85rem">${currentWeekLabel} • ${formatIsoDateLabel(completionEstimateDate)}</span>
+    </div>
+    <div class="profile-stats-grid">
+      <div class="profile-stat profile-stat--hero">
+        <svg width="80" height="80" viewBox="0 0 80 80" style="transform:rotate(-90deg)">
+          <circle cx="40" cy="40" r="36" fill="none" stroke="var(--border)" stroke-width="6"/>
+          <circle cx="40" cy="40" r="36" fill="none" stroke="var(--accent)" stroke-width="6"
+            stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"
+            stroke-linecap="round" style="transition:stroke-dashoffset 1s ease"/>
+        </svg>
+        <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <span style="font-size:1.3rem;font-weight:800;color:var(--text-primary)">${completionPct.toFixed(0)}%</span>
+          <span style="font-size:0.65rem;color:var(--text-muted)">Complete</span>
         </div>
-        <div class="profile-stat">
-            <div class="stat-value">W${data.current_week}</div>
-            <div class="stat-label">${data.current_week_label || "Current Week"}</div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.overall_completion_percent.toFixed(0)}%</div>
-            <div class="stat-label">Completed</div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.overall_mastery_percent.toFixed(0)}%</div>
-            <div class="stat-label">Mastery</div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.diagnostic_score !== null ? (data.diagnostic_score * 100).toFixed(0) + "%" : "—"}</div>
-            <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline onboarding assessment score used to personalize your plan. This is not your weekly performance score.">?</span></div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.selected_weeks || "—"}/${data.suggested_weeks || "—"}</div>
-            <div class="stat-label">Chosen / Suggested Wks <span class="help-tip" title="Chosen weeks are your preferred timeline. Suggested weeks are adaptive and can increase or decrease with your consistency and scores.">?</span></div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date)}</div>
-            <div class="stat-label">Scheduled Completion <span class="help-tip" title="Expected completion date using your currently scheduled week timeline. This date shifts earlier or later when weeks are replanned.">?</span></div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date_active_pace)}</div>
-            <div class="stat-label">Active Pace ETA <span class="help-tip" title="Estimated completion date based on your recent actual learning pace.">?</span></div>
-        </div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">W${currentWeek}</div>
+        <div class="stat-label">${currentWeekLabel}</div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${overallMastery.toFixed(0)}%</div>
+        <div class="stat-label">Mastery</div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${diagnosticScore !== null && diagnosticScore !== undefined ? (Number(diagnosticScore) * 100).toFixed(0) + "%" : "\u2014"}</div>
+        <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline assessment score">?</span></div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${selectedWeeks ?? "\u2014"}/${suggestedWeeks ?? "\u2014"}</div>
+        <div class="stat-label">Chosen/Suggested Wks</div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${formatIsoDateLabel(completionEstimateDate)}</div>
+        <div class="stat-label">Scheduled Completion</div>
+      </div>
+    </div>
     `;
 
   // Current week tasks
-  renderTasks(data.current_week_tasks, data.current_week, data.current_week_label);
+  const tasks = Array.isArray(data.current_week_tasks) ? data.current_week_tasks : [];
+  renderTasks(tasks, currentWeek, currentWeekLabel);
 
   // Completion status
-  $("completion-bar").querySelector("span").style.width = `${data.overall_completion_percent}%`;
-  $("completion-label").textContent = `${data.overall_completion_percent.toFixed(0)}% Complete`;
-  renderChapters(data.chapter_status);
+  const completionBar = $("completion-bar");
+  if (completionBar && completionBar.querySelector("span")) {
+    completionBar.querySelector("span").style.width = `${Math.min(100, Math.max(0, completionPct))}%`;
+  }
+  const completionLabel = $("completion-label");
+  if (completionLabel) completionLabel.textContent = `${completionPct.toFixed(0)}% Complete`;
+  const chapterStatus = Array.isArray(data.chapter_status) ? data.chapter_status : [];
+  renderChapters(chapterStatus);
 
   // Confidence
-  renderConfidence(data.chapter_confidence);
-  renderConfidenceTrend(data.learner_id);
+  const chapterConfidence = Array.isArray(data.chapter_confidence) ? data.chapter_confidence : [];
+  renderConfidence(chapterConfidence);
+  const learnerId = data.learner_id || getLearnerId();
+  if (learnerId) renderConfidenceTrend(learnerId);
 
   // Plan
-  renderPlan(data.rough_plan, data.current_week);
-  renderPlanHistory(data.learner_id);
+  const roughPlan = Array.isArray(data.rough_plan) ? data.rough_plan : [];
+  renderPlan(roughPlan, currentWeek);
+  if (learnerId) renderPlanHistory(learnerId);
 
   // Revision
-  if (data.revision_queue && data.revision_queue.length > 0) {
+  const revisionQueue = Array.isArray(data.revision_queue) ? data.revision_queue : [];
+  if (revisionQueue.length > 0) {
     show($("section-revision"));
-    renderRevision(data.revision_queue);
+    renderRevision(revisionQueue);
   } else {
     hide($("section-revision"));
   }
 
-  // Check if week is complete (all tasks done) ? show advance button
-  checkWeekComplete(data.current_week_tasks, data.learner_id);
+  checkWeekComplete(tasks, learnerId);
 }
 
-function renderDashboardFallback() {
-  $("profile-card").innerHTML = `
+function renderDashboardFallback(errorDetail) {
+  const profileCard = $("profile-card");
+  if (!profileCard) return;
+  const name = localStorage.getItem(NAME_KEY) || "Student";
+  const msg = errorDetail ? `Could not load dashboard. ${errorDetail}` : "Dashboard data is temporarily unavailable. Try again in a moment.";
+  profileCard.innerHTML = `
         <div class="profile-stat">
-            <div class="stat-value">Student</div>
-            <div class="stat-label">${localStorage.getItem(NAME_KEY) || "Student"}</div>
+            <div class="stat-value">${sanitizeHTML(name)}</div>
+            <div class="stat-label">Student</div>
         </div>
         <div class="profile-stat">
             <div class="stat-value">—</div>
-            <div class="stat-label">Loading...</div>
+            <div class="stat-label">${sanitizeHTML(msg)}</div>
         </div>
     `;
+  const tasksEl = $("current-tasks");
+  if (tasksEl) tasksEl.innerHTML = `<div class="loading-overlay"><p>${sanitizeHTML(msg)}</p><button type="button" class="btn btn-primary" onclick="loadDashboard()">Retry</button></div>`;
 }
 
 function renderTasks(tasks, weekNumber, weekLabel = null) {
   const container = $("current-tasks");
-  $("section-tasks").querySelector(".section-title").textContent = weekLabel
-    ? `${weekLabel} Tasks`
-    : `Week ${weekNumber} Tasks`;
+  const sectionTasks = $("section-tasks");
+  if (!container) return;
+  const titleEl = sectionTasks && sectionTasks.querySelector(".section-title");
+  if (titleEl) titleEl.textContent = weekLabel ? `${weekLabel} Tasks` : `Week ${weekNumber} Tasks`;
 
   if (!tasks || tasks.length === 0) {
     container.innerHTML = `<div class="loading-overlay"><p>No tasks yet. Complete onboarding to get started!</p></div>`;
@@ -786,13 +766,13 @@ function renderTasks(tasks, weekNumber, weekLabel = null) {
       <div style="margin-bottom:14px">
         <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
         ${dayTasks.map(t => {
-          const isChapterLevel = t.chapter_level;
-          const icon = t.task_type === "read" ? "Read" : (isChapterLevel ? "Final" : "Quiz");
-          const statusCls = t.status;
-          const statusLabel = t.status.replace(/_/g, " ");
-          const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
-          const chapterLevelAttr = isChapterLevel ? 'data-chapter-level="true"' : "";
-          return `
+      const isChapterLevel = t.chapter_level;
+      const icon = t.task_type === "read" ? "Read" : (isChapterLevel ? "Final" : "Quiz");
+      const statusCls = t.status;
+      const statusLabel = t.status.replace(/_/g, " ");
+      const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+      const chapterLevelAttr = isChapterLevel ? 'data-chapter-level="true"' : "";
+      return `
             <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} ${chapterLevelAttr} style="cursor:pointer;margin-bottom:8px">
               <div class="task-icon">${icon}</div>
               <div class="task-info">
@@ -801,7 +781,7 @@ function renderTasks(tasks, weekNumber, weekLabel = null) {
               </div>
               <div class="task-status-badge ${statusCls}">${statusLabel}</div>
             </div>`;
-        }).join("")}
+    }).join("")}
       </div>
     `).join("");
     bindTaskCardClicks(container);
@@ -866,6 +846,7 @@ function checkWeekComplete(tasks, learnerId) {
 
   if (allDone) {
     const container = $("current-tasks");
+    if (!container) return;
     container.innerHTML += `
             <div style="text-align:center; margin-top:16px;">
                 <button class="btn btn-success" id="btn-advance-week" style="padding:14px 28px; font-size:1rem;">
@@ -873,7 +854,8 @@ function checkWeekComplete(tasks, learnerId) {
                 </button>
             </div>
         `;
-    $("btn-advance-week").addEventListener("click", () => advanceWeek(learnerId));
+    const advanceBtn = $("btn-advance-week");
+    if (advanceBtn) advanceBtn.addEventListener("click", () => advanceWeek(learnerId));
   }
 }
 
@@ -883,16 +865,19 @@ async function advanceWeek(learnerId) {
 
   try {
     const result = await api(`/learning/week/advance?learner_id=${learnerId}`, { method: "POST" });
-    alert(result.message);
+    showToast(result.message || "Week advanced successfully!", "success");
     loadDashboard();
   } catch (err) {
-    alert("Error: " + err.message);
+    showToast("Error: " + err.message, "error");
     if (btn) { btn.disabled = false; btn.textContent = "Advance to next week"; }
   }
 }
 
 function renderChapters(chapters) {
-  $("chapters-grid").innerHTML = chapters.map(ch => `
+  const grid = $("chapters-grid");
+  if (!grid) return;
+  const list = Array.isArray(chapters) ? chapters : [];
+  grid.innerHTML = list.map(ch => `
         <div class="chapter-card ${ch.status}" data-chapter-number="${ch.chapter_number}" style="cursor:pointer" title="Click to see subsection details">
             <div class="chapter-name">Ch ${ch.chapter_number}: ${ch.title}</div>
             <div class="chapter-status-text">${ch.status.replace(/_/g, " ")}</div>
@@ -900,7 +885,7 @@ function renderChapters(chapters) {
     `).join("");
 
   // Bind chapter card clicks for drill-down
-  $("chapters-grid").querySelectorAll(".chapter-card").forEach(card => {
+  grid.querySelectorAll(".chapter-card").forEach(card => {
     card.addEventListener("click", () => {
       const chNum = parseInt(card.dataset.chapterNumber);
       openChapterDetail(chNum);
@@ -910,14 +895,16 @@ function renderChapters(chapters) {
 
 let confidenceChart = null;
 function renderConfidence(confData) {
+  const data = Array.isArray(confData) ? confData : [];
+  const confGrid = $("confidence-grid");
   // Render Chart.js bar chart
   try {
     const ctx = $("confidence-chart");
     if (ctx && typeof Chart !== "undefined") {
       if (confidenceChart) confidenceChart.destroy();
-      const labels = confData.map(c => `Ch ${c.chapter_number}`);
-      const scores = confData.map(c => (c.mastery_score * 100));
-      const colors = confData.map(c =>
+      const labels = data.map(c => `Ch ${c.chapter_number}`);
+      const scores = data.map(c => (Number(c.mastery_score) || 0) * 100);
+      const colors = data.map(c =>
         c.mastery_band === "mastered" ? "#22c55e" :
           c.mastery_band === "proficient" ? "#3b82f6" :
             c.mastery_band === "developing" ? "#f59e0b" : "#ef4444"
@@ -951,8 +938,9 @@ function renderConfidence(confData) {
   } catch (e) { console.warn("Chart rendering skipped:", e); }
 
   // Render confidence cards grid
-  $("confidence-grid").innerHTML = confData.map(ch => {
-    const pct = (ch.mastery_score * 100).toFixed(0);
+  if (!confGrid) return;
+  confGrid.innerHTML = data.map(ch => {
+    const pct = ((Number(ch.mastery_score) || 0) * 100).toFixed(0);
     const barColor = ch.mastery_band === "mastered" ? "var(--success)" :
       ch.mastery_band === "proficient" ? "var(--info)" :
         ch.mastery_band === "developing" ? "var(--warning)" : "var(--danger)";
@@ -972,12 +960,14 @@ function renderConfidence(confData) {
 }
 
 function renderPlan(plan, currentWeek) {
-  if (!plan || plan.length === 0) {
-    $("plan-timeline").innerHTML = `<p style="color:var(--text-muted)">No plan generated yet.</p>`;
+  const el = $("plan-timeline");
+  if (!el) return;
+  const list = Array.isArray(plan) ? plan : [];
+  if (list.length === 0) {
+    el.innerHTML = `<p style="color:var(--text-muted)">No plan generated yet.</p>`;
     return;
   }
-
-  $("plan-timeline").innerHTML = plan.map(p => {
+  el.innerHTML = list.map(p => {
     const statusCls = p.status || (p.week < currentWeek ? "completed" : p.week === currentWeek ? "current" : "upcoming");
     return `
             <div class="plan-week ${statusCls}">
@@ -992,7 +982,10 @@ function renderPlan(plan, currentWeek) {
 }
 
 function renderRevision(revisions) {
-  $("revision-list").innerHTML = revisions.map(r => `
+  const el = $("revision-list");
+  if (!el) return;
+  const list = Array.isArray(revisions) ? revisions : [];
+  el.innerHTML = list.map(r => `
         <div class="revision-item">
             <div class="revision-icon">Plan</div>
             <div class="revision-info">
@@ -1023,6 +1016,10 @@ async function openReading(chapterNumber, taskId) {
   const attemptMarkReadingComplete = async () => {
     if (readingTaskCompleted || completionInFlight) return;
     completionInFlight = true;
+    if (!confirm("You have met the minimum reading time. Mark this section as complete?")) {
+      completionInFlight = false;
+      return;
+    }
     const completion = await completeReading();
     completionInFlight = false;
     if (completion.ok) {
@@ -1408,6 +1405,10 @@ async function openSectionReading(chapterNumber, sectionId, regenerate = false, 
   const attemptMarkSectionReadingComplete = async () => {
     if (sectionTaskCompleted || completionInFlight) return;
     completionInFlight = true;
+    if (!confirm("You have met the minimum reading time. Mark this section as complete?")) {
+      completionInFlight = false;
+      return;
+    }
     const completion = await completeReading();
     completionInFlight = false;
     if (completion.ok) {
@@ -1753,9 +1754,9 @@ function renderDailyPlan(tasks) {
       <div style="margin-bottom:14px">
         <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
         ${dayTasks.map(t => {
-        const icon = t.task_type === "read" ? "Read" : (t.chapter_level ? "Final" : "Quiz");
-        const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
-        return `
+      const icon = t.task_type === "read" ? "Read" : (t.chapter_level ? "Final" : "Quiz");
+      const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+      return `
           <div class="task-card pending" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} style="cursor:pointer;border-left:3px solid var(--accent);margin-bottom:8px">
             <div class="task-icon">${icon}</div>
             <div class="task-info">
@@ -1763,7 +1764,7 @@ function renderDailyPlan(tasks) {
               <div class="task-meta">${t.chapter}${t.section_id ? " • §" + t.section_id : ""}</div>
             </div>
           </div>`;
-      }).join("")}
+    }).join("")}
       </div>
     `).join("");
     bindDailyPlanTaskClicks(container);
@@ -2130,8 +2131,54 @@ function focusWeakArea(areaLabel) {
   const tasksSection = $("section-tasks");
   if (tasksSection) tasksSection.scrollIntoView({ behavior: "smooth", block: "start" });
   if (matched === 0) {
-    alert(`No current-week tasks found for ${area}. Try reviewing chapter cards below.`);
+    showToast(`No current-week tasks found for ${area}. Try reviewing chapter cards below.`, "info");
   }
 }
 
+// ── Admin Student Search/Filter ───────────────────────────────────────────
+document.addEventListener("DOMContentLoaded", () => {
+  const searchInput = document.getElementById("admin-student-search");
+  if (searchInput) {
+    searchInput.addEventListener("input", debounce(function () {
+      const query = this.value.trim().toLowerCase();
+      const items = document.querySelectorAll("#admin-student-list .admin-student-item");
+      items.forEach(item => {
+        const name = (item.dataset.name || item.textContent || "").toLowerCase();
+        item.style.display = name.includes(query) ? "" : "none";
+      });
+    }, 250));
+  }
 
+  // Admin refresh button
+  const refreshBtn = document.getElementById("btn-admin-refresh");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", () => {
+      if (typeof loadAdminDashboard === "function") loadAdminDashboard();
+      const ts = document.getElementById("admin-last-updated");
+      if (ts) ts.textContent = "Last updated: " + new Date().toLocaleTimeString();
+    });
+  }
+});
+
+// ── Keyboard Shortcuts for Tests ──────────────────────────────────────────
+document.addEventListener("keydown", (e) => {
+  // Only active on test screens
+  const testScreen = $("screen-test");
+  if (!testScreen || testScreen.classList.contains("hidden")) return;
+
+  // 1-4 keys select options for the first unanswered question
+  if (e.key >= "1" && e.key <= "4") {
+    const questionCards = testScreen.querySelectorAll(".question-card:not(.answered)");
+    if (questionCards.length === 0) return;
+    const firstUnanswered = questionCards[0];
+    const labels = firstUnanswered.querySelectorAll(".option-label");
+    const idx = parseInt(e.key) - 1;
+    if (labels[idx]) labels[idx].click();
+  }
+
+  // Enter key submits test if enabled
+  if (e.key === "Enter") {
+    const submitBtn = $("btn-submit-chapter-test");
+    if (submitBtn && !submitBtn.disabled) submitBtn.click();
+  }
+});

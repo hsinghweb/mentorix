@@ -1,3 +1,12 @@
+import warnings
+
+warnings.warn(
+    "memory.hubs is unused — no active modules import StructuredMemoryHubs. "
+    "Consider removing in next cleanup iteration.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 from __future__ import annotations
 
 from app.memory.store import HUB_KEYS, memory_store

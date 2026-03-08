@@ -7,6 +7,8 @@ import httpx
 from app.core.model_registry import resolve_role
 from app.core.resilience import get_breaker, retry_with_backoff
 from app.core.settings import settings
+from app.telemetry.llm_telemetry import record_llm_call
+from app.telemetry.error_rate_tracker import record as record_error_rate
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +99,20 @@ class GeminiLLMProvider(BaseLLMProvider):
         try:
             result = await retry_with_backoff(_call)
             breaker.record_success()
+            record_error_rate(f"llm:{self.provider_name}:{self.model_name}", True)
+            # Record telemetry on success
+            text_result, usage = result
+            record_llm_call(
+                feature=self.role,
+                tokens=usage.get("total_tokens_estimate", 0),
+                cost=usage.get("cost_estimate_usd", 0.0),
+                success=True,
+            )
             return result
         except Exception as e:
             breaker.record_failure()
+            record_error_rate(f"llm:{self.provider_name}:{self.model_name}", False)
+            record_llm_call(feature=self.role, success=False)
             logger.warning("[LLM] Error model=%s role=%s error=%s", self.model_name, self.role, str(e)[:200])
             resp = getattr(e, "response", None)
             status = getattr(resp, "status_code", None)
@@ -179,9 +192,19 @@ class OllamaLLMProvider(BaseLLMProvider):
         try:
             result = await retry_with_backoff(_call)
             breaker.record_success()
+            record_error_rate(f"llm:{self.provider_name}:{self.model_name}", True)
+            text_result, usage = result
+            record_llm_call(
+                feature=self.role,
+                tokens=usage.get("total_tokens_estimate", 0),
+                cost=usage.get("cost_estimate_usd", 0.0),
+                success=True,
+            )
             return result
         except Exception:
             breaker.record_failure()
+            record_error_rate(f"llm:{self.provider_name}:{self.model_name}", False)
+            record_llm_call(feature=self.role, success=False)
             raise
 
 

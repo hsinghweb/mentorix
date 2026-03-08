@@ -1,224 +1,176 @@
 # Mentorix
 
-Autonomous multi-agent personalized learning MVP (CBSE math focus) for capstone evaluation.
+**Your personal AI Math Tutor for Class 10 CBSE Mathematics.**  
+Agentic, autonomous, and adaptive learning with NCERT-grounded content.
 
-## Evaluator Quick Run (3-5 min)
+---
 
-Prerequisite: Docker Desktop/Engine is running.
+## Features
 
-```powershell
-docker compose up --build -d
-./scripts/check_ready.ps1
-./scripts/test_mvp.ps1
+- **Diagnostic onboarding** — 25-question MCQ assessment; personalized timeline (14–28 weeks) and week-by-week plan
+- **Adaptive dashboard** — Current week tasks, chapter completion, mastery overview, comparative analytics
+- **Chapter reading** — Generated reading material from NCERT syllabus; section and chapter-level content with optional RAG grounding
+- **Section & chapter tests** — MCQ generation, timed tests, pass/fail with retry and revision queue
+- **Practice mode** — Extra questions with instant feedback and explanations
+- **Admin dashboard** — Student list, agent overview, system metrics (when running as admin)
+- **Auth** — Student signup (with diagnostic), login, JWT; optional admin login
+
+---
+
+## Tech Stack
+
+| Layer      | Stack |
+|-----------|--------|
+| Frontend  | Vanilla JS (SPA), HTML/CSS, KaTeX, Marked, Chart.js |
+| API       | FastAPI, Pydantic, SQLAlchemy (async), asyncpg |
+| Databases | PostgreSQL (pgvector), Redis, MongoDB |
+| LLM       | Gemini or Ollama (configurable) |
+| Embeddings| Ollama (e.g. nomic-embed-text) or Gemini |
+
+---
+
+## Project Structure
+
+```
+mentorix/
+├── API/                    # Backend (FastAPI)
+│   ├── app/
+│   │   ├── api/            # Route handlers (auth, learning, onboarding, admin, health, …)
+│   │   ├── agents/         # Assessment, onboarding, reflection, diagnostic MCQ
+│   │   ├── core/           # Settings, LLM provider, resilience, auth, config governance
+│   │   ├── memory/         # DB session, Redis cache, MongoDB store, content cache
+│   │   ├── models/         # SQLAlchemy entities
+│   │   ├── rag/            # Grounding ingestion, retrieval, vector backends
+│   │   ├── runtime/        # Run manager, persistence
+│   │   ├── services/       # Timeline, reminders, learner profile, email
+│   │   └── telemetry/      # LLM telemetry, error-rate tracking
+│   ├── alembic/            # DB migrations
+│   ├── tests/              # Pytest tests
+│   ├── pyproject.toml      # Python deps (no top-level requirements.txt)
+│   └── Dockerfile
+├── frontend/               # Single-page app
+│   ├── index.html
+│   ├── app.js
+│   ├── styles.css
+│   └── renderer.js         # KaTeX / Markdown helpers
+├── CONFIG/                 # Env and model registry (e.g. local.env)
+├── data/                   # Runtime data (e.g. memory store when using file backend)
+├── docs/                   # Architecture, developer guide, planner notes
+├── scripts/                # MVP smoke test (PowerShell), test runners, utilities
+├── docker-compose.yml      # Postgres, Redis, Mongo, API, frontend (nginx)
+└── .env.example             # Copy to .env and set GEMINI_API_KEY etc.
 ```
 
-Open:
-- Frontend: `http://localhost:5500`
-- API: `http://localhost:8000`
+---
 
-## Iteration 11 Validation (Current)
+## Prerequisites
 
-- Fast profile:
-  - `powershell -ExecutionPolicy Bypass -File .\scripts\test_fast.ps1`
-- Full profile:
-  - `powershell -ExecutionPolicy Bypass -File .\scripts\test_full.ps1 -BaseUrl http://localhost:8000`
-- Frontend math sanitization regression:
-  - `node frontend/tests/math_sanitize_cases.js`
+- **Python 3.11+**
+- **PostgreSQL** (with pgvector)
+- **Redis**
+- **MongoDB** (or use file memory store for light local runs)
+- **LLM**: [Google Gemini](https://ai.google.dev/) API key, or local [Ollama](https://ollama.ai/)
 
-Operator docs:
-- `docs/iteration11_operator_runbook.md`
-- `docs/iteration11_migration_notes.md`
-- `docs/iteration11_rollback_checklist.md`
-- `docs/iteration11_rollout_validation.md`
+---
 
-## What This Demo Proves
+## Quick Start
 
-- **Autonomy:** session flow runs end-to-end (`start-session -> submit-answer -> dashboard`).
-- **Adaptation:** `submit-answer` returns `adaptation_applied` using performance + response time.
-- **Grounding:** lesson output stays concept/curriculum focused.
-- **Traceability:** evaluator-visible fields (`score`, `error_type`, `weak_areas`).
+### 1. Clone and configure
 
-## Grounding Pre-Work (Iteration 6 Slice)
-
-Mentorix now includes a pre-work grounding ingestion flow for syllabus + first three chapters.
-
-- Uses `class-10-maths/syllabus/syllabus.pdf` as canonical path.
-- If `class-10-maths/syllabus/syllabus.txt` exists, ingestion prefers it (faster, no PDF extraction delay).
-- Ingests chapter PDFs: `class-10-maths/chapters/ch_1.pdf`, `ch_2.pdf`, `ch_3.pdf`.
-- Stores chunk embeddings + ingestion metadata in Postgres tables:
-  - `curriculum_documents`
-  - `embedding_chunks`
-  - `ingestion_runs`
-
-Grounding endpoints:
-- `GET /grounding/status` -> readiness check (missing files / missing embeddings)
-- `POST /grounding/ingest` -> run ingestion (`?force_rebuild=true` optional)
-
-To **onboard a new course** (another subject/class): see `docs/ONBOARD_NEW_COURSE.md` and `API/scripts/onboard_course.py` (validate dir, set env, run ingest).
-
-## Runtime Memory Backend (MongoDB default)
-
-- Runtime learner/system memory now defaults to **MongoDB** via `MEMORY_STORE_BACKEND=mongo`.
-- File-based JSON memory storage is kept only as an optional compatibility mode.
-- Migration/backfill command:
-  - `cd API`
-  - `uv run python scripts/backfill_memory_to_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix`
-- Optional export backup command (Mongo -> JSON files):
-  - `cd API`
-  - `uv run python scripts/export_memory_from_mongo.py --mongodb-url mongodb://localhost:27017 --db-name mentorix --out-dir data/system/export_from_mongo`
-- Runtime verification endpoint:
-  - `GET /memory/status`
-
-### Memory PII/Security Mapping
-- Learner runtime payloads are stored in Mongo collections (`memory_hubs`, `runtime_snapshots`, `episodic_memory`).
-- Sensitive keys are redacted before persistence (for example: `password`, `secret`, `token`, `api_key`, `authorization`).
-- Mongo connection errors returned by status checks are sanitized to avoid credential leakage.
-
-## Session 19 Additions (Visible in Demo)
-
-- **System 2 reasoning:** content generation runs a bounded Draft-Verify-Refine loop with trace artifacts.
-- **Strict model governance:** role-based model routing (`planner`, `optimizer`, `verifier`, `content_generator`) from registry config.
-- **Emergency remediation:** verifier fallback path if local verifier is unavailable.
-- **Episodic skeleton memory:** run graphs are compressed into recipe-like memory skeletons.
-- **Skills 2.0:** both Python skills and Markdown `SKILL.md` skills are supported.
-- **JitRL optimizer:** user query optimization with offline rule generation hook.
-
-Quick evaluator endpoints:
-- `GET /runs`
-- `POST /runs/start`
-- `GET /events/stream` (SSE)
-- `GET /metrics/fleet`
-- `GET /metrics/resilience`
-- `GET /memory/hubs`
-- `GET /scheduler/jobs`
-
-## Architecture Diagram + Module Map
-
-### Current High-Level Diagram
-
-![Mentorix High Level Design](mentorix_hld.png)
-
-Reference docs:
-- `Mentorix_High_Level_Design.pdf`
-- `EAG_V2_Capstone_Idea_Mentorix.pdf`
-
-### Repository Module Map (Current)
-
-- **Runtime App:** `API/app/`
-  - `api/` (HTTP endpoints)
-  - `agents/` (profiling, planner, content, adaptation, assessment, reflection)
-  - `orchestrator/` (state machine and transitions)
-  - `rag/` (embedding + retriever pipeline)
-  - `memory/` (PostgreSQL/Redis integrations)
-  - `models/` (SQLAlchemy entities)
-  - `core/` (settings, bootstrap, logging, error envelope)
-- **Frontend Demo UI:** `frontend/` (static HTML/CSS/JS)
-- **Operational Scripts:** `scripts/` (readiness, smoke, image export/import)
-- **Configuration:** `CONFIG/` (`local.env`, templates)
-- **Tests:** `tests/` (integration + failure-mode API tests)
-- **Research/Design Partitions:** `PERCEPTION/`, `MEMORY/`, `DECISION/`, `ACTION/`, `ORCHESTRATOR/`, `AGENT/`, `MODELS/`, `RAG/`
-- **Documentation:** `docs/` (`PLANNER.md`, `DEMO_RUNBOOK.md`)
-
-## HLD Block-to-Code Mapping
-
-- **Student Interface (Web/Mobile):** `frontend/index.html`, `frontend/app.js`, `frontend/styles.css`
-- **API Gateway (FastAPI auth/routing):** `API/app/main.py`, `API/app/core/auth.py`, `API/app/core/errors.py`
-- **Orchestration & Scheduling Engine:** `API/app/runtime/run_manager.py`, `API/app/runtime/graph_context.py`, `API/app/autonomy/scheduler.py`
-- **Agent Manager:** `API/app/runtime/run_manager.py` (agent dispatch + lifecycle control)
-- **Notification Engine:** `API/app/core/notification_engine.py`, `API/app/api/notifications.py`
-- **Multi-Agent System:** `API/app/agents/` (`onboarding.py`, `planner.py`, `content.py`, `assessment.py`, `analytics_evaluation.py`, `compliance.py`, `memory_manager.py`, `reflection.py`)
-- **Knowledge & Memory Layer:** `API/app/models/entities.py`, `API/app/memory/database.py`, `API/app/memory/hubs.py`, `API/app/memory/ingest.py`
-- **RAG & Grounding Layer:** `API/app/rag/retriever.py`, `API/app/rag/embeddings.py`, `API/app/rag/vector_backends.py`
-- **AI Model Layer:** `API/app/core/llm_provider.py`, `API/app/core/model_registry.py`, `CONFIG/models_registry.json`, `CONFIG/models_registry.yaml`
-
-Evaluator-first API entry points:
-- **Core learning flow:** `POST /start-session`, `POST /submit-answer`, `GET /dashboard/{learner_id}`
-- **Onboarding + dynamic initial plan:** `POST /onboarding/start`, `POST /onboarding/submit`
-- **Weekly adaptive progression policy:** `POST /onboarding/weekly-replan`
-- **Persisted weekly plan lookup:** `GET /onboarding/plan/{learner_id}`
-- **Runtime orchestration:** `POST /runs/start`, `GET /runs/{run_id}/graph`, `POST /runs/{run_id}/stop`
-- **Notifications:** `GET /notifications`, `POST /notifications/send`
-- **Scheduler:** `GET /scheduler/jobs`, `POST /scheduler/jobs`, `POST /scheduler/jobs/{job_id}/trigger`
-- **Observability:** `GET /metrics/fleet`, `GET /metrics/resilience`, `GET /events/stream`
-
-## API Contract (Core Endpoints)
-
-### `POST /start-session`
-Request:
-```json
-{ "learner_id": "11111111-1111-1111-1111-111111111111" }
+```bash
+git clone <repo-url>
+cd mentorix
+cp .env.example .env
+# Edit .env: set GEMINI_API_KEY (or use LLM_PROVIDER=ollama and run Ollama locally)
 ```
-Response fields:
-- `session_id`, `concept`, `difficulty`, `explanation`, `question`, `state`
 
-### `POST /submit-answer`
-Request:
-```json
-{
-  "session_id": "26e36f4a-964b-4925-a31a-a1c6fd60df95",
-  "answer": "sample answer",
-  "response_time": 9.5
-}
+### 2. Start infrastructure (Docker)
+
+```bash
+docker compose up -d
+# Postgres :5432, Redis :6379, Mongo :27017
 ```
-Response fields:
-- `score`, `error_type`, `adaptation_applied`, `next_explanation`
 
-### `GET /dashboard/{learner_id}`
-Response fields:
-- `mastery_map`, `engagement_score`, `weak_areas`, `last_sessions`
+### 3. API (from repo root)
 
-### Runtime / Session-19 endpoints
-- `POST /runs/start` -> start graph-first autonomous run
-- `POST /runs/{run_id}/stop` -> controlled stop
-- `GET /runs/{run_id}/graph` -> UI graph payload
-- `GET /events/stream` -> live runtime events (SSE)
-- `GET /metrics/fleet` -> fleet telemetry
-- `GET /metrics/resilience` -> circuit breaker state
-- `GET /memory/context/{learner_id}` -> structured memory injection context
-- `GET|POST|PATCH|DELETE /scheduler/jobs` -> scheduler CRUD + trigger
-- `GET /grounding/status` -> ingestion readiness state
-- `POST /grounding/ingest` -> build grounding embeddings and manifest
-- `uv run python scripts/evaluate_retrieval_quality.py --json` -> run manual gold retrieval checks + confidence report
-- `POST /onboarding/start` -> generate objective diagnostic set from grounded chunks
-- `POST /onboarding/submit` -> score diagnostic, update profile, return rough 14+ week plan + active week
-- `POST /onboarding/weekly-replan` -> apply threshold + retry + timeout progression decision
-- `GET /onboarding/plan/{learner_id}` -> fetch latest persisted rough weekly plan
-- `POST /onboarding/engagement/events` -> ingest login/logout/study/task/test engagement events
-- `GET /onboarding/engagement/summary/{learner_id}` -> day/week minutes + streak + adherence summary
-- `GET /onboarding/where-i-stand/{learner_id}` -> chapter status + strengths/weaknesses + confidence snapshot
-- `GET /onboarding/evaluation-analytics/{learner_id}` -> objective evaluation + misconception patterns + risk/recommendations
-- `GET /onboarding/daily-plan/{learner_id}` -> committed-week daily breakdown (forecast remains read-only)
-
-Write-route idempotency support:
-- `POST /submit-answer`, `POST /onboarding/weekly-replan`, and `POST /onboarding/tasks/{task_id}/complete` accept optional `idempotency_key` in request body for safe retries.
-
-Reliability regression checks:
-- `uv run pytest ../tests/test_reliability_scheduler.py -q` -> scheduler restart/state recovery + small local load profile smoke
-
-## Key References for Review
-
-- Demo flow: `docs/DEMO_RUNBOOK.md`
-- Planner/checklist: `docs/PLANNER.md`
-- API base: `http://localhost:8000`
-- Health: `http://localhost:8000/health`
-
-## Migration Command (if needed)
-
-```powershell
+```bash
 cd API
-uv run alembic -c alembic.ini upgrade head
+pip install -e ".[dev]"   # or: pip install -e .
+# Set env so DB/Redis/Mongo match .env (or use CONFIG/local.env)
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-## Known Limitations (MVP)
+### 4. Frontend
 
-- Seeded curriculum corpus; not full production ingestion.
-- Hybrid retrieval is concept-focused (not full cross-document semantic search).
-- Heuristic assessment scoring (not exam-grade psychometrics).
-- No auth/multi-tenant hardening in MVP.
+- **Option A:** Open `frontend/index.html` in a browser (API URL can be set in the login/signup form; default `http://localhost:8000`).
+- **Option B:** Serve the folder and open the URL, e.g.  
+  `python -m http.server 5500` from `frontend/` → `http://localhost:5500`
 
-## V2 (Planned)
+### 5. Use the app
 
-- Full curriculum ingestion pipeline + richer chunk metadata.
-- Stronger misconception analytics and evaluation engine.
-- Auth, RBAC, and audit trail hardening.
-- Richer learner analytics and timeline visualization.
+1. Sign up (name, email, timeline weeks, Class 9 math %), then take the **diagnostic test**.
+2. Submit the test → see results and **Go to Dashboard**.
+3. From the dashboard, open **This Week’s Tasks** (read → section quiz → chapter test), comparative analytics, and learning roadmap.
+
+---
+
+## Configuration
+
+Key environment variables (see `.env.example`):
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DATABASE_URL` | PostgreSQL (async) | `postgresql+asyncpg://mentorix:mentorix@localhost:5432/mentorix` |
+| `REDIS_URL` | Redis | `redis://localhost:6379/0` |
+| `MONGODB_URL` | MongoDB | `mongodb://localhost:27017` |
+| `MEMORY_STORE_BACKEND` | `mongo` or `file` | `mongo` |
+| `LLM_PROVIDER` | `gemini` or `ollama` | `gemini` |
+| `GEMINI_API_KEY` | Required for Gemini | — |
+| `OLLAMA_BASE_URL` | For local LLM | `http://localhost:11434` |
+| `JWT_SECRET` | Change in production | dev default in .env.example |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Admin dashboard | change in production |
+
+For **tests**, the API uses `MEMORY_STORE_BACKEND=file` and `LLM_PROVIDER=none` (set in `API/tests/conftest.py` and root `tests/conftest.py`) so that PostgreSQL/Redis/Mongo/LLM are not required for the test suite.
+
+---
+
+## Running with Docker Compose
+
+```bash
+# From repo root; ensure CONFIG/local.env exists (or env_file in docker-compose)
+docker compose up -d
+# API: http://localhost:8000
+# Frontend: http://localhost:5500 (nginx serving ./frontend)
+```
+
+API container expects Postgres, Redis, and Mongo to be healthy before starting. Frontend is served as static files.
+
+---
+
+## Tests
+
+From repo root (API on path and env set) or from `API/`:
+
+```bash
+cd API
+pip install -e ".[dev]"
+pytest tests/ -v
+# Exclude slow learning-flow tests if needed:
+pytest tests/ -v --ignore=tests/test_learning_flow.py
+```
+
+Root-level `tests/` may require `PYTHONPATH=API` and `MEMORY_STORE_BACKEND=file` (see `tests/conftest.py`).
+
+---
+
+## Documentation
+
+- **Architecture** — `docs/ARCHITECTURE.md` (overview, data flow, module deps)
+- **Developer guide** — `docs/DEVELOPER_GUIDE.md` (quick start, structure, key flows)
+- **API** — `API/API_README.md` (if present) or OpenAPI at `http://localhost:8000/docs` when the API is running
+
+---
+
+## License
+
+See repository license file.
