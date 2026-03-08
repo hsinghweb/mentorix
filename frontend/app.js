@@ -4,6 +4,24 @@ const LEARNER_KEY = "mentorix_learner_id";
 const NAME_KEY = "mentorix_name";
 const ROLE_KEY = "mentorix_role";
 const API_BASE_KEY = "mentorix_api_base";
+const LS_VERSION_KEY = "mentorix_ls_version";
+const LS_CURRENT_VERSION = "2";
+
+// Versioned localStorage cleanup: wipe stale keys on version bump
+(function cleanupStaleLocalStorage() {
+  const v = localStorage.getItem(LS_VERSION_KEY);
+  if (v !== LS_CURRENT_VERSION) {
+    const keepKeys = [TOKEN_KEY, LEARNER_KEY, NAME_KEY, ROLE_KEY, API_BASE_KEY, LS_VERSION_KEY];
+    const toRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith("mentorix_") && !keepKeys.includes(key)) toRemove.push(key);
+    }
+    toRemove.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem(LS_VERSION_KEY, LS_CURRENT_VERSION);
+    if (toRemove.length) console.info("Cleared", toRemove.length, "stale localStorage keys");
+  }
+})();
 
 function getApiBase() {
   if (typeof document !== "undefined") {

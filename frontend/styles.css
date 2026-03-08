@@ -1753,3 +1753,119 @@ body {
         grid-template-columns: 1fr;
     }
 }
+
+/* ── Roadmap Timeline Enhancement ── */
+.roadmap-week-marker {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-radius: var(--radius-sm);
+    border-left: 4px solid var(--border);
+    background: var(--bg-card);
+    transition: all 0.2s ease;
+}
+.roadmap-week-marker.completed {
+    border-left-color: var(--success);
+    opacity: 0.85;
+}
+.roadmap-week-marker.current {
+    border-left-color: var(--accent);
+    background: rgba(99, 102, 241, 0.08);
+    box-shadow: 0 0 0 1px var(--accent);
+}
+.roadmap-week-marker.future {
+    border-left-color: var(--text-tertiary);
+    opacity: 0.7;
+}
+.roadmap-week-number {
+    font-weight: 700;
+    font-size: 0.85rem;
+    min-width: 55px;
+    color: var(--text-secondary);
+}
+.roadmap-week-marker.current .roadmap-week-number {
+    color: var(--accent-light);
+}
+.roadmap-week-chapter {
+    flex: 1;
+    font-size: 0.9rem;
+}
+.roadmap-week-status {
+    font-size: 0.75rem;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-weight: 600;
+}
+.roadmap-week-status.done {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--success);
+}
+.roadmap-week-status.active {
+    background: rgba(99, 102, 241, 0.15);
+    color: var(--accent-light);
+}
+
+/* Jump to Current Week Button */
+.btn-jump-current-week {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--accent-light);
+    background: rgba(99, 102, 241, 0.1);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all 0.2s ease;
+    margin-bottom: 12px;
+}
+.btn-jump-current-week:hover {
+    background: rgba(99, 102, 241, 0.2);
+}
+
+/* ── Agent Catalog Data-Driven Cards ── */
+.agent-catalog-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 16px;
+}
+.agent-catalog-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.agent-catalog-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+.agent-catalog-card h4 {
+    margin: 0 0 8px;
+    color: var(--accent-light);
+    font-size: 0.95rem;
+}
+.agent-catalog-card .agent-status {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+}
+.agent-catalog-card .agent-status.active {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--success);
+}
+.agent-catalog-card .agent-status.stub {
+    background: rgba(245, 158, 11, 0.15);
+    color: var(--warning);
+}
+.agent-catalog-card .agent-desc {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-top: 8px;
+    line-height: 1.4;
+}
