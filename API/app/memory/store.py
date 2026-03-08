@@ -9,7 +9,7 @@ from pathlib import Path
 
 from app.core.settings import settings
 
-HUB_KEYS = ("learner_preferences", "operating_context", "soft_identity")
+HUB_KEYS = ("learner_preferences", "operating_context", "soft_identity", "learner_memory")
 logger = logging.getLogger(__name__)
 SENSITIVE_KEYS = {"password", "pass", "passwd", "secret", "token", "api_key", "authorization"}
 
