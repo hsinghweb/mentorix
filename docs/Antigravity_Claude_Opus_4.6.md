@@ -148,7 +148,7 @@ Claude Opus 4.6 Architectural Review
 - [x] Add contract tests for MCP schemas — `TestMCPContracts` validates `MCPRequest` and `MCPResponse` schema creation and error states.
 - [ ] Add load tests for the dashboard endpoint which queries 8+ tables.
 - [ ] Add snapshot tests for admin agent visualization data structure.
-- [ ] Fix or remove test files in `frontend/tests/` — verify they still pass and are relevant.
+- [x] Fix or remove test files in `frontend/tests/` — fixed both: `math_sanitize_cases.js` updated to read from `renderer.js`, `dashboard_timeline_cases.js` updated to assert Active Pace ETA removal. Both pass.
 - [ ] Add test coverage reporting to CI pipeline.
 
 ---
