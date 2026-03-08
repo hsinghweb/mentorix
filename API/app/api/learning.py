@@ -283,11 +283,17 @@ def _profile_snapshot_key(profile: LearnerProfile, chapter_key: str) -> str:
 
 
 def _section_content_cache_key(section_id: str, tone: str, profile_snapshot: str) -> str:
-    return f"{section_id}::pv={CONTENT_PROMPT_VERSION}::tone={tone}::p={profile_snapshot}"
+    _ = tone
+    _ = profile_snapshot
+    # Stable key so generated section content is reused across subsequent requests.
+    return f"{section_id}::pv={CONTENT_PROMPT_VERSION}::stable"
 
 
 def _chapter_test_cache_key(chapter_base: str, difficulty: str, profile_snapshot: str) -> str:
-    return f"{chapter_base}::pv={TEST_PROMPT_VERSION}::difficulty={difficulty}::p={profile_snapshot}"
+    _ = difficulty
+    _ = profile_snapshot
+    # Stable key so chapter-final tests are reused unless regenerate=true.
+    return f"{chapter_base}::pv={TEST_PROMPT_VERSION}::stable"
 
 
 def _estimate_read_seconds(content: str, ability: float = 0.5) -> int:
@@ -726,7 +732,47 @@ def _is_near_duplicate(candidate: str, existing: list[str], threshold: float = 0
     return any(SequenceMatcher(a=candidate, b=prev).ratio() >= threshold for prev in existing)
 
 
-def _dedupe_generated_questions(raw_items: list[dict], target_count: int) -> tuple[list[dict], int]:
+_QUESTION_STOPWORDS = {
+    "the", "and", "for", "with", "that", "from", "into", "this", "which", "about", "using", "what",
+    "when", "where", "your", "their", "there", "these", "those", "chapter", "class", "cbse", "math",
+    "mathematics", "choose", "following", "statement", "correct", "option", "best", "most",
+}
+
+
+def _keyword_tokens(text: str) -> set[str]:
+    tokens = re.findall(r"[a-zA-Z]{3,}", str(text or "").lower())
+    return {t for t in tokens if t not in _QUESTION_STOPWORDS}
+
+
+def _question_looks_relevant(prompt: str, chapter_name: str, topic_titles: list[str]) -> bool:
+    q_tokens = _keyword_tokens(prompt)
+    if not q_tokens:
+        return False
+    source_tokens = _keyword_tokens(chapter_name)
+    for topic in topic_titles or []:
+        source_tokens |= _keyword_tokens(topic)
+    # Require at least one meaningful topic/chapter keyword overlap.
+    if q_tokens & source_tokens:
+        return True
+    # Math-heavy prompts can still be relevant even without direct keyword overlap.
+    return bool(re.search(r"[=+\-*/^]|\\frac|\\sqrt|ratio|equation|factor|multiple|polynomial", prompt, flags=re.IGNORECASE))
+
+
+def _has_valid_options(options: list) -> bool:
+    if not isinstance(options, list) or len(options) < 4:
+        return False
+    normalized = [re.sub(r"\s+", " ", str(opt or "").strip().lower()) for opt in options]
+    normalized = [opt for opt in normalized if opt]
+    return len(normalized) >= 4 and len(set(normalized[:4])) == 4
+
+
+def _dedupe_generated_questions(
+    raw_items: list[dict],
+    target_count: int,
+    *,
+    chapter_name: str = "",
+    topic_titles: list[str] | None = None,
+) -> tuple[list[dict], int]:
     """Drop exact/normalized/near-duplicate question stems from LLM output."""
     out: list[dict] = []
     seen_norm: list[str] = []
@@ -737,7 +783,10 @@ def _dedupe_generated_questions(raw_items: list[dict], target_count: int) -> tup
             continue
         q = str(item.get("q", "")).strip()
         options = item.get("options", [])
-        if not q or not isinstance(options, list) or len(options) < 4:
+        if not q or not _has_valid_options(options):
+            duplicates_removed += 1
+            continue
+        if chapter_name and not _question_looks_relevant(q, chapter_name, topic_titles or []):
             duplicates_removed += 1
             continue
         norm = _normalized_question_text(q)
@@ -752,6 +801,51 @@ def _dedupe_generated_questions(raw_items: list[dict], target_count: int) -> tup
         if len(out) >= target_count:
             break
     return out, duplicates_removed
+
+
+def _reading_content_is_high_quality(content: str, chapter_name: str, topic_titles: list[str] | None = None) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    words = re.findall(r"\b\w+\b", text)
+    if len(words) < 45:
+        return False
+    low_quality_markers = [
+        "correct definition",
+        "incorrect variant",
+        "select the statement that best matches",
+        "which concept is central",
+    ]
+    lowered = text.lower()
+    if any(marker in lowered for marker in low_quality_markers):
+        return False
+    topic_titles = topic_titles or []
+    if not _keyword_tokens(" ".join(topic_titles) + " " + chapter_name):
+        return True
+    return bool(_keyword_tokens(text) & _keyword_tokens(" ".join(topic_titles) + " " + chapter_name))
+
+
+def _question_set_is_high_quality(
+    questions: list[TestQuestion],
+    *,
+    chapter_name: str,
+    topic_titles: list[str] | None = None,
+    min_count: int,
+) -> bool:
+    if len(questions) < min_count:
+        return False
+    prompts = [str(q.prompt or "") for q in questions]
+    normalized = [_normalized_question_text(p) for p in prompts]
+    if len(set(normalized)) < len(normalized):
+        return False
+    lowered = " ".join(prompts).lower()
+    if "correct definition" in lowered or "incorrect variant" in lowered:
+        return False
+    relevant_count = 0
+    for q in questions:
+        if _question_looks_relevant(str(q.prompt or ""), chapter_name, topic_titles or []):
+            relevant_count += 1
+    return relevant_count >= max(min_count - 1, int(0.8 * len(questions)))
 
 
 async def _pending_subsection_tasks_for_final_test(
@@ -914,27 +1008,35 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached and cached.get("content"):
-            required_read_seconds = _clamp_read_seconds(
-                cached.get("required_read_seconds")
-                or _estimate_read_seconds(str(cached.get("content") or ""), combined_ability)
-            )
-            await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
-            await db.commit()
-            logger.info(
-                "event=cache_hit kind=chapter_content learner_id=%s chapter=%s section=%s",
-                payload.learner_id,
-                payload.chapter_number,
-                cache_section_id,
-            )
-            return ContentResponse(
-                chapter_number=payload.chapter_number,
-                chapter_title=chapter_name,
-                content=_format_math_for_display(str(cached["content"])),
-                source="cached",
-                tone=str(cached.get("tone") or tone_config["tone"]),
-                examples_count=tone_config["examples"],
-                required_read_seconds=required_read_seconds,
-            )
+            cached_content = str(cached.get("content") or "")
+            if not _reading_content_is_high_quality(cached_content, chapter_name, subtopics):
+                logger.warning(
+                    "event=cache_quality_reject kind=chapter_content learner_id=%s chapter=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                )
+            else:
+                required_read_seconds = _clamp_read_seconds(
+                    cached.get("required_read_seconds")
+                    or _estimate_read_seconds(cached_content, combined_ability)
+                )
+                await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+                await db.commit()
+                logger.info(
+                    "event=cache_hit kind=chapter_content learner_id=%s chapter=%s section=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    cache_section_id,
+                )
+                return ContentResponse(
+                    chapter_number=payload.chapter_number,
+                    chapter_title=chapter_name,
+                    content=_format_math_for_display(cached_content),
+                    source="cached",
+                    tone=str(cached.get("tone") or tone_config["tone"]),
+                    examples_count=tone_config["examples"],
+                    required_read_seconds=required_read_seconds,
+                )
         logger.info(
             "event=cache_miss kind=chapter_content learner_id=%s chapter=%s section=%s",
             payload.learner_id,
@@ -990,12 +1092,30 @@ async def get_reading_content(payload: ContentRequest, db: AsyncSession = Depend
         f"- Keep notation consistent and student-readable.\n"
         f"Keep the language appropriate for a 15-16 year old student.\n"
     )
+    strict_prompt = (
+        prompt
+        + "\nQuality constraints:\n"
+          "- Do not use generic placeholders.\n"
+          "- Explain concepts logically with step-by-step reasoning.\n"
+          "- Include at least one concrete solved example and one short practice check.\n"
+          "- Ensure each paragraph teaches a distinct point.\n"
+    )
 
     try:
-        llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
-        if llm_text and len(llm_text.strip()) > 50:
-            provider = get_llm_provider(role="content_generator")
+        provider = get_llm_provider(role="content_generator")
+        for attempt, candidate_prompt in enumerate([prompt, strict_prompt], start=1):
+            llm_text, _ = await _generate_text_with_mcp(candidate_prompt, role="content_generator")
+            if not llm_text or len(llm_text.strip()) <= 50:
+                continue
             generated_content = await _enforce_math_format(llm_text.strip(), provider=provider)
+            if not _reading_content_is_high_quality(generated_content, chapter_name, subtopics):
+                logger.warning(
+                    "event=reading_quality_reject kind=chapter_content learner_id=%s chapter=%s attempt=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    attempt,
+                )
+                continue
             required_read_seconds = _estimate_read_seconds(generated_content, combined_ability)
             save_content_cache(
                 str(payload.learner_id),
@@ -1075,31 +1195,45 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
                 for q in (cached.get("questions") or [])
                 if isinstance(q, dict)
             ]
-            logger.info(
-                "event=cache_hit kind=chapter_test learner_id=%s chapter=%s section=%s",
-                payload.learner_id,
-                payload.chapter_number,
-                cache_section_id,
-            )
-            _test_store[cached["test_id"]] = {
-                "learner_id": str(payload.learner_id),
-                "chapter_number": payload.chapter_number,
-                "chapter": chapter_key,
-                "chapter_level": True,
-                "section_id": None,
-                "questions": cached_questions,
-                "answer_key": cached["answer_key"],
-                "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
-            }
-            return GenerateTestResponse(
-                learner_id=str(payload.learner_id),
-                week_number=week_number,
-                chapter=chapter_key,
-                test_id=cached["test_id"],
-                questions=[TestQuestion(**q) for q in cached_questions],
-                time_limit_minutes=20,
-                source="cached",
-            )
+            cached_as_models = [TestQuestion(**q) for q in cached_questions]
+            topic_titles = [s.get("title", "") for s in ch_info.get("subtopics", []) if isinstance(s, dict)]
+            if not _question_set_is_high_quality(
+                cached_as_models,
+                chapter_name=chapter_name,
+                topic_titles=topic_titles,
+                min_count=8,
+            ):
+                logger.warning(
+                    "event=cache_quality_reject kind=chapter_test learner_id=%s chapter=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                )
+            else:
+                logger.info(
+                    "event=cache_hit kind=chapter_test learner_id=%s chapter=%s section=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    cache_section_id,
+                )
+                _test_store[cached["test_id"]] = {
+                    "learner_id": str(payload.learner_id),
+                    "chapter_number": payload.chapter_number,
+                    "chapter": chapter_key,
+                    "chapter_level": True,
+                    "section_id": None,
+                    "questions": cached_questions,
+                    "answer_key": cached["answer_key"],
+                    "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
+                }
+                return GenerateTestResponse(
+                    learner_id=str(payload.learner_id),
+                    week_number=week_number,
+                    chapter=chapter_key,
+                    test_id=cached["test_id"],
+                    questions=cached_as_models,
+                    time_limit_minutes=20,
+                    source="cached",
+                )
         logger.info(
             "event=cache_miss kind=chapter_test learner_id=%s chapter=%s section=%s",
             payload.learner_id,
@@ -1156,64 +1290,102 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
             f"Use \\\\( \\\\) for inline LaTeX math.\n"
             f"Return ONLY the JSON array, no other text.\n"
         )
+        strict_prompt = (
+            prompt
+            + "\nQuality constraints:\n"
+              "- Questions must be solvable and logically correct.\n"
+              "- Avoid generic placeholders.\n"
+              "- Ensure each question tests a distinct concept or skill.\n"
+              "- Keep options plausible but only one clearly correct.\n"
+        )
 
         try:
-            llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
-            if llm_text:
-                provider = get_llm_provider(role="content_generator")
-                # Parse JSON from LLM response
+            provider = get_llm_provider(role="content_generator")
+            topic_titles = [s.get("title", "") for s in ch_info.get("subtopics", []) if isinstance(s, dict)]
+            for attempt, candidate_prompt in enumerate([prompt, strict_prompt], start=1):
+                questions = []
+                answer_key = {}
+                llm_text, _ = await _generate_text_with_mcp(candidate_prompt, role="content_generator")
+                if not llm_text:
+                    continue
                 text = llm_text.strip()
-                # Try to extract JSON array
                 start = text.find("[")
                 end = text.rfind("]") + 1
-                if start >= 0 and end > start:
-                    parsed = json.loads(text[start:end])
-                    formatted_parsed: list[dict] = []
-                    for item in parsed:
-                        if isinstance(item, dict):
-                            formatted_parsed.append(await _format_mcq_item_math(item, provider=provider))
-                    deduped, duplicates_removed = _dedupe_generated_questions(formatted_parsed, target_count=10)
-                    for i, item in enumerate(deduped):
-                        qid = f"t_{test_id}_q{i+1}"
-                        options = item.get("options", ["A", "B", "C", "D"])
-                        correct = int(item.get("correct", 0))
-                        if correct < 0 or correct >= len(options):
-                            correct = 0
-                        questions.append(TestQuestion(
-                            question_id=qid,
-                            prompt=item.get("q", f"Question {i+1}"),
-                            options=options,
-                            chapter_number=payload.chapter_number,
-                        ))
-                        answer_key[qid] = correct
+                if start < 0 or end <= start:
+                    continue
+                parsed = json.loads(text[start:end])
+                formatted_parsed: list[dict] = []
+                for item in parsed:
+                    if isinstance(item, dict):
+                        formatted_parsed.append(await _format_mcq_item_math(item, provider=provider))
+                deduped, duplicates_removed = _dedupe_generated_questions(
+                    formatted_parsed,
+                    target_count=10,
+                    chapter_name=chapter_name,
+                    topic_titles=topic_titles,
+                )
+                for i, item in enumerate(deduped):
+                    qid = f"t_{test_id}_q{i+1}"
+                    options = item.get("options", ["A", "B", "C", "D"])
+                    correct = int(item.get("correct", 0))
+                    if correct < 0 or correct >= len(options):
+                        correct = 0
+                    questions.append(TestQuestion(
+                        question_id=qid,
+                        prompt=item.get("q", f"Question {i+1}"),
+                        options=options,
+                        chapter_number=payload.chapter_number,
+                    ))
+                    answer_key[qid] = correct
+                if _question_set_is_high_quality(
+                    questions,
+                    chapter_name=chapter_name,
+                    topic_titles=topic_titles,
+                    min_count=8,
+                ):
                     logger.info(
-                        "event=test_generation_diagnostics kind=chapter requested=%s unique_count=%s duplicates_removed=%s chapter=%s",
+                        "event=test_generation_diagnostics kind=chapter requested=%s unique_count=%s duplicates_removed=%s chapter=%s attempt=%s",
                         10,
                         len(questions),
                         duplicates_removed,
                         payload.chapter_number,
+                        attempt,
                     )
+                    break
+                logger.warning(
+                    "event=test_quality_reject kind=chapter learner_id=%s chapter=%s attempt=%s unique_count=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    attempt,
+                    len(questions),
+                )
         except Exception as exc:
             logger.warning("LLM test generation failed: %s", exc)
 
     # Refill missing unique slots with deterministic fallback stems.
     subtopics = [s["title"] for s in ch_info.get("subtopics", [])
                  if "Summary" not in s["title"] and "Introduction" not in s["title"]]
+    fallback_templates = [
+        "[Q{n}] Which statement is true for '{topic}'?",
+        "[Q{n}] Solve and choose the best answer related to '{topic}'.",
+        "[Q{n}] Which method should be applied first in a '{topic}' problem?",
+        "[Q{n}] Identify the incorrect claim about '{topic}'.",
+    ]
     while len(questions) < 10:
         i = len(questions)
         qid = f"t_{test_id}_q{i+1}"
         topic = subtopics[i % len(subtopics)] if subtopics else chapter_name
-        prompt_text = f"[Q{i+1}] Which of the following best describes a key concept in '{topic}'?"
+        prompt_text = fallback_templates[i % len(fallback_templates)].format(n=i + 1, topic=topic)
         if _is_near_duplicate(_normalized_question_text(prompt_text), [_normalized_question_text(q.prompt) for q in questions]):
-            prompt_text = f"[Q{i+1}] Identify the most accurate statement about '{topic}'."
+            prompt_text = f"[Q{i+1}] Apply a core concept from '{topic}' to select the correct option."
         questions.append(TestQuestion(
             question_id=qid,
             prompt=prompt_text,
             options=[
-                f"Correct definition of {topic}",
-                f"Incorrect variant A of {topic}",
-                f"Incorrect variant B of {topic}",
-                f"Unrelated concept",
+                f"A correct concept/application of {topic}",
+                f"A partially correct but flawed statement on {topic}",
+                f"A common misconception about {topic}",
+                f"An unrelated statement not valid for {topic}",
             ],
             chapter_number=payload.chapter_number,
         ))
@@ -1226,14 +1398,15 @@ async def generate_chapter_test(payload: ContentRequest, db: AsyncSession = Depe
         for i in range(10):
             qid = f"t_{test_id}_q{i+1}"
             topic = subtopics[i % len(subtopics)] if subtopics else chapter_name
+            fallback_stem = fallback_templates[i % len(fallback_templates)].format(n=i + 1, topic=topic)
             questions.append(TestQuestion(
                 question_id=qid,
-                prompt=f"[Q{i+1}] Which of the following best describes a key concept in '{topic}'?",
+                prompt=fallback_stem,
                 options=[
-                    f"Correct definition of {topic}",
-                    f"Incorrect variant A of {topic}",
-                    f"Incorrect variant B of {topic}",
-                    f"Unrelated concept",
+                    f"A correct concept/application of {topic}",
+                    f"A partially correct but flawed statement on {topic}",
+                    f"A common misconception about {topic}",
+                    f"An unrelated statement not valid for {topic}",
                 ],
                 chapter_number=payload.chapter_number,
             ))
@@ -2051,51 +2224,60 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
     if not payload.regenerate:
         cached = get_cached_content(str(payload.learner_id), payload.chapter_number, cache_section_id)
         if cached:
-            required_read_seconds = _clamp_read_seconds(
-                cached.get("required_read_seconds")
-                or _estimate_read_seconds(str(cached.get("content") or ""), combined_ability)
-            )
-            logger.info(
-                "event=cache_hit kind=section_content learner_id=%s chapter=%s section=%s",
-                payload.learner_id,
-                payload.chapter_number,
-                cache_section_id,
-            )
-            logger.info("Serving cached content for %s section %s", payload.chapter_number, payload.section_id)
-            # Still mark reading done
-            await _ensure_subsection_rows(db, payload.learner_id, payload.chapter_number)
-            sp = (await db.execute(
-                select(SubsectionProgression).where(
-                    SubsectionProgression.learner_id == payload.learner_id,
-                    SubsectionProgression.chapter == chapter_key,
-                    SubsectionProgression.section_id == payload.section_id,
+            cached_content = str(cached.get("content") or "")
+            if not _reading_content_is_high_quality(cached_content, chapter_name, [section_title]):
+                logger.warning(
+                    "event=cache_quality_reject kind=section_content learner_id=%s chapter=%s section=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    payload.section_id,
                 )
-            )).scalar_one_or_none()
-            if sp and not sp.reading_completed:
-                sp.reading_completed = True
-                if sp.status == "not_started":
-                    sp.status = "reading_done"
-            await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
-            await log_agent_decision(
-                db=db,
-                learner_id=payload.learner_id,
-                agent_name="content",
-                decision_type="section_content_served",
-                chapter=chapter_key,
-                section_id=payload.section_id,
-                input_snapshot={"mode": "cached", "chapter_number": payload.chapter_number},
-                output_payload={"source": "cached", "tone": cached.get("tone", "normal")},
-            )
-            await db.commit()
-            return {
-                "chapter_number": payload.chapter_number,
-                "section_id": payload.section_id,
-                "section_title": cached.get("section_title", section_title),
-                "content": _format_math_for_display(str(cached["content"])),
-                "source": "cached",
-                "tone": cached.get("tone", "normal"),
-                "required_read_seconds": required_read_seconds,
-            }
+            else:
+                required_read_seconds = _clamp_read_seconds(
+                    cached.get("required_read_seconds")
+                    or _estimate_read_seconds(str(cached.get("content") or ""), combined_ability)
+                )
+                logger.info(
+                    "event=cache_hit kind=section_content learner_id=%s chapter=%s section=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    cache_section_id,
+                )
+                logger.info("Serving cached content for %s section %s", payload.chapter_number, payload.section_id)
+                # Still mark reading done
+                await _ensure_subsection_rows(db, payload.learner_id, payload.chapter_number)
+                sp = (await db.execute(
+                    select(SubsectionProgression).where(
+                        SubsectionProgression.learner_id == payload.learner_id,
+                        SubsectionProgression.chapter == chapter_key,
+                        SubsectionProgression.section_id == payload.section_id,
+                    )
+                )).scalar_one_or_none()
+                if sp and not sp.reading_completed:
+                    sp.reading_completed = True
+                    if sp.status == "not_started":
+                        sp.status = "reading_done"
+                await _apply_dynamic_reading_requirement(db, payload.learner_id, payload.task_id, required_read_seconds)
+                await log_agent_decision(
+                    db=db,
+                    learner_id=payload.learner_id,
+                    agent_name="content",
+                    decision_type="section_content_served",
+                    chapter=chapter_key,
+                    section_id=payload.section_id,
+                    input_snapshot={"mode": "cached", "chapter_number": payload.chapter_number},
+                    output_payload={"source": "cached", "tone": cached.get("tone", "normal")},
+                )
+                await db.commit()
+                return {
+                    "chapter_number": payload.chapter_number,
+                    "section_id": payload.section_id,
+                    "section_title": cached.get("section_title", section_title),
+                    "content": _format_math_for_display(cached_content),
+                    "source": "cached",
+                    "tone": cached.get("tone", "normal"),
+                    "required_read_seconds": required_read_seconds,
+                }
         logger.info(
             "event=cache_miss kind=section_content learner_id=%s chapter=%s section=%s",
             payload.learner_id,
@@ -2166,12 +2348,32 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
         f"- Keep notation consistent and student-readable.\n"
         f"Keep the language appropriate for a 15-16 year old student.\n"
     )
+    strict_prompt = (
+        prompt
+        + "\nQuality constraints:\n"
+          "- Do not use generic template text.\n"
+          "- Explain the section with logical progression from concept to example.\n"
+          "- Include at least one section-specific solved example.\n"
+          "- Avoid repetitive statements.\n"
+    )
 
     try:
-        llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
-        if llm_text and len(llm_text.strip()) > 50:
-            provider = get_llm_provider(role="content_generator")
-            # Mark reading done for this subsection
+        provider = get_llm_provider(role="content_generator")
+        for attempt, candidate_prompt in enumerate([prompt, strict_prompt], start=1):
+            llm_text, _ = await _generate_text_with_mcp(candidate_prompt, role="content_generator")
+            if not llm_text or len(llm_text.strip()) <= 50:
+                continue
+            generated_content = await _enforce_math_format(llm_text.strip(), provider=provider)
+            if not _reading_content_is_high_quality(generated_content, chapter_name, [section_title]):
+                logger.warning(
+                    "event=reading_quality_reject kind=section_content learner_id=%s chapter=%s section=%s attempt=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    payload.section_id,
+                    attempt,
+                )
+                continue
+            # Mark reading done only after quality gate passes.
             await _ensure_subsection_rows(db, payload.learner_id, payload.chapter_number)
             sp = (await db.execute(
                 select(SubsectionProgression).where(
@@ -2185,8 +2387,6 @@ async def get_section_content(payload: SubsectionContentRequest, db: AsyncSessio
                 if sp.status == "not_started":
                     sp.status = "reading_done"
                 await db.commit()
-
-            generated_content = await _enforce_math_format(llm_text.strip(), provider=provider)
             required_read_seconds = _estimate_read_seconds(generated_content, combined_ability)
             # Save to cache
             save_content_cache(
@@ -2273,45 +2473,59 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
                 for q in (cached.get("questions") or [])
                 if isinstance(q, dict)
             ]
-            logger.info(
-                "event=cache_hit kind=section_test learner_id=%s chapter=%s section=%s",
-                payload.learner_id,
-                payload.chapter_number,
-                payload.section_id,
-            )
-            logger.info("Serving cached test for %s section %s", payload.chapter_number, payload.section_id)
-            # Re-register in _test_store for scoring
-            _test_store[cached["test_id"]] = {
-                "learner_id": str(payload.learner_id),
-                "chapter_number": payload.chapter_number,
-                "chapter": chapter_key,
-                "section_id": payload.section_id,
-                "chapter_level": False,
-                "questions": cached_questions,
-                "answer_key": cached["answer_key"],
-                "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
-            }
-            await log_agent_decision(
-                db=db,
-                learner_id=payload.learner_id,
-                agent_name="assessment",
-                decision_type="section_test_generated",
-                chapter=chapter_key,
-                section_id=payload.section_id,
-                input_snapshot={"mode": "cached", "chapter_number": payload.chapter_number},
-                output_payload={"source": "cached", "question_count": len(cached_questions)},
-            )
-            await db.commit()
-            return {
-                "learner_id": str(payload.learner_id),
-                "chapter": chapter_key,
-                "section_id": payload.section_id,
-                "section_title": cached.get("section_title", section_title),
-                "test_id": cached["test_id"],
-                "questions": cached_questions,
-                "time_limit_minutes": 10,
-                "source": "cached",
-            }
+            cached_as_models = [TestQuestion(**q) for q in cached_questions]
+            if not _question_set_is_high_quality(
+                cached_as_models,
+                chapter_name=chapter_name,
+                topic_titles=[section_title],
+                min_count=4,
+            ):
+                logger.warning(
+                    "event=cache_quality_reject kind=section_test learner_id=%s chapter=%s section=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    payload.section_id,
+                )
+            else:
+                logger.info(
+                    "event=cache_hit kind=section_test learner_id=%s chapter=%s section=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    payload.section_id,
+                )
+                logger.info("Serving cached test for %s section %s", payload.chapter_number, payload.section_id)
+                # Re-register in _test_store for scoring
+                _test_store[cached["test_id"]] = {
+                    "learner_id": str(payload.learner_id),
+                    "chapter_number": payload.chapter_number,
+                    "chapter": chapter_key,
+                    "section_id": payload.section_id,
+                    "chapter_level": False,
+                    "questions": cached_questions,
+                    "answer_key": cached["answer_key"],
+                    "created_at": cached.get("created_at", datetime.now(timezone.utc).isoformat()),
+                }
+                await log_agent_decision(
+                    db=db,
+                    learner_id=payload.learner_id,
+                    agent_name="assessment",
+                    decision_type="section_test_generated",
+                    chapter=chapter_key,
+                    section_id=payload.section_id,
+                    input_snapshot={"mode": "cached", "chapter_number": payload.chapter_number},
+                    output_payload={"source": "cached", "question_count": len(cached_questions)},
+                )
+                await db.commit()
+                return {
+                    "learner_id": str(payload.learner_id),
+                    "chapter": chapter_key,
+                    "section_id": payload.section_id,
+                    "section_title": cached.get("section_title", section_title),
+                    "test_id": cached["test_id"],
+                    "questions": cached_questions,
+                    "time_limit_minutes": 10,
+                    "source": "cached",
+                }
         logger.info(
             "event=cache_miss kind=section_test learner_id=%s chapter=%s section=%s",
             payload.learner_id,
@@ -2353,60 +2567,100 @@ async def generate_section_test(payload: SubsectionContentRequest, db: AsyncSess
             f"Use \\\\( \\\\) for inline LaTeX math.\n"
             f"Return ONLY the JSON array, no other text.\n"
         )
+        strict_prompt = (
+            prompt
+            + "\nQuality constraints:\n"
+              "- Questions must be directly tied to this section.\n"
+              "- Avoid generic placeholders and repeated stems.\n"
+              "- Ensure each question tests a different concept from the section.\n"
+              "- Options must be meaningful and non-repetitive.\n"
+        )
 
         try:
-            llm_text, _ = await _generate_text_with_mcp(prompt, role="content_generator")
-            if llm_text:
-                provider = get_llm_provider(role="content_generator")
+            provider = get_llm_provider(role="content_generator")
+            for attempt, candidate_prompt in enumerate([prompt, strict_prompt], start=1):
+                questions = []
+                answer_key = {}
+                llm_text, _ = await _generate_text_with_mcp(candidate_prompt, role="content_generator")
+                if not llm_text:
+                    continue
                 text = llm_text.strip()
                 start = text.find("[")
                 end = text.rfind("]") + 1
-                if start >= 0 and end > start:
-                    parsed = json.loads(text[start:end])
-                    formatted_parsed: list[dict] = []
-                    for item in parsed:
-                        if isinstance(item, dict):
-                            formatted_parsed.append(await _format_mcq_item_math(item, provider=provider))
-                    deduped, duplicates_removed = _dedupe_generated_questions(formatted_parsed, target_count=5)
-                    for i, item in enumerate(deduped):
-                        qid = f"st_{test_id}_q{i+1}"
-                        options = item.get("options", ["A", "B", "C", "D"])
-                        correct_idx = int(item.get("correct", 0))
-                        if correct_idx < 0 or correct_idx >= len(options):
-                            correct_idx = 0
-                        questions.append(TestQuestion(
-                            question_id=qid,
-                            prompt=item.get("q", f"Question {i+1}"),
-                            options=options,
-                            chapter_number=payload.chapter_number,
-                        ))
-                        answer_key[qid] = correct_idx
+                if start < 0 or end <= start:
+                    continue
+                parsed = json.loads(text[start:end])
+                formatted_parsed: list[dict] = []
+                for item in parsed:
+                    if isinstance(item, dict):
+                        formatted_parsed.append(await _format_mcq_item_math(item, provider=provider))
+                deduped, duplicates_removed = _dedupe_generated_questions(
+                    formatted_parsed,
+                    target_count=5,
+                    chapter_name=chapter_name,
+                    topic_titles=[section_title],
+                )
+                for i, item in enumerate(deduped):
+                    qid = f"st_{test_id}_q{i+1}"
+                    options = item.get("options", ["A", "B", "C", "D"])
+                    correct_idx = int(item.get("correct", 0))
+                    if correct_idx < 0 or correct_idx >= len(options):
+                        correct_idx = 0
+                    questions.append(TestQuestion(
+                        question_id=qid,
+                        prompt=item.get("q", f"Question {i+1}"),
+                        options=options,
+                        chapter_number=payload.chapter_number,
+                    ))
+                    answer_key[qid] = correct_idx
+                if _question_set_is_high_quality(
+                    questions,
+                    chapter_name=chapter_name,
+                    topic_titles=[section_title],
+                    min_count=4,
+                ):
                     logger.info(
-                        "event=test_generation_diagnostics kind=section requested=%s unique_count=%s duplicates_removed=%s chapter=%s section=%s",
+                        "event=test_generation_diagnostics kind=section requested=%s unique_count=%s duplicates_removed=%s chapter=%s section=%s attempt=%s",
                         5,
                         len(questions),
                         duplicates_removed,
                         payload.chapter_number,
                         payload.section_id,
+                        attempt,
                     )
+                    break
+                logger.warning(
+                    "event=test_quality_reject kind=section learner_id=%s chapter=%s section=%s attempt=%s unique_count=%s",
+                    payload.learner_id,
+                    payload.chapter_number,
+                    payload.section_id,
+                    attempt,
+                    len(questions),
+                )
         except Exception as exc:
             logger.warning("LLM section test generation failed: %s", exc)
 
     # Refill missing unique slots with deterministic fallback stems.
+    section_fallback_templates = [
+        "[Q{n}] Which statement is true for section '{topic}'?",
+        "[Q{n}] Apply the core rule from '{topic}' to choose the correct option.",
+        "[Q{n}] Which step is logically valid in a '{topic}' problem?",
+        "[Q{n}] Identify the misconception related to '{topic}'.",
+    ]
     while len(questions) < 5:
         i = len(questions)
         qid = f"st_{test_id}_q{i+1}"
-        prompt_text = f"[Q{i+1}] Which concept is central to '{section_title}'?"
+        prompt_text = section_fallback_templates[i % len(section_fallback_templates)].format(n=i + 1, topic=section_title)
         if _is_near_duplicate(_normalized_question_text(prompt_text), [_normalized_question_text(q.prompt) for q in questions]):
-            prompt_text = f"[Q{i+1}] Select the statement that best matches '{section_title}'."
+            prompt_text = f"[Q{i+1}] Select the most accurate application of '{section_title}'."
         questions.append(TestQuestion(
             question_id=qid,
             prompt=prompt_text,
             options=[
-                f"Correct definition of {section_title}",
-                f"Incorrect variant A",
-                f"Incorrect variant B",
-                f"Unrelated concept",
+                f"A correct concept/application of {section_title}",
+                f"A partially correct but flawed statement on {section_title}",
+                f"A common misconception about {section_title}",
+                f"An unrelated statement not valid for {section_title}",
             ],
             chapter_number=payload.chapter_number,
         ))
