@@ -50,7 +50,7 @@ class OnboardingSubmitRequest(BaseModel):
     signup_draft_id: str | None = None
     diagnostic_attempt_id: str
     answers: list[DiagnosticAnswer]
-    time_spent_minutes: int = Field(default=15, ge=1, le=240)
+    time_spent_minutes: int = Field(default=15, ge=0, le=240)
     idempotency_key: str | None = Field(default=None, max_length=128)
 
 

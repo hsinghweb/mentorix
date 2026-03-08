@@ -1,5 +1,5 @@
-from app.api.learning import (
-    TestQuestion as LearningTestQuestion,
+from app.api.learning.schemas import TestQuestion as LearningTestQuestion
+from app.api.learning.routes import (
     _chapter_test_cache_key,
     _dedupe_generated_questions,
     _question_set_is_high_quality,

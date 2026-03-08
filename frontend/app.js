@@ -1,4 +1,4 @@
-﻿// API and auth storage keys
+// API and auth storage keys
 const TOKEN_KEY = "mentorix_token";
 const LEARNER_KEY = "mentorix_learner_id";
 const NAME_KEY = "mentorix_name";
@@ -61,6 +61,26 @@ function debounce(fn, ms = 800) {
     clearTimeout(timer);
     timer = setTimeout(() => fn.apply(this, args), ms);
   };
+}
+
+/** Format seconds as MM:SS for timer display (e.g. 1800 -> "30:00"). */
+function formatTime(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${String(sec).padStart(2, "0")}`;
+}
+
+/** Format ISO date string for display (e.g. "2026-03-15" -> "Mar 15, 2026"). Returns "—" if null/undefined/invalid. */
+function formatIsoDateLabel(isoDate) {
+  if (isoDate == null || isoDate === "") return "\u2014";
+  try {
+    const d = new Date(isoDate);
+    if (Number.isNaN(d.getTime())) return "\u2014";
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  } catch {
+    return "\u2014";
+  }
 }
 
 function showLoadingSkeleton(containerId, count = 3) {
@@ -517,13 +537,14 @@ async function handleSubmitDiagnostic() {
         signup_draft_id: diagnosticData.signup_draft_id,
         diagnostic_attempt_id: diagnosticData.attempt_id,
         answers: answers,
-        time_spent_minutes: Math.ceil((1800 - diagnosticSeconds) / 60),
+        time_spent_minutes: Math.max(1, Math.ceil((1800 - diagnosticSeconds) / 60)),
       },
     });
 
-    // Save auth if token returned
+    // Save auth if token returned (ensure learner_id is string for localStorage)
     if (result.token) {
-      setAuth(result.token, result.learner_id, localStorage.getItem(NAME_KEY) || $("signup-name").value);
+      const learnerId = result.learner_id != null ? String(result.learner_id) : null;
+      setAuth(result.token, learnerId, localStorage.getItem(NAME_KEY) || ($("signup-name") && $("signup-name").value) || "Student");
     }
 
     // Show result
@@ -575,32 +596,57 @@ async function loadDashboard() {
   const learnerId = getLearnerId();
   configureNavForRole("student", localStorage.getItem(NAME_KEY) || "Student");
 
+  const profileCard = $("profile-card");
+  const tasksContainer = $("current-tasks");
+  if (profileCard) {
+    profileCard.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading dashboard...</p></div>`;
+  }
+  if (tasksContainer) {
+    tasksContainer.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading tasks...</p></div>`;
+  }
+
+  if (!learnerId) {
+    if (profileCard) profileCard.innerHTML = `<div class="profile-stat"><div class="stat-value">Session</div><div class="stat-label">Please log in again. Your session may have expired.</div></div>`;
+    if (tasksContainer) tasksContainer.innerHTML = `<div class="loading-overlay"><p>Log in to see your tasks.</p></div>`;
+    _renderComparativeAnalyticsFallbackLatest("Log in to see comparative analytics.");
+    return;
+  }
+
   try {
     const data = await api(`/learning/dashboard/${learnerId}`);
     renderDashboard(data);
     await loadComparativeAnalytics(learnerId);
   } catch (err) {
     console.error("Dashboard load failed:", err);
-    // Show a minimal dashboard if the learning endpoint fails
     try {
-      // Try onboarding endpoint as fallback
-      renderDashboardFallback();
-      _renderComparativeAnalyticsFallbackLatest("Comparative analytics unavailable");
+      renderDashboardFallback(err.message);
+      _renderComparativeAnalyticsFallbackLatest("Comparative analytics unavailable.");
     } catch (e2) {
-      $("profile-card").innerHTML = `<div class="profile-stat"><div class="stat-value">Error</div><div class="stat-label">${err.message}</div></div>`;
+      if (profileCard) profileCard.innerHTML = `<div class="profile-stat"><div class="stat-value">Error</div><div class="stat-label">${err.message}</div></div>`;
     }
   }
 }
 
 function renderDashboard(data) {
-  // Welcome banner + profile card
-  const completionPct = data.overall_completion_percent.toFixed(0);
+  if (!data || typeof data !== "object") {
+    renderDashboardFallback("Invalid response from server.");
+    return;
+  }
+  const completionPct = Number(data.overall_completion_percent) ?? 0;
+  const studentName = data.student_name || "Student";
+  const currentWeek = data.current_week ?? 1;
+  const currentWeekLabel = data.current_week_label || `Week ${currentWeek}`;
+  const overallMastery = Number(data.overall_mastery_percent) ?? 0;
+  const diagnosticScore = data.diagnostic_score != null ? data.diagnostic_score : null;
+  const selectedWeeks = data.selected_weeks ?? null;
+  const suggestedWeeks = data.suggested_weeks ?? null;
+  const completionEstimateDate = data.completion_estimate_date ?? null;
   const circumference = 2 * Math.PI * 36;
-  const dashOffset = circumference - (circumference * completionPct / 100);
+  const dashOffset = circumference - (circumference * Math.min(100, Math.max(0, completionPct)) / 100);
   $("profile-card").innerHTML = `
     <div class="profile-welcome">
-      <h2 style="margin:0;font-size:1.25rem;font-weight:700;color:var(--text-primary)">Welcome back, ${data.student_name}!</h2>
-      <span style="color:var(--text-muted);font-size:0.85rem">${data.current_week_label || "Week " + data.current_week} • ${formatIsoDateLabel(data.completion_estimate_date)}</span>
+      <h2 style="margin:0;font-size:1.25rem;font-weight:700;color:var(--text-primary)">Welcome back, ${sanitizeHTML(studentName)}!</h2>
+      <span style="color:var(--text-muted);font-size:0.85rem">${currentWeekLabel} • ${formatIsoDateLabel(completionEstimateDate)}</span>
     </div>
     <div class="profile-stats-grid">
       <div class="profile-stat profile-stat--hero">
@@ -611,72 +657,85 @@ function renderDashboard(data) {
             stroke-linecap="round" style="transition:stroke-dashoffset 1s ease"/>
         </svg>
         <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
-          <span style="font-size:1.3rem;font-weight:800;color:var(--text-primary)">${completionPct}%</span>
+          <span style="font-size:1.3rem;font-weight:800;color:var(--text-primary)">${completionPct.toFixed(0)}%</span>
           <span style="font-size:0.65rem;color:var(--text-muted)">Complete</span>
         </div>
       </div>
       <div class="profile-stat">
-        <div class="stat-value">W${data.current_week}</div>
-        <div class="stat-label">${data.current_week_label || "Current Week"}</div>
+        <div class="stat-value">W${currentWeek}</div>
+        <div class="stat-label">${currentWeekLabel}</div>
       </div>
       <div class="profile-stat">
-        <div class="stat-value">${data.overall_mastery_percent.toFixed(0)}%</div>
+        <div class="stat-value">${overallMastery.toFixed(0)}%</div>
         <div class="stat-label">Mastery</div>
       </div>
       <div class="profile-stat">
-        <div class="stat-value">${data.diagnostic_score !== null ? (data.diagnostic_score * 100).toFixed(0) + "%" : "\u2014"}</div>
+        <div class="stat-value">${diagnosticScore !== null && diagnosticScore !== undefined ? (Number(diagnosticScore) * 100).toFixed(0) + "%" : "\u2014"}</div>
         <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline assessment score">?</span></div>
       </div>
       <div class="profile-stat">
-        <div class="stat-value">${data.selected_weeks || "\u2014"}/${data.suggested_weeks || "\u2014"}</div>
+        <div class="stat-value">${selectedWeeks ?? "\u2014"}/${suggestedWeeks ?? "\u2014"}</div>
         <div class="stat-label">Chosen/Suggested Wks</div>
       </div>
       <div class="profile-stat">
-        <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date)}</div>
+        <div class="stat-value">${formatIsoDateLabel(completionEstimateDate)}</div>
         <div class="stat-label">Scheduled Completion</div>
       </div>
     </div>
     `;
 
   // Current week tasks
-  renderTasks(data.current_week_tasks, data.current_week, data.current_week_label);
+  const tasks = Array.isArray(data.current_week_tasks) ? data.current_week_tasks : [];
+  renderTasks(tasks, currentWeek, currentWeekLabel);
 
   // Completion status
-  $("completion-bar").querySelector("span").style.width = `${data.overall_completion_percent}%`;
-  $("completion-label").textContent = `${data.overall_completion_percent.toFixed(0)}% Complete`;
-  renderChapters(data.chapter_status);
+  const completionBar = $("completion-bar");
+  if (completionBar && completionBar.querySelector("span")) {
+    completionBar.querySelector("span").style.width = `${Math.min(100, Math.max(0, completionPct))}%`;
+  }
+  const completionLabel = $("completion-label");
+  if (completionLabel) completionLabel.textContent = `${completionPct.toFixed(0)}% Complete`;
+  const chapterStatus = Array.isArray(data.chapter_status) ? data.chapter_status : [];
+  renderChapters(chapterStatus);
 
   // Confidence
-  renderConfidence(data.chapter_confidence);
-  renderConfidenceTrend(data.learner_id);
+  const chapterConfidence = Array.isArray(data.chapter_confidence) ? data.chapter_confidence : [];
+  renderConfidence(chapterConfidence);
+  const learnerId = data.learner_id || getLearnerId();
+  if (learnerId) renderConfidenceTrend(learnerId);
 
   // Plan
-  renderPlan(data.rough_plan, data.current_week);
-  renderPlanHistory(data.learner_id);
+  const roughPlan = Array.isArray(data.rough_plan) ? data.rough_plan : [];
+  renderPlan(roughPlan, currentWeek);
+  if (learnerId) renderPlanHistory(learnerId);
 
   // Revision
-  if (data.revision_queue && data.revision_queue.length > 0) {
+  const revisionQueue = Array.isArray(data.revision_queue) ? data.revision_queue : [];
+  if (revisionQueue.length > 0) {
     show($("section-revision"));
-    renderRevision(data.revision_queue);
+    renderRevision(revisionQueue);
   } else {
     hide($("section-revision"));
   }
 
-  // Check if week is complete (all tasks done) ? show advance button
-  checkWeekComplete(data.current_week_tasks, data.learner_id);
+  checkWeekComplete(tasks, learnerId);
 }
 
-function renderDashboardFallback() {
+function renderDashboardFallback(errorDetail) {
+  const name = localStorage.getItem(NAME_KEY) || "Student";
+  const msg = errorDetail ? `Could not load dashboard. ${errorDetail}` : "Dashboard data is temporarily unavailable. Try again in a moment.";
   $("profile-card").innerHTML = `
         <div class="profile-stat">
-            <div class="stat-value">Student</div>
-            <div class="stat-label">${localStorage.getItem(NAME_KEY) || "Student"}</div>
+            <div class="stat-value">${sanitizeHTML(name)}</div>
+            <div class="stat-label">Student</div>
         </div>
         <div class="profile-stat">
             <div class="stat-value">—</div>
-            <div class="stat-label">Loading...</div>
+            <div class="stat-label">${sanitizeHTML(msg)}</div>
         </div>
     `;
+  const tasksEl = $("current-tasks");
+  if (tasksEl) tasksEl.innerHTML = `<div class="loading-overlay"><p>${sanitizeHTML(msg)}</p><button type="button" class="btn btn-primary" onclick="loadDashboard()">Retry</button></div>`;
 }
 
 function renderTasks(tasks, weekNumber, weekLabel = null) {

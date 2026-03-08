@@ -21,8 +21,8 @@ class TestConfigGovernance:
     def test_validate_all_returns_report(self):
         from app.core.config_governance import validate_all
         report = validate_all()
-        assert isinstance(report, dict)
-        assert "passed" in report or "status" in report
+        assert isinstance(report, list)
+        assert all(isinstance(e, str) for e in report)
 
     def test_validate_all_does_not_raise(self):
         from app.core.config_governance import validate_all
@@ -68,12 +68,12 @@ class TestErrorRateTracker:
     """Tests for app.core.error_rate_tracker module."""
 
     def test_record_and_rate(self):
-        from app.core.error_rate_tracker import record, error_rate
+        from app.telemetry.error_rate_tracker import record, get_error_rate
         domain = f"test_{uuid4().hex[:8]}"
-        record(domain, is_error=False)
-        record(domain, is_error=True)
-        record(domain, is_error=False)
-        rate = error_rate(domain)
+        record(domain, success=True)
+        record(domain, success=False)
+        record(domain, success=True)
+        rate = get_error_rate(domain)
         assert 0.0 <= rate <= 1.0
 
 
@@ -211,12 +211,12 @@ class TestMCPContracts:
 
     def test_mcp_response_schema(self):
         from app.mcp.contracts import MCPResponse
-        resp = MCPResponse(ok=True, result={"text": "world"})
+        resp = MCPResponse(operation="test", ok=True, result={"text": "world"})
         assert resp.ok is True
         assert resp.result["text"] == "world"
 
     def test_mcp_response_error(self):
         from app.mcp.contracts import MCPResponse
-        resp = MCPResponse(ok=False, error="timeout")
+        resp = MCPResponse(operation="test", ok=False, error="timeout")
         assert resp.ok is False
         assert resp.error == "timeout"

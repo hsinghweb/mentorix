@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
@@ -37,7 +38,34 @@ from fastapi import HTTPException
 configure_logging(settings.log_level)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Mentorix API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    drift_errors = validate_config(fail_fast=False)
+    if drift_errors:
+        logger.warning("Config drift detected (%d issues) — check logs above", len(drift_errors))
+    register_default_mcp_providers()
+    async with SessionLocal() as session:
+        await initialize_database(session, engine)
+        if settings.grounding_prepare_on_start:
+            summary = await run_grounding_ingestion(session)
+            logger.info("Grounding ingestion startup summary: %s", summary)
+        if settings.grounding_require_ready:
+            ready, detail = await ensure_grounding_ready(session)
+            if not ready:
+                raise RuntimeError(f"Grounding validation failed: {detail}")
+    snapshot_persistence.load_snapshot()
+    if settings.scheduler_enabled:
+        await scheduler_service.start()
+    yield
+    # Shutdown
+    snapshot_persistence.save_snapshot()
+    if settings.scheduler_enabled:
+        await scheduler_service.stop()
+
+
+app = FastAPI(title="Mentorix API", version="0.1.0", lifespan=lifespan)
 app.include_router(health_router)
 app.include_router(auth_router)
 app.include_router(scheduler_router)
@@ -66,31 +94,3 @@ app.add_middleware(
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
-
-
-@app.on_event("startup")
-async def on_startup():
-    # Config governance: validate model registry + critical settings
-    drift_errors = validate_config(fail_fast=False)
-    if drift_errors:
-        logger.warning("Config drift detected (%d issues) — check logs above", len(drift_errors))
-    register_default_mcp_providers()
-    async with SessionLocal() as session:
-        await initialize_database(session, engine)
-        if settings.grounding_prepare_on_start:
-            summary = await run_grounding_ingestion(session)
-            logger.info("Grounding ingestion startup summary: %s", summary)
-        if settings.grounding_require_ready:
-            ready, detail = await ensure_grounding_ready(session)
-            if not ready:
-                raise RuntimeError(f"Grounding validation failed: {detail}")
-    snapshot_persistence.load_snapshot()
-    if settings.scheduler_enabled:
-        await scheduler_service.start()
-
-
-@app.on_event("shutdown")
-async def on_shutdown():
-    snapshot_persistence.save_snapshot()
-    if settings.scheduler_enabled:
-        await scheduler_service.stop()

@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 from datetime import date
 
-from app.api.learning import _merge_replanned_future, _remaining_chapter_numbers
-from app.api.onboarding import _build_timeline_visualization
+from app.api.learning.routes import _merge_replanned_future, _remaining_chapter_numbers
+from app.api.onboarding.routes import _build_timeline_visualization
 from app.core.timeline import week_bounds_from_plan
 
 

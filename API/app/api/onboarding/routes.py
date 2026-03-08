@@ -1098,6 +1098,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
     if not attempt_raw:
         raise HTTPException(status_code=404, detail="Diagnostic attempt not found or expired.")
 
+    time_minutes = max(1, payload.time_spent_minutes)
     attempt = json.loads(attempt_raw)
     answer_key: dict[str, str] = attempt.get("answer_key", {})
     selected_timeline_weeks = _clamp_weeks(int(attempt.get("selected_timeline_weeks", TIMELINE_MIN_WEEKS)))
@@ -1200,7 +1201,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         db=db,
         learner_id=use_learner_id,
         event_type="test_submission",
-        duration_minutes=payload.time_spent_minutes,
+        duration_minutes=time_minutes,
         details={"source": "onboarding_submit", "score": score},
     )
 
@@ -1302,7 +1303,7 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         profile=profile,
         reason="onboarding_submit",
         mastery_update=mastery,
-        engagement_minutes=payload.time_spent_minutes,
+        engagement_minutes=time_minutes,
         extra={"diagnostic_score": score, "math_9_percent": profile.math_9_percent},
     )
     await log_agent_decision(

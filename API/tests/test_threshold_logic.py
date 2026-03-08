@@ -1,4 +1,4 @@
-from app.api.learning import COMPLETION_THRESHOLD, MAX_CHAPTER_ATTEMPTS
+from app.api.learning.routes import COMPLETION_THRESHOLD, MAX_CHAPTER_ATTEMPTS
 
 
 def test_threshold_constant_is_60_percent():

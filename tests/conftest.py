@@ -15,7 +15,10 @@ if str(API_DIR) not in sys.path:
 # Test-mode runtime guards:
 # - no external LLM/embedding traffic
 # - deterministic local fallback behavior
+# - file memory store so pymongo is not required
 os.environ.setdefault("APP_ENV", "test")
+os.environ.setdefault("MEMORY_STORE_BACKEND", "file")
+os.environ.setdefault("MEMORY_DUAL_WRITE", "false")
 os.environ.setdefault("LLM_PROVIDER", "none")
 os.environ.setdefault("ROLE_MODEL_GOVERNANCE_ENABLED", "false")
 os.environ.setdefault("EMBEDDING_PROVIDER", "local")
