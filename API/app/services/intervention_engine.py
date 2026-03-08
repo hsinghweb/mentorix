@@ -9,6 +9,27 @@ from __future__ import annotations
 
 from typing import Any
 
+# ── Threshold constants ────────────────────────────────────────────────────
+REMEDIAL_CONFUSION_THRESHOLD = 0.6
+"""Confusion risk above this triggers a remedial intervention."""
+REMEDIAL_MISTAKE_THRESHOLD = 5
+"""Mistake count above this triggers a remedial intervention."""
+
+PACE_DOWN_SPEED_THRESHOLD = 0.7
+"""Pace above this (combined with high errors) triggers pace-down."""
+PACE_DOWN_ERROR_THRESHOLD = 0.4
+"""Error rate above this (combined with fast pace) triggers pace-down."""
+
+PACE_UP_SPEED_THRESHOLD = 0.4
+"""Pace below this (combined with low errors) triggers pace-up."""
+PACE_UP_ERROR_THRESHOLD = 0.2
+"""Error rate below this (combined with slow pace) triggers pace-up."""
+PACE_UP_MOTIVATION_THRESHOLD = 0.5
+"""Minimum motivation required for pace-up recommendation."""
+
+MOTIVATION_BOOST_THRESHOLD = 0.3
+"""Motivation below this triggers a motivation boost intervention."""
+
 
 def derive_interventions(
     profile: dict[str, Any],
@@ -35,7 +56,7 @@ def derive_interventions(
     mistake_count = int(memory_summary.get("mistakes", 0))
 
     # --- Remedial ---
-    if confusion_risk > 0.6 or mistake_count > 5:
+    if confusion_risk > REMEDIAL_CONFUSION_THRESHOLD or mistake_count > REMEDIAL_MISTAKE_THRESHOLD:
         interventions.append(
             {
                 "type": "remedial",
@@ -52,7 +73,7 @@ def derive_interventions(
         )
 
     # --- Pace-down ---
-    if pace > 0.7 and error_rate > 0.4:
+    if pace > PACE_DOWN_SPEED_THRESHOLD and error_rate > PACE_DOWN_ERROR_THRESHOLD:
         interventions.append(
             {
                 "type": "pace-down",
@@ -66,7 +87,11 @@ def derive_interventions(
         )
 
     # --- Pace-up ---
-    if pace < 0.4 and error_rate < 0.2 and motivation >= 0.5:
+    if (
+        pace < PACE_UP_SPEED_THRESHOLD
+        and error_rate < PACE_UP_ERROR_THRESHOLD
+        and motivation >= PACE_UP_MOTIVATION_THRESHOLD
+    ):
         interventions.append(
             {
                 "type": "pace-up",
@@ -94,7 +119,7 @@ def derive_interventions(
         )
 
     # --- Motivation boost ---
-    if motivation < 0.3:
+    if motivation < MOTIVATION_BOOST_THRESHOLD:
         interventions.append(
             {
                 "type": "motivation-boost",

@@ -900,17 +900,95 @@ body {
 .loading-overlay p { color: var(--text-secondary); font-size: 0.9rem; }
 
 /* ── Scrollbar ── */
+
+/* ── Test Feedback ── */
+.test-feedback {
+    margin-top: 20px;
+    padding: 24px;
+    border-radius: var(--radius);
+    text-align: center;
+}
+.test-feedback.passed { background: var(--success-light); border: 1px solid var(--success); color: var(--success); }
+.test-feedback.failed { background: var(--danger-light); border: 1px solid var(--danger); color: var(--danger); }
+.test-feedback.retry { background: var(--warning-light); border: 1px solid var(--warning); color: var(--warning); }
+.test-feedback h3 { font-size: 1.3rem; margin-bottom: 8px; }
+.test-feedback p { font-size: 0.95rem; }
+
+.option-label.correct { border-color: var(--success); background: var(--success-light); }
+.option-label.wrong { border-color: var(--danger); background: var(--danger-light); }
+
+/* ── Loading ── */
+.loading-spinner {
+    display: inline-block;
+    width: 24px; height: 24px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-overlay {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 40px;
+    text-align: center;
+}
+.loading-overlay p { color: var(--text-secondary); font-size: 0.9rem; }
+
+/* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Profile Welcome Banner ── */
+.profile-welcome {
+    grid-column: 1 / -1;
+    padding: 16px 20px;
+    background: linear-gradient(135deg, rgba(108, 92, 231, 0.08), rgba(116, 185, 255, 0.06));
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 4px;
+}
+
+/* ── Profile Stats Grid ── */
+.profile-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 12px;
+    grid-column: 1 / -1;
+}
+
+.profile-stat--hero {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100px;
+}
+
+/* ── Screen Transitions ── */
+@keyframes fadeSlideIn {
+    from { opacity: 0; transform: translateY(12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.screen-fade-in {
+    animation: fadeSlideIn 0.35s ease forwards;
+}
+
+/* ── Form Group Muted ── */
+.form-group--muted label { opacity: 0.65; }
+.label-optional { font-weight: 400; font-size: 0.7rem; opacity: 0.7; text-transform: none; }
 
 /* ── Responsive ── */
 @media (max-width: 640px) {
     .form-row { grid-template-columns: 1fr; }
     .auth-panel { padding: 24px; }
     .screen { padding: 16px; }
-    .profile-card { grid-template-columns: repeat(2, 1fr); }
+    .profile-stats-grid { grid-template-columns: repeat(2, 1fr); }
+    .profile-stat--hero { grid-column: span 2; }
     .chapters-grid, .confidence-grid { grid-template-columns: 1fr; }
     .top-nav { padding: 12px 16px; }
     .admin-nav { display: none; }

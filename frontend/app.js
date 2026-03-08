@@ -289,6 +289,32 @@ function parseMinSecondsFromReason(reasonText) {
   return mins * 60;
 }
 
+function showToast(message, type = "info") {
+  const existing = document.getElementById("mentorix-toast");
+  if (existing) existing.remove();
+  const toast = document.createElement("div");
+  toast.id = "mentorix-toast";
+  const bgColor = type === "success" ? "var(--accent)" : type === "error" ? "#e74c3c" : "var(--bg-elevated)";
+  const textColor = type === "info" ? "var(--text-primary)" : "#fff";
+  toast.style.cssText = `position:fixed;top:24px;right:24px;z-index:9999;padding:14px 24px;border-radius:var(--radius);background:${bgColor};color:${textColor};font-weight:600;font-size:0.9rem;box-shadow:0 6px 24px rgba(0,0,0,0.25);opacity:0;transform:translateY(-12px);transition:opacity .3s,transform .3s;max-width:420px;`;
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => { toast.style.opacity = "1"; toast.style.transform = "translateY(0)"; });
+  setTimeout(() => {
+    toast.style.opacity = "0"; toast.style.transform = "translateY(-12px)";
+    setTimeout(() => toast.remove(), 350);
+  }, 3500);
+}
+
+function showScreen(screenId) {
+  document.querySelectorAll(".screen").forEach(s => { s.classList.add("hidden"); s.classList.remove("screen-fade-in"); });
+  const target = $("screen-" + screenId);
+  if (target) {
+    target.classList.remove("hidden");
+    target.classList.add("screen-fade-in");
+  }
+}
+
 function showFinalTestBlockedModal(chapterNumber, reasonCode, pendingTasks = []) {
   const existing = document.getElementById("final-test-blocked-overlay");
   if (existing) existing.remove();
@@ -317,9 +343,11 @@ function showFinalTestBlockedModal(chapterNumber, reasonCode, pendingTasks = [])
 
 // -- INITIALIZATION ----------------------------------------------------------
 document.addEventListener("DOMContentLoaded", () => {
+  // Always start fresh — clear stale auth so user sees login page on every visit
+  clearAuth();
   initWeeksDropdown();
   bindEvents();
-  checkAuthState();
+  showAuthPanel("panel-login");
 });
 
 function initWeeksDropdown() {
@@ -523,10 +551,10 @@ function renderDiagnosticQuestions(questions) {
   questions.forEach((q, i) => {
     const card = document.createElement("div");
     card.className = "question-card";
-    card.id = `diag-q-${q.question_id}`;
+    card.id = `diag - q - ${q.question_id} `;
 
     card.innerHTML = `
-            <div class="question-number">Question ${i + 1} of ${questions.length}</div>
+    < div class="question-number" > Question ${i + 1} of ${questions.length}</div >
             <div class="question-prompt">${q.prompt}</div>
             <div class="question-options">
                 ${q.options.map((opt, oi) => `
@@ -537,7 +565,7 @@ function renderDiagnosticQuestions(questions) {
                     </label>
                 `).join("")}
             </div>
-        `;
+  `;
     container.appendChild(card);
   });
 
@@ -546,12 +574,12 @@ function renderDiagnosticQuestions(questions) {
     label.addEventListener("click", () => {
       const qid = label.dataset.qid;
       // Remove previous selection for this question
-      container.querySelectorAll(`[data-qid="${qid}"]`).forEach(l => l.classList.remove("selected"));
+      container.querySelectorAll(`[data - qid= "${qid}"]`).forEach(l => l.classList.remove("selected"));
       label.classList.add("selected");
       label.querySelector("input").checked = true;
 
       // Update card state
-      const card = $(`diag-q-${qid}`);
+      const card = $(`diag - q - ${qid} `);
       if (card) card.classList.add("answered");
 
       updateDiagnosticProgress();
@@ -591,7 +619,7 @@ async function handleSubmitDiagnostic() {
   // Collect answers
   const answers = [];
   diagnosticData.questions.forEach(q => {
-    const selected = document.querySelector(`input[name="diag_${q.question_id}"]:checked`);
+    const selected = document.querySelector(`input[name = "diag_${q.question_id}"]: checked`);
     if (selected) {
       const idx = parseInt(selected.value);
       answers.push({
@@ -684,40 +712,49 @@ async function loadDashboard() {
 }
 
 function renderDashboard(data) {
-  // Profile card
+  // Welcome banner + profile card
+  const completionPct = data.overall_completion_percent.toFixed(0);
+  const circumference = 2 * Math.PI * 36;
+  const dashOffset = circumference - (circumference * completionPct / 100);
   $("profile-card").innerHTML = `
-        <div class="profile-stat">
-            <div class="stat-value">Student</div>
-            <div class="stat-label">${data.student_name}</div>
+    <div class="profile-welcome">
+      <h2 style="margin:0;font-size:1.25rem;font-weight:700;color:var(--text-primary)">Welcome back, ${data.student_name}!</h2>
+      <span style="color:var(--text-muted);font-size:0.85rem">${data.current_week_label || "Week " + data.current_week} • ${formatIsoDateLabel(data.completion_estimate_date)}</span>
+    </div>
+    <div class="profile-stats-grid">
+      <div class="profile-stat profile-stat--hero">
+        <svg width="80" height="80" viewBox="0 0 80 80" style="transform:rotate(-90deg)">
+          <circle cx="40" cy="40" r="36" fill="none" stroke="var(--border)" stroke-width="6"/>
+          <circle cx="40" cy="40" r="36" fill="none" stroke="var(--accent)" stroke-width="6"
+            stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"
+            stroke-linecap="round" style="transition:stroke-dashoffset 1s ease"/>
+        </svg>
+        <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center">
+          <span style="font-size:1.3rem;font-weight:800;color:var(--text-primary)">${completionPct}%</span>
+          <span style="font-size:0.65rem;color:var(--text-muted)">Complete</span>
         </div>
-        <div class="profile-stat">
-            <div class="stat-value">W${data.current_week}</div>
-            <div class="stat-label">${data.current_week_label || "Current Week"}</div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.overall_completion_percent.toFixed(0)}%</div>
-            <div class="stat-label">Completed</div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.overall_mastery_percent.toFixed(0)}%</div>
-            <div class="stat-label">Mastery</div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.diagnostic_score !== null ? (data.diagnostic_score * 100).toFixed(0) + "%" : "—"}</div>
-            <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline onboarding assessment score used to personalize your plan. This is not your weekly performance score.">?</span></div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${data.selected_weeks || "—"}/${data.suggested_weeks || "—"}</div>
-            <div class="stat-label">Chosen / Suggested Wks <span class="help-tip" title="Chosen weeks are your preferred timeline. Suggested weeks are adaptive and can increase or decrease with your consistency and scores.">?</span></div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date)}</div>
-            <div class="stat-label">Scheduled Completion <span class="help-tip" title="Expected completion date using your currently scheduled week timeline. This date shifts earlier or later when weeks are replanned.">?</span></div>
-        </div>
-        <div class="profile-stat">
-            <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date_active_pace)}</div>
-            <div class="stat-label">Active Pace ETA <span class="help-tip" title="Estimated completion date based on your recent actual learning pace.">?</span></div>
-        </div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">W${data.current_week}</div>
+        <div class="stat-label">${data.current_week_label || "Current Week"}</div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${data.overall_mastery_percent.toFixed(0)}%</div>
+        <div class="stat-label">Mastery</div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${data.diagnostic_score !== null ? (data.diagnostic_score * 100).toFixed(0) + "%" : "\u2014"}</div>
+        <div class="stat-label">Diagnostic <span class="help-tip" title="Baseline assessment score">?</span></div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${data.selected_weeks || "\u2014"}/${data.suggested_weeks || "\u2014"}</div>
+        <div class="stat-label">Chosen/Suggested Wks</div>
+      </div>
+      <div class="profile-stat">
+        <div class="stat-value">${formatIsoDateLabel(data.completion_estimate_date)}</div>
+        <div class="stat-label">Scheduled Completion</div>
+      </div>
+    </div>
     `;
 
   // Current week tasks
@@ -786,13 +823,13 @@ function renderTasks(tasks, weekNumber, weekLabel = null) {
       <div style="margin-bottom:14px">
         <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
         ${dayTasks.map(t => {
-          const isChapterLevel = t.chapter_level;
-          const icon = t.task_type === "read" ? "Read" : (isChapterLevel ? "Final" : "Quiz");
-          const statusCls = t.status;
-          const statusLabel = t.status.replace(/_/g, " ");
-          const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
-          const chapterLevelAttr = isChapterLevel ? 'data-chapter-level="true"' : "";
-          return `
+      const isChapterLevel = t.chapter_level;
+      const icon = t.task_type === "read" ? "Read" : (isChapterLevel ? "Final" : "Quiz");
+      const statusCls = t.status;
+      const statusLabel = t.status.replace(/_/g, " ");
+      const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+      const chapterLevelAttr = isChapterLevel ? 'data-chapter-level="true"' : "";
+      return `
             <div class="task-card ${statusCls}" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} ${chapterLevelAttr} style="cursor:pointer;margin-bottom:8px">
               <div class="task-icon">${icon}</div>
               <div class="task-info">
@@ -801,7 +838,7 @@ function renderTasks(tasks, weekNumber, weekLabel = null) {
               </div>
               <div class="task-status-badge ${statusCls}">${statusLabel}</div>
             </div>`;
-        }).join("")}
+    }).join("")}
       </div>
     `).join("");
     bindTaskCardClicks(container);
@@ -883,10 +920,10 @@ async function advanceWeek(learnerId) {
 
   try {
     const result = await api(`/learning/week/advance?learner_id=${learnerId}`, { method: "POST" });
-    alert(result.message);
+    showToast(result.message || "Week advanced successfully!", "success");
     loadDashboard();
   } catch (err) {
-    alert("Error: " + err.message);
+    showToast("Error: " + err.message, "error");
     if (btn) { btn.disabled = false; btn.textContent = "Advance to next week"; }
   }
 }
@@ -1753,9 +1790,9 @@ function renderDailyPlan(tasks) {
       <div style="margin-bottom:14px">
         <div style="font-weight:700;color:var(--text-primary);margin-bottom:8px">${day}</div>
         ${dayTasks.map(t => {
-        const icon = t.task_type === "read" ? "Read" : (t.chapter_level ? "Final" : "Quiz");
-        const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
-        return `
+      const icon = t.task_type === "read" ? "Read" : (t.chapter_level ? "Final" : "Quiz");
+      const sectionAttr = t.section_id ? `data-section-id="${t.section_id}"` : "";
+      return `
           <div class="task-card pending" data-task-id="${t.task_id}" data-type="${t.task_type}" data-chapter="${t.chapter}" ${sectionAttr} style="cursor:pointer;border-left:3px solid var(--accent);margin-bottom:8px">
             <div class="task-icon">${icon}</div>
             <div class="task-info">
@@ -1763,7 +1800,7 @@ function renderDailyPlan(tasks) {
               <div class="task-meta">${t.chapter}${t.section_id ? " • §" + t.section_id : ""}</div>
             </div>
           </div>`;
-      }).join("")}
+    }).join("")}
       </div>
     `).join("");
     bindDailyPlanTaskClicks(container);

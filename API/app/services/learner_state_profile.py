@@ -17,6 +17,40 @@ from app.models.entities import AssessmentResult, EngagementEvent, SessionLog
 
 logger = logging.getLogger(__name__)
 
+# ── Threshold constants ────────────────────────────────────────────────────
+# Weights for computing derived signals
+MOTIVATION_ENGAGEMENT_WEIGHT = 0.5
+"""Contribution of engagement score towards motivation index."""
+MOTIVATION_CONSISTENCY_WEIGHT = 0.5
+"""Contribution of consistency towards motivation index."""
+
+CONFUSION_ERROR_WEIGHT = 0.6
+"""Contribution of error rate towards confusion risk."""
+CONFUSION_MOTIVATION_WEIGHT = 0.4
+"""Contribution of (inverted) motivation towards confusion risk."""
+
+CONFIDENCE_ACCURACY_WEIGHT = 0.40
+"""Contribution of accuracy (1 - error_rate) towards confidence metric."""
+CONFIDENCE_MOTIVATION_WEIGHT = 0.30
+"""Contribution of motivation towards confidence metric."""
+CONFIDENCE_CONSISTENCY_WEIGHT = 0.30
+"""Contribution of consistency towards confidence metric."""
+
+# Label boundaries
+STATUS_RISK_THRESHOLD = 0.4
+"""Confusion risk below this → 'On Track'; at/above → 'Needs Review'."""
+PACE_FAST_THRESHOLD = 0.7
+"""Pace above this → 'Fast'."""
+PACE_STEADY_THRESHOLD = 0.4
+"""Pace at/above this (and ≤ FAST) → 'Steady'; below → 'Needs Attention'."""
+MOTIVATION_HIGH_THRESHOLD = 0.7
+"""Motivation at/above this → 'High'."""
+MOTIVATION_MODERATE_THRESHOLD = 0.4
+"""Motivation at/above this (and < HIGH) → 'Moderate'; below → 'Low'."""
+
+ACTIVE_DAYS_TARGET = 5.0
+"""Expected active days per week for full consistency score."""
+
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, value))
@@ -52,7 +86,7 @@ async def compute_learner_state_profile(
 
     total_weeks = max(1, window_days / 7)
     days_per_week = active_days / total_weeks
-    consistency = _clamp(days_per_week / 5.0)
+    consistency = _clamp(days_per_week / ACTIVE_DAYS_TARGET)
 
     # --- Engagement score from event count ---
     event_count_q = select(func.count()).where(
@@ -63,33 +97,26 @@ async def compute_learner_state_profile(
     event_count = int(event_count_result.scalar_one_or_none() or 0)
     engagement_score = _clamp(event_count / max(1, window_days))
 
-    motivation = _clamp((engagement_score * 0.5) + (consistency * 0.5))
+    motivation = _clamp(
+        (engagement_score * MOTIVATION_ENGAGEMENT_WEIGHT)
+        + (consistency * MOTIVATION_CONSISTENCY_WEIGHT)
+    )
 
     # --- Assessment error rate ---
     assessment_q = select(
         func.count(),
-        func.sum(
-            func.cast(AssessmentResult.is_correct == False, Float)  # noqa: E712
-        ),
+        func.count().filter(AssessmentResult.is_correct == False),  # noqa: E712
     ).where(
         AssessmentResult.learner_id == lid,
         AssessmentResult.timestamp >= window_start,
     )
     try:
-        from sqlalchemy import Float as SAFloat
-
-        assessment_q = select(
-            func.count(),
-            func.count().filter(AssessmentResult.is_correct == False),  # noqa: E712
-        ).where(
-            AssessmentResult.learner_id == lid,
-            AssessmentResult.timestamp >= window_start,
-        )
         assess_result = await session.execute(assessment_q)
         row = assess_result.one()
         total_assessments = int(row[0] or 0)
         wrong_answers = int(row[1] or 0)
     except Exception:
+        logger.warning("Assessment query failed for learner %s, defaulting to zero", lid)
         total_assessments = 0
         wrong_answers = 0
 
@@ -104,18 +131,33 @@ async def compute_learner_state_profile(
     avg_adaptation = float(pace_result.scalar_one_or_none() or 0.5)
 
     # --- Derived signals ---
-    confusion_risk = _clamp((error_rate * 0.6) + ((1.0 - motivation) * 0.4))
+    confusion_risk = _clamp(
+        (error_rate * CONFUSION_ERROR_WEIGHT)
+        + ((1.0 - motivation) * CONFUSION_MOTIVATION_WEIGHT)
+    )
     pace = _clamp(avg_adaptation)
-    confidence = _clamp(0.40 * (1 - error_rate) + 0.30 * motivation + 0.30 * consistency)
+    confidence = _clamp(
+        CONFIDENCE_ACCURACY_WEIGHT * (1 - error_rate)
+        + CONFIDENCE_MOTIVATION_WEIGHT * motivation
+        + CONFIDENCE_CONSISTENCY_WEIGHT * consistency
+    )
 
     # --- Student UI labels ---
     student_labels = {
-        "status": "On Track" if confusion_risk < 0.4 else "Needs Review",
+        "status": "On Track" if confusion_risk < STATUS_RISK_THRESHOLD else "Needs Review",
         "pace_label": (
-            "Fast" if pace > 0.7 else ("Steady" if pace >= 0.4 else "Needs Attention")
+            "Fast"
+            if pace > PACE_FAST_THRESHOLD
+            else ("Steady" if pace >= PACE_STEADY_THRESHOLD else "Needs Attention")
         ),
         "motivation_label": (
-            "High" if motivation >= 0.7 else ("Moderate" if motivation >= 0.4 else "Low")
+            "High"
+            if motivation >= MOTIVATION_HIGH_THRESHOLD
+            else (
+                "Moderate"
+                if motivation >= MOTIVATION_MODERATE_THRESHOLD
+                else "Low"
+            )
         ),
     }
 

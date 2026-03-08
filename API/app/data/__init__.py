@@ -1,1 +1,5 @@
-# Data modules (e.g. predefined diagnostic question sets)
+"""Syllabus data and structure constants."""
+
+__all__ = [
+    "syllabus_structure",
+]
