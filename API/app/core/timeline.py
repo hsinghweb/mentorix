@@ -17,6 +17,39 @@ def week_bounds_from_onboarding(onboarding_date: date, week_number: int) -> tupl
     return start, end
 
 
+def normalize_week_start_overrides(raw_overrides: dict | None) -> dict[int, date]:
+    normalized: dict[int, date] = {}
+    if not isinstance(raw_overrides, dict):
+        return normalized
+    for raw_week, raw_date in raw_overrides.items():
+        try:
+            week_number = int(raw_week)
+        except Exception:
+            continue
+        if week_number <= 0 or not raw_date:
+            continue
+        try:
+            normalized[week_number] = date.fromisoformat(str(raw_date))
+        except Exception:
+            continue
+    return normalized
+
+
+def week_bounds_from_plan(
+    onboarding_date: date,
+    week_number: int,
+    week_start_overrides: dict | None = None,
+) -> tuple[date, date]:
+    safe_week = max(1, int(week_number))
+    overrides = normalize_week_start_overrides(week_start_overrides)
+    current_start = overrides.get(1, onboarding_date)
+    if safe_week == 1:
+        return current_start, current_start + timedelta(days=6)
+    for current_week in range(2, safe_week + 1):
+        current_start = overrides.get(current_week, current_start + timedelta(days=7))
+    return current_start, current_start + timedelta(days=6)
+
+
 def format_week_label(week_number: int, start: date, end: date) -> str:
     start_fmt = f"{start:%b} {start.day}"
     end_fmt = f"{end:%b} {end.day}"
@@ -25,8 +58,15 @@ def format_week_label(week_number: int, start: date, end: date) -> str:
     return f"Week {week_number} ({start_fmt}, {start.year} - {end_fmt}, {end.year})"
 
 
-def build_week_timeline_item(*, onboarding_date: date, week_number: int, is_current: bool, is_past: bool) -> dict:
-    start, end = week_bounds_from_onboarding(onboarding_date, week_number)
+def build_week_timeline_item(
+    *,
+    onboarding_date: date,
+    week_number: int,
+    is_current: bool,
+    is_past: bool,
+    week_start_overrides: dict | None = None,
+) -> dict:
+    start, end = week_bounds_from_plan(onboarding_date, week_number, week_start_overrides)
     return {
         "week_number": week_number,
         "week_start_date": start.isoformat(),
@@ -60,3 +100,14 @@ def estimate_completion_date(
         "estimated_completion_date": completion_date.isoformat(),
         "completion_estimate_weeks_active_pace": max(0, eta_weeks_active_pace),
     }
+
+
+def scheduled_completion_date(
+    *,
+    onboarding_date: date,
+    total_weeks_forecast: int | None,
+    week_start_overrides: dict | None = None,
+) -> date:
+    forecast = max(1, int(total_weeks_forecast or 1))
+    _, end = week_bounds_from_plan(onboarding_date, forecast, week_start_overrides)
+    return end

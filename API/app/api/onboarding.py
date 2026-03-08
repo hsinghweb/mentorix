@@ -19,10 +19,13 @@ from app.core.timeline import (
     canonical_today,
     estimate_completion_date,
     format_week_label,
+    scheduled_completion_date,
+    week_bounds_from_plan,
     week_bounds_from_onboarding,
 )
 from app.memory.cache import redis_client
 from app.memory.database import get_db
+from app.agents.decision_logger import log_agent_decision
 from app.mcp.client import execute_mcp
 from app.mcp.contracts import MCPRequest
 from app.models.entities import (
@@ -896,12 +899,20 @@ def _resolve_onboarding_date(profile: LearnerProfile) -> date:
     return profile.onboarding_date or canonical_today()
 
 
+def _extract_week_start_overrides(plan_payload: dict | None) -> dict:
+    if not isinstance(plan_payload, dict):
+        return {}
+    overrides = plan_payload.get("week_start_overrides")
+    return overrides if isinstance(overrides, dict) else {}
+
+
 def _build_timeline_visualization(
     *,
     onboarding_date: date,
     total_weeks: int,
     current_week: int,
     rough_plan_by_week: dict[int, dict] | None = None,
+    week_start_overrides: dict | None = None,
 ) -> list[dict]:
     items: list[dict] = []
     source = rough_plan_by_week or {}
@@ -911,6 +922,7 @@ def _build_timeline_visualization(
             week_number=w,
             is_current=(w == int(current_week)),
             is_past=(w < int(current_week)),
+            week_start_overrides=week_start_overrides,
         )
         row = source.get(w) or {}
         base["chapter"] = row.get("chapter")
@@ -1293,6 +1305,24 @@ async def submit_onboarding(payload: OnboardingSubmitRequest, db: AsyncSession =
         engagement_minutes=payload.time_spent_minutes,
         extra={"diagnostic_score": score, "math_9_percent": profile.math_9_percent},
     )
+    await log_agent_decision(
+        db=db,
+        learner_id=use_learner_id,
+        agent_name="onboarding",
+        decision_type="onboarding_plan_created",
+        chapter=week_1.chapter,
+        input_snapshot={
+            "diagnostic_score": score,
+            "selected_timeline_weeks": selected_timeline_weeks,
+            "math_9_percent": profile.math_9_percent,
+        },
+        output_payload={
+            "recommended_timeline_weeks": recommended_timeline_weeks,
+            "current_forecast_weeks": current_forecast_weeks,
+            "timeline_delta_weeks": timeline_delta_weeks,
+            "week_1_chapter": week_1.chapter,
+        },
+    )
     await db.commit()
 
     token = create_token(use_learner_id, _auth_for_token.username) if _auth_for_token else None
@@ -1375,11 +1405,12 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Learner profile not found.")
 
     rough = row.plan_payload.get("rough_plan", []) if isinstance(row.plan_payload, dict) else []
+    week_start_overrides = _extract_week_start_overrides(row.plan_payload if isinstance(row.plan_payload, dict) else {})
     onboarding_date = _resolve_onboarding_date(profile)
     parsed: list[ChapterPlan] = []
     for item in rough:
         cp = ChapterPlan(**item)
-        start, end = week_bounds_from_onboarding(onboarding_date, cp.week)
+        start, end = week_bounds_from_plan(onboarding_date, cp.week, week_start_overrides)
         parsed.append(
             cp.model_copy(
                 update={
@@ -1410,6 +1441,7 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         total_weeks=row.total_weeks,
         current_week=row.current_week,
         rough_plan_by_week=timeline_map,
+        week_start_overrides=week_start_overrides,
     )
     completion = estimate_completion_date(
         onboarding_date=onboarding_date,
@@ -1437,8 +1469,10 @@ async def get_latest_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
             else None
         ),
         timeline_visualization=viz,
-        completion_estimate_date=(
-            onboarding_date + timedelta(days=((int(estimate_weeks or row.total_weeks) * 7) - 1))
+        completion_estimate_date=scheduled_completion_date(
+            onboarding_date=onboarding_date,
+            total_weeks_forecast=(estimate_weeks or row.total_weeks),
+            week_start_overrides=week_start_overrides,
         ).isoformat(),
         completion_estimate_date_active_pace=completion["estimated_completion_date"],
         completion_estimate_weeks_active_pace=completion["completion_estimate_weeks_active_pace"],
@@ -1605,6 +1639,24 @@ async def weekly_replan(payload: WeeklyReplanRequest, db: AsyncSession = Depends
             pacing_status=pacing_status,
             reason=decision,
         )
+    )
+    await log_agent_decision(
+        db=db,
+        learner_id=payload.learner_id,
+        agent_name="planner",
+        decision_type="weekly_replan_decision",
+        chapter=chapter,
+        input_snapshot={
+            "score": score,
+            "threshold": threshold,
+            "attempt_count": attempt_count,
+        },
+        output_payload={
+            "decision": decision,
+            "current_forecast_weeks": current_forecast_weeks,
+            "timeline_delta_weeks": timeline_delta_weeks,
+            "pacing_status": pacing_status,
+        },
     )
     await db.commit()
 
@@ -1773,7 +1825,8 @@ async def list_current_week_tasks(learner_id: UUID, db: AsyncSession = Depends(g
         await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
     ).scalar_one_or_none()
     onboarding_date = _resolve_onboarding_date(profile) if profile else canonical_today()
-    week_start, week_end = week_bounds_from_onboarding(onboarding_date, plan.current_week)
+    week_start_overrides = _extract_week_start_overrides(plan.plan_payload if isinstance(plan.plan_payload, dict) else {})
+    week_start, week_end = week_bounds_from_plan(onboarding_date, plan.current_week, week_start_overrides)
     return {
         "learner_id": learner_id,
         "week_number": plan.current_week,
@@ -1850,10 +1903,11 @@ async def get_full_schedule(learner_id: UUID, db: AsyncSession = Depends(get_db)
         await db.execute(select(LearnerProfile).where(LearnerProfile.learner_id == learner_id))
     ).scalar_one_or_none()
     onboarding_date = _resolve_onboarding_date(profile) if profile else canonical_today()
+    week_start_overrides = _extract_week_start_overrides(plan.plan_payload if isinstance(plan.plan_payload, dict) else {})
     weeks_list = []
     for w in range(1, total + 1):
         row = plan_by_week.get(w) or {}
-        week_start, week_end = week_bounds_from_onboarding(onboarding_date, w)
+        week_start, week_end = week_bounds_from_plan(onboarding_date, w, week_start_overrides)
         weeks_list.append({
             "week_number": w,
             "week_start_date": week_start.isoformat(),
@@ -2393,7 +2447,8 @@ async def get_daily_plan(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         )
     ).scalars().all()
     chapter = tasks[0].chapter if tasks else None
-    week_start, week_end = week_bounds_from_onboarding(onboarding_date, plan.current_week)
+    week_start_overrides = _extract_week_start_overrides(plan.plan_payload if isinstance(plan.plan_payload, dict) else {})
+    week_start, week_end = week_bounds_from_plan(onboarding_date, plan.current_week, week_start_overrides)
     return DailyPlanResponse(
         learner_id=learner_id,
         week_number=plan.current_week,
