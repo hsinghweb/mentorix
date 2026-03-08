@@ -139,8 +139,8 @@ async function api(path, options = {}) {
 }
 
 function $(id) { return document.getElementById(id); }
-function show(el) { el.classList.remove("hidden"); }
-function hide(el) { el.classList.add("hidden"); }
+function show(el) { if (el) el.classList.remove("hidden"); }
+function hide(el) { if (el) el.classList.add("hidden"); }
 function showAuthPanel(panelId) {
   ["panel-login", "panel-admin-login", "panel-signup", "panel-diagnostic", "panel-result"].forEach(id => {
     const el = $(id);
@@ -722,9 +722,11 @@ function renderDashboard(data) {
 }
 
 function renderDashboardFallback(errorDetail) {
+  const profileCard = $("profile-card");
+  if (!profileCard) return;
   const name = localStorage.getItem(NAME_KEY) || "Student";
   const msg = errorDetail ? `Could not load dashboard. ${errorDetail}` : "Dashboard data is temporarily unavailable. Try again in a moment.";
-  $("profile-card").innerHTML = `
+  profileCard.innerHTML = `
         <div class="profile-stat">
             <div class="stat-value">${sanitizeHTML(name)}</div>
             <div class="stat-label">Student</div>
@@ -740,9 +742,10 @@ function renderDashboardFallback(errorDetail) {
 
 function renderTasks(tasks, weekNumber, weekLabel = null) {
   const container = $("current-tasks");
-  $("section-tasks").querySelector(".section-title").textContent = weekLabel
-    ? `${weekLabel} Tasks`
-    : `Week ${weekNumber} Tasks`;
+  const sectionTasks = $("section-tasks");
+  if (!container) return;
+  const titleEl = sectionTasks && sectionTasks.querySelector(".section-title");
+  if (titleEl) titleEl.textContent = weekLabel ? `${weekLabel} Tasks` : `Week ${weekNumber} Tasks`;
 
   if (!tasks || tasks.length === 0) {
     container.innerHTML = `<div class="loading-overlay"><p>No tasks yet. Complete onboarding to get started!</p></div>`;
@@ -843,6 +846,7 @@ function checkWeekComplete(tasks, learnerId) {
 
   if (allDone) {
     const container = $("current-tasks");
+    if (!container) return;
     container.innerHTML += `
             <div style="text-align:center; margin-top:16px;">
                 <button class="btn btn-success" id="btn-advance-week" style="padding:14px 28px; font-size:1rem;">
@@ -850,7 +854,8 @@ function checkWeekComplete(tasks, learnerId) {
                 </button>
             </div>
         `;
-    $("btn-advance-week").addEventListener("click", () => advanceWeek(learnerId));
+    const advanceBtn = $("btn-advance-week");
+    if (advanceBtn) advanceBtn.addEventListener("click", () => advanceWeek(learnerId));
   }
 }
 
@@ -869,7 +874,10 @@ async function advanceWeek(learnerId) {
 }
 
 function renderChapters(chapters) {
-  $("chapters-grid").innerHTML = chapters.map(ch => `
+  const grid = $("chapters-grid");
+  if (!grid) return;
+  const list = Array.isArray(chapters) ? chapters : [];
+  grid.innerHTML = list.map(ch => `
         <div class="chapter-card ${ch.status}" data-chapter-number="${ch.chapter_number}" style="cursor:pointer" title="Click to see subsection details">
             <div class="chapter-name">Ch ${ch.chapter_number}: ${ch.title}</div>
             <div class="chapter-status-text">${ch.status.replace(/_/g, " ")}</div>
@@ -877,7 +885,7 @@ function renderChapters(chapters) {
     `).join("");
 
   // Bind chapter card clicks for drill-down
-  $("chapters-grid").querySelectorAll(".chapter-card").forEach(card => {
+  grid.querySelectorAll(".chapter-card").forEach(card => {
     card.addEventListener("click", () => {
       const chNum = parseInt(card.dataset.chapterNumber);
       openChapterDetail(chNum);
@@ -887,14 +895,16 @@ function renderChapters(chapters) {
 
 let confidenceChart = null;
 function renderConfidence(confData) {
+  const data = Array.isArray(confData) ? confData : [];
+  const confGrid = $("confidence-grid");
   // Render Chart.js bar chart
   try {
     const ctx = $("confidence-chart");
     if (ctx && typeof Chart !== "undefined") {
       if (confidenceChart) confidenceChart.destroy();
-      const labels = confData.map(c => `Ch ${c.chapter_number}`);
-      const scores = confData.map(c => (c.mastery_score * 100));
-      const colors = confData.map(c =>
+      const labels = data.map(c => `Ch ${c.chapter_number}`);
+      const scores = data.map(c => (Number(c.mastery_score) || 0) * 100);
+      const colors = data.map(c =>
         c.mastery_band === "mastered" ? "#22c55e" :
           c.mastery_band === "proficient" ? "#3b82f6" :
             c.mastery_band === "developing" ? "#f59e0b" : "#ef4444"
@@ -928,8 +938,9 @@ function renderConfidence(confData) {
   } catch (e) { console.warn("Chart rendering skipped:", e); }
 
   // Render confidence cards grid
-  $("confidence-grid").innerHTML = confData.map(ch => {
-    const pct = (ch.mastery_score * 100).toFixed(0);
+  if (!confGrid) return;
+  confGrid.innerHTML = data.map(ch => {
+    const pct = ((Number(ch.mastery_score) || 0) * 100).toFixed(0);
     const barColor = ch.mastery_band === "mastered" ? "var(--success)" :
       ch.mastery_band === "proficient" ? "var(--info)" :
         ch.mastery_band === "developing" ? "var(--warning)" : "var(--danger)";
@@ -949,12 +960,14 @@ function renderConfidence(confData) {
 }
 
 function renderPlan(plan, currentWeek) {
-  if (!plan || plan.length === 0) {
-    $("plan-timeline").innerHTML = `<p style="color:var(--text-muted)">No plan generated yet.</p>`;
+  const el = $("plan-timeline");
+  if (!el) return;
+  const list = Array.isArray(plan) ? plan : [];
+  if (list.length === 0) {
+    el.innerHTML = `<p style="color:var(--text-muted)">No plan generated yet.</p>`;
     return;
   }
-
-  $("plan-timeline").innerHTML = plan.map(p => {
+  el.innerHTML = list.map(p => {
     const statusCls = p.status || (p.week < currentWeek ? "completed" : p.week === currentWeek ? "current" : "upcoming");
     return `
             <div class="plan-week ${statusCls}">
@@ -969,7 +982,10 @@ function renderPlan(plan, currentWeek) {
 }
 
 function renderRevision(revisions) {
-  $("revision-list").innerHTML = revisions.map(r => `
+  const el = $("revision-list");
+  if (!el) return;
+  const list = Array.isArray(revisions) ? revisions : [];
+  el.innerHTML = list.map(r => `
         <div class="revision-item">
             <div class="revision-icon">Plan</div>
             <div class="revision-info">
