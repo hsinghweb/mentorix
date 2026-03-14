@@ -3,6 +3,14 @@ Claude Opus 4.6 Architectural Review
 
 ---
 
+## 🛑 Strict Engineering Constraints for Iteration 13
+*The Mentorix project is matured. All future feature adoptions strictly follow these rules:*
+1. **No New External Libraries/Frameworks:** Do not adopt or integrate any new agentic frameworks (e.g., Langchain, LangGraph, CrewAI). Use our existing agent architecture.
+2. **No New LLM Models:** Stick to the current available provisioned models.
+3. **No New Databases/Caches:** Maintain the existing DB/Cache infrastructure; no new vector stores, RDS instances, or data layer additions are permitted.
+
+---
+
 ## 1. Code Quality Improvements
 
 - [x] Fix `learner_state_profile.py` — removed bare `Float` import, fixed assessment query copy-paste error, cleaned up try/except.
@@ -187,3 +195,40 @@ Claude Opus 4.6 Architectural Review
 - [x] Add real-time refresh button for admin System Observability panel with a last-updated timestamp.
 - [x] Add search/filter functionality in the Student Control Room list for admins managing many students.
 - [x] Add responsive layout for admin panels — added media queries at 1024px and 640px breakpoints for admin grids, search, header, metric grid, and agent catalog.
+
+---
+
+## 13. Audit-Driven Improvements
+*Tasks derived from [PROJECT_AUDIT_REPORT.md](file:///d:/Himanshu/EAG-V2/Capstone/mentorix/docs/PROJECT_AUDIT_REPORT.md) — targets for improving the weighted overall score (currently 6.9/10).*
+
+### 13.1 Critical Fixes (Audit §13, §14)
+
+- [ ] **Wire CSRF middleware into `main.py`** — `core/csrf.py` has a complete `CSRFMiddleware` implementation (double-submit cookie pattern) but it is never added to the FastAPI middleware stack. Wire it into `main.py` `on_startup()` or middleware registration.
+- [ ] **Fix frontend timer `time_spent_minutes` validation** — the reading timer can send `0` which fails the backend `ge=1` Pydantic constraint. Add a frontend guard to ensure at least 1 minute before submission, or adjust the backend constraint.
+- [ ] **Add Alembic for database migrations** — currently uses `Base.metadata.create_all()` which cannot handle schema evolution. Initialize Alembic, generate an initial migration from the 22-table schema, and replace `create_all()` with `alembic upgrade head` in the startup path.
+
+### 13.2 Architecture — Unify Execution Paths (Audit §3, §13 #2)
+
+- [ ] **Route the main learning flow through `AgentCoordinator` / `RuntimeRunManager`** — currently the user journey (onboarding → diagnostic → dashboard → read → test) bypasses the agent orchestrator entirely. Identify 2-3 key flows (e.g., content generation, assessment grading, plan recalculation) and delegate from route handlers to the appropriate agents via the coordinator.
+- [ ] **Enrich `AssessmentAgent` stub** — currently 21 lines with hardcoded string matching. Move assessment grading logic from `learning/routes.py` into the agent class so it uses LLM-backed evaluation or at least the existing `ReasoningEngine`.
+- [ ] **Enrich `OnboardingAgent` stub** — currently 20 lines, not used in actual onboarding flow. Move diagnostic orchestration logic from `onboarding/routes.py` into the agent.
+- [ ] **Enrich `ReflectionAgent` stub** — currently 25 lines with minimal LLM usage. Move reflection summary / session debrief logic from route handlers into the agent.
+
+### 13.3 Code Quality — Deduplication & Consistency (Audit §6)
+
+- [ ] **Remove duplicated `_generate_text_with_mcp()` inline calls** — the function exists in `services/shared_helpers.py` but is also implemented inline in route files. Replace inline copies with imports from the shared module.
+- [ ] **Fix field naming drift** — session logs, chapter progression, and subsection progression use different field names for the same concepts (e.g., `chapter_id` vs `chapter_number`, `status` vs `state`). Audit and standardize to a single naming convention per concept.
+- [ ] **Extract remaining magic numbers** — `0.60` threshold, `0.3 + 0.7 * ability`, `0.5 * score + 0.5 * math_9` and similar expressions still exist in route files. Move them to named constants with docstrings (same pattern used in iteration 12 for `intervention_engine.py`).
+- [ ] **Add comprehensive docstrings to 60+ private helper functions** in `onboarding/routes.py` and `learning/routes.py` — most helper functions have no documentation (also listed in §7 Maintainability).
+
+### 13.4 Infrastructure & Deployment (Audit §7, §9)
+
+- [ ] **Multi-stage Docker build** — current `Dockerfile` uses a single stage. Add a build stage (install deps, compile) and a runtime stage (copy only necessary artifacts) to reduce image size.
+- [ ] **Add response compression middleware** — no `GZipMiddleware` or equivalent is configured. Add FastAPI's built-in `GZipMiddleware` for API responses above a size threshold.
+- [ ] **Frontend module splitting with ES modules** — `app.js` is still 2,110 lines handling auth, onboarding, dashboard, reading, testing, and admin. Split into ES module files (`auth.js`, `dashboard.js`, `onboarding.js`, `testing.js`, `admin.js`) with an import-map or simple `<script type="module">` setup. No bundler required.
+
+### 13.5 Observability & Production Readiness (Audit §10)
+
+- [ ] **Add Prometheus-compatible `/metrics` endpoint** — `MetricsCollector` base class with counters/gauges/histograms exists in `core/metrics_base.py`. Add a `/metrics` route that serializes the `all_snapshots()` output in Prometheus text exposition format (no external library needed — plain text format).
+- [ ] **Add request-scoped correlation IDs** — attach a UUID to each incoming request (middleware) and propagate through logs, LLM calls, DB queries, and agent decisions for end-to-end tracing. Use existing `structlog` / logger infrastructure.
+- [ ] **Wire `intervention_engine.derive_interventions()` into active learning flow** — the engine exists and is functional but is never called during the main student learning loop. Connect it to the post-assessment or post-week-advance flow to trigger interventions automatically.
