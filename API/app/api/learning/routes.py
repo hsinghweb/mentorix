@@ -1,4 +1,4 @@
-﻿"""
+"""
 Learning API: content delivery, test generation, task completion, weekly cycle, dashboard.
 
 This module provides the student-facing learning endpoints that drive the core
@@ -65,25 +65,8 @@ CONTENT_PROMPT_VERSION = "v2"
 TEST_PROMPT_VERSION = "v2"
 
 
-async def _generate_text_with_mcp(prompt: str, *, role: str = "content_generator") -> tuple[str | None, dict]:
-    provider = get_llm_provider(role=role)
+from app.services.shared_helpers import generate_text_with_mcp as _generate_text_with_mcp  # noqa: E402
 
-    async def _fallback() -> dict:
-        text, meta = await provider.generate(prompt)
-        if not text:
-            raise RuntimeError("LLM provider returned empty output")
-        return {"text": text, "meta": meta if isinstance(meta, dict) else {}, "role": role}
-
-    response = await execute_mcp(
-        MCPRequest(operation="llm.generate_text", payload={"prompt": prompt, "role": role}),
-        fallback=_fallback,
-    )
-    if not response.ok:
-        return None, {"reason": response.error or "mcp_failed", "fallback_used": response.fallback_used}
-    result = response.result if isinstance(response.result, dict) else {}
-    text = result.get("text")
-    meta = result.get("meta") if isinstance(result.get("meta"), dict) else {}
-    return (str(text) if text else None), meta
 
 
 # â”€â”€ Pydantic models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

@@ -15,14 +15,14 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.logging import get_domain_logger
+from app.core.logging import DOMAIN_COMPLIANCE, get_domain_logger
 from app.memory.cache import redis_client
 from app.mcp.client import execute_mcp
 from app.mcp.contracts import MCPRequest
 from app.core.llm_provider import get_llm_provider
 from app.core.progress_stream import emit as progress_emit
 
-logger = get_domain_logger(__name__)
+logger = get_domain_logger(__name__, DOMAIN_COMPLIANCE)
 
 
 # ── LLM Text Generation ────────────────────────────────────────────────

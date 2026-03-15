@@ -7,6 +7,7 @@ from app.core.cache_metrics import get_cache_metrics
 from app.core.db_metrics import get_db_metrics
 from app.core.engagement_metrics import get_engagement_metrics
 from app.core.mcp_metrics import get_mcp_metrics
+from app.core.metrics_base import all_snapshots
 from app.core.retrieval_metrics import get_retrieval_metrics
 from app.core.resilience import get_breakers_status
 from app.telemetry.aggregator import fleet_telemetry_aggregator
@@ -70,3 +71,78 @@ async def fleet_metrics():
 @router.get("/resilience")
 async def resilience_metrics():
     return {"breakers": get_breakers_status()}
+
+
+@router.get("/prometheus")
+async def prometheus_metrics():
+    """
+    Prometheus-compatible text exposition format endpoint.
+
+    Renders all MetricsCollector counters, gauges, and histogram stats
+    in the standard Prometheus text format for scraping.
+    """
+    from fastapi.responses import PlainTextResponse
+
+    snapshots = all_snapshots()
+    lines: list[str] = []
+    for domain, snap in snapshots.items():
+        prefix = f"mentorix_{domain}"
+        # Counters
+        for name, value in snap.get("counters", {}).items():
+            metric_name = f"{prefix}_{name}_total"
+            lines.append(f"# TYPE {metric_name} counter")
+            lines.append(f"{metric_name} {value}")
+        # Gauges
+        for name, value in snap.get("gauges", {}).items():
+            metric_name = f"{prefix}_{name}"
+            lines.append(f"# TYPE {metric_name} gauge")
+            lines.append(f"{metric_name} {value}")
+        # Histogram summaries (exported as gauges with suffixes)
+        for name, stats in snap.get("histograms", {}).items():
+            for stat_key, stat_val in stats.items():
+                metric_name = f"{prefix}_{name}_{stat_key}"
+                lines.append(f"# TYPE {metric_name} gauge")
+                lines.append(f"{metric_name} {stat_val}")
+        # Uptime
+        uptime = snap.get("uptime_seconds", 0)
+        lines.append(f"# TYPE {prefix}_uptime_seconds gauge")
+        lines.append(f"{prefix}_uptime_seconds {uptime}")
+
+    return PlainTextResponse("\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
+
+@router.get("/interventions/{learner_id}")
+async def learner_interventions(learner_id: str):
+    """
+    Derive adaptive interventions for a learner using their state profile
+    and memory summary. Wires the intervention_engine into the active flow.
+    """
+    from app.memory.database import get_session
+    from app.services.learner_state_profile import compute_learner_state_profile
+    from app.services.intervention_engine import derive_interventions
+
+    async with get_session() as session:
+        profile = await compute_learner_state_profile(session, learner_id)
+
+    # Build a lightweight memory summary from profile signals
+    memory_summary = {
+        "weak_concepts": [],
+        "mistakes": profile.get("admin_metrics", {}).get("total_assessments", 0)
+                    - int(
+                        profile.get("admin_metrics", {}).get("total_assessments", 0)
+                        * (1 - profile.get("admin_metrics", {}).get("error_rate", 0.0))
+                    ),
+    }
+
+    interventions = derive_interventions(profile, memory_summary)
+    return {
+        "learner_id": learner_id,
+        "interventions": interventions,
+        "profile_summary": {
+            "motivation": profile.get("motivation"),
+            "confusion_risk": profile.get("confusion_risk"),
+            "pace": profile.get("pace"),
+            "confidence": profile.get("confidence"),
+        },
+    }
+

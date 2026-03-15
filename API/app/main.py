@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
@@ -15,6 +16,8 @@ from app.api.metrics import router as metrics_router
 from app.api.scheduler import router as scheduler_router
 from app.autonomy.scheduler import scheduler_service
 from app.core.auth import api_key_auth_middleware
+from app.core.correlation import CorrelationIdMiddleware
+from app.core.csrf import CSRFMiddleware
 from app.core.bootstrap import initialize_database
 from app.core.app_metrics import metrics_middleware
 from app.core.errors import (
@@ -87,10 +90,15 @@ _cors_origins = ["*"] if settings.app_env == "dev" else [
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# CSRF: only enable in production (requires secure cookies / SSL)
+if settings.app_env not in ("dev", "docker"):
+    app.add_middleware(CSRFMiddleware)
+app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, validation_exception_handler)
 app.add_exception_handler(Exception, unhandled_exception_handler)
