@@ -1544,14 +1544,32 @@ async function loadAdminDashboard() {
   if (listEl) listEl.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading students...</p></div>`;
   if (agentsEl) agentsEl.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading agent activity...</p></div>`;
   try {
-    const [system, students, agents] = await Promise.all([
+    // Load system + students immediately; defer agent viz via IntersectionObserver (4B)
+    const [system, students] = await Promise.all([
       api("/admin/system-overview"),
       api("/admin/students"),
-      api("/admin/agents/overview"),
     ]);
     renderAdminSystemOverview(system);
     renderAdminStudentList(students);
-    renderAdminAgentOverview(agents);
+    // Lazy-load agent overview only when section scrolls into view
+    if (agentsEl) {
+      agentsEl.innerHTML = `<div class="loading-overlay"><p>Agent overview loads when scrolled into view…</p></div>`;
+      const observer = new IntersectionObserver(async (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            observer.disconnect();
+            agentsEl.innerHTML = `<div class="loading-overlay"><div class="loading-spinner"></div><p>Loading agent activity...</p></div>`;
+            try {
+              const agents = await api("/admin/agents/overview");
+              renderAdminAgentOverview(agents);
+            } catch (err) {
+              agentsEl.innerHTML = `<div class="admin-meta">${err.message}</div>`;
+            }
+          }
+        }
+      }, { threshold: 0.1 });
+      observer.observe(agentsEl);
+    }
     if (summaryEl) {
       const studentRows = students.students || [];
       const riskCount = studentRows.filter(s => (s.risk_flags || []).length > 0).length;

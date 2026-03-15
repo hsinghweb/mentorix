@@ -294,6 +294,15 @@ def _log_policy_violation(
 
 
 async def _compute_retention_score(db: AsyncSession, learner_id: UUID) -> float:
+    """Compute average recent assessment score with Redis cache (TTL 5 min)."""
+    cache_key = f"retention_score:{learner_id}"
+    try:
+        from app.memory.cache import redis_client
+        cached = await redis_client.get(cache_key)
+        if cached is not None:
+            return float(cached)
+    except Exception:
+        pass
     recent = (
         await db.execute(
             select(AssessmentResult.score)
@@ -304,7 +313,13 @@ async def _compute_retention_score(db: AsyncSession, learner_id: UUID) -> float:
     ).scalars().all()
     if not recent:
         return 0.5
-    return max(0.0, min(1.0, float(sum(recent) / len(recent))))
+    score = max(0.0, min(1.0, float(sum(recent) / len(recent))))
+    try:
+        from app.memory.cache import redis_client
+        await redis_client.set(cache_key, str(round(score, 6)), ex=300)
+    except Exception:
+        pass
+    return score
 
 
 def _profile_snapshot_payload(profile: LearnerProfile) -> dict:

@@ -39,6 +39,13 @@ from app.mcp.contracts import MCPRequest
 from app.memory.cache import redis_client
 from app.memory.database import get_db
 from app.agents.decision_logger import log_agent_decision
+from app.services.agent_dispatch import (
+    dispatch_assessment,
+    dispatch_reflection,
+    dispatch_interventions,
+    record_timeline_event,
+    record_timeline_reflection,
+)
 from app.models.entities import (
     AgentDecision,
     AssessmentResult,
@@ -95,6 +102,7 @@ from app.api.learning.schemas import (  # noqa: E402
 # â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _chapter_info(chapter_number: int) -> dict:
+    """Return syllabus chapter dict for *chapter_number*, or a stub if not found."""
     for ch in SYLLABUS_CHAPTERS:
         if ch["number"] == chapter_number:
             return ch
@@ -102,6 +110,7 @@ def _chapter_info(chapter_number: int) -> dict:
 
 
 def _mastery_band(score: float) -> str:
+    """Map a 0–1 mastery score to a categorical band (mastered/proficient/developing/beginner)."""
     if score >= 0.80:
         return "mastered"
     if score >= 0.60:
@@ -112,6 +121,7 @@ def _mastery_band(score: float) -> str:
 
 
 def _tone_for_ability(ability: float) -> dict:
+    """Derive tone/pace/depth/examples config from learner ability (0–1)."""
     if ability < 0.4:
         return {"tone": "simple_supportive", "pace": "slow", "depth": "foundational", "examples": 3}
     if ability < 0.7:
@@ -120,16 +130,19 @@ def _tone_for_ability(ability: float) -> dict:
 
 
 def _bucket(value: float, scale: int = 10) -> int:
+    """Clamp *value* (0–1) to an integer bucket [0, *scale*] for cache keying."""
     return max(0, min(scale, int(round(float(value or 0.0) * scale))))
 
 
 def _profile_snapshot_key(profile: LearnerProfile, chapter_key: str) -> str:
+    """Build a compact snapshot key from cognitive depth + chapter mastery for content cache."""
     cog = _bucket(profile.cognitive_depth or 0.5)
     mastery = _bucket((profile.concept_mastery or {}).get(chapter_key, 0.5))
     return f"c{cog}m{mastery}"
 
 
 def _section_content_cache_key(section_id: str, tone: str, profile_snapshot: str) -> str:
+    """Build a stable content-cache key for a section. Tone/snapshot are accepted for API compat but ignored."""
     _ = tone
     _ = profile_snapshot
     # Stable key so generated section content is reused across subsequent requests.
@@ -137,6 +150,7 @@ def _section_content_cache_key(section_id: str, tone: str, profile_snapshot: str
 
 
 def _chapter_test_cache_key(chapter_base: str, difficulty: str, profile_snapshot: str) -> str:
+    """Build a stable cache key for chapter-final tests. Difficulty/snapshot accepted for compat."""
     _ = difficulty
     _ = profile_snapshot
     # Stable key so chapter-final tests are reused unless regenerate=true.
@@ -161,6 +175,7 @@ def _estimate_read_seconds(content: str, ability: float = 0.5) -> int:
 
 
 def _clamp_read_seconds(value: int | float | None) -> int:
+    """Clamp a raw reading-time value to the configured [min, max] seconds range."""
     min_seconds = max(30, int(getattr(settings, "reading_min_seconds", 60) or 60))
     max_seconds = max(min_seconds, int(getattr(settings, "reading_max_seconds", 300) or 300))
     try:
@@ -171,14 +186,17 @@ def _clamp_read_seconds(value: int | float | None) -> int:
 
 
 def _profile_onboarding_date(profile: LearnerProfile):
+    """Return the learner's onboarding date, falling back to today if unset."""
     return profile.onboarding_date or canonical_today()
 
 
 def _chapter_is_completed(status: str | None) -> bool:
+    """Check whether a chapter status string indicates completion."""
     return str(status or "").startswith("completed")
 
 
 def _extract_week_start_overrides(plan_payload: dict | None) -> dict:
+    """Extract the `week_start_overrides` dict from a plan payload, or return empty dict."""
     if not isinstance(plan_payload, dict):
         return {}
     overrides = plan_payload.get("week_start_overrides")
@@ -186,6 +204,7 @@ def _extract_week_start_overrides(plan_payload: dict | None) -> dict:
 
 
 def _chapter_number_from_label(chapter_label: str | None) -> int | None:
+    """Extract the integer chapter number from a label like 'Chapter 5', or None."""
     match = re.search(r"(\d+)", str(chapter_label or ""))
     if not match:
         return None
@@ -193,6 +212,7 @@ def _chapter_number_from_label(chapter_label: str | None) -> int | None:
 
 
 def _remaining_chapter_numbers(progressions: list[ChapterProgression]) -> list[int]:
+    """Return sorted list of chapter numbers that have not yet been completed."""
     completed = {
         _chapter_number_from_label(p.chapter)
         for p in progressions
@@ -206,6 +226,7 @@ def _remaining_chapter_numbers(progressions: list[ChapterProgression]) -> list[i
 
 
 def _build_replanned_weeks(*, current_week: int, total_weeks: int, remaining_chapters: list[int]) -> list[dict]:
+    """Build a list of week dicts for the replanned schedule from *current_week* onward."""
     weeks: list[dict] = []
     for offset, week_number in enumerate(range(1, max(1, int(total_weeks)) + 1), start=0):
         if week_number < current_week:
@@ -239,6 +260,7 @@ def _merge_replanned_future(
     total_weeks: int,
     remaining_chapters: list[int],
 ) -> list[dict]:
+    """Preserve past weeks from *existing_weeks* and rebuild future from *remaining_chapters*."""
     preserved = [
         {"week": int(entry.get("week")), "chapter": entry.get("chapter"), "focus": entry.get("focus")}
         for entry in existing_weeks
@@ -1616,6 +1638,46 @@ async def submit_chapter_test(payload: SubmitTestRequest, db: AsyncSession = Dep
     except Exception:
         pass
 
+    # ── Agent dispatch (fire-and-forget) ─────────────────────────────
+    # Wire agents into the main learning flow per audit §3/§13.
+    learner_str = str(payload.learner_id)
+    try:
+        await dispatch_assessment(
+            learner_id=learner_str,
+            chapter=chapter,
+            section_id=section_id,
+            score=score,
+            correct=correct,
+            total=total,
+            question_results=question_results,
+        )
+        await dispatch_reflection(
+            learner_id=learner_str,
+            chapter=chapter,
+            score=score,
+            passed=passed,
+            attempt_number=attempt_number,
+            decision=decision,
+        )
+        # Record to LearnerMemoryTimeline
+        event_type = "win" if passed else "mistake"
+        record_timeline_event(
+            learner_id=learner_str,
+            event_type=event_type,
+            content=f"{chapter} {'section ' + section_id if section_id and not chapter_level else 'final'}: {correct}/{total} ({score*100:.0f}%)",
+            metadata={"chapter": chapter, "section_id": section_id, "score": score, "attempt": attempt_number},
+        )
+        # On chapter completion, add reflection and run interventions
+        if chapter_level and (passed or attempt_number >= MAX_CHAPTER_ATTEMPTS):
+            record_timeline_reflection(
+                learner_id=learner_str,
+                trigger="final_test_completed",
+                summary=f"{chapter} completed: {score*100:.0f}% on attempt {attempt_number}. Decision: {decision}",
+            )
+            await dispatch_interventions(learner_id=learner_str, db_session=db)
+    except Exception:
+        pass  # agent dispatch must never break the main flow
+
     return SubmitTestResponse(
         learner_id=str(payload.learner_id),
         chapter=chapter,
@@ -2860,6 +2922,19 @@ async def get_dashboard(learner_id: UUID, db: AsyncSession = Depends(get_db)):
         for entry in raw:
             w = entry.get("week", 0)
             if not isinstance(w, int) or w <= 0:
+                continue
+            # Performance: skip expensive date/timeline computations for
+            # completed weeks that are far in the past (>2 weeks before current).
+            if w < cw - 2:
+                rough_plan.append({
+                    "week": w,
+                    "chapter": entry.get("chapter"),
+                    "focus": entry.get("focus"),
+                    "week_start_date": None,
+                    "week_end_date": None,
+                    "week_label": f"Week {w}",
+                    "status": "completed",
+                })
                 continue
             week_start, week_end = week_bounds_from_plan(onboarding_date, w, week_start_overrides)
             week_label = format_week_label(w, week_start, week_end)
