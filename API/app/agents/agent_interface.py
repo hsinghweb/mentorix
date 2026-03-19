@@ -58,7 +58,13 @@ class AgentInterface(ABC):
 
     Subclasses must implement ``_execute(context)`` which contains
     the agent's core logic. The ``run()`` wrapper handles tracing,
-    timing, and error handling.
+    timing, error handling, and **circuit breaking**.
+
+    Circuit Breaker:
+        Each agent instance tracks consecutive failures. After
+        ``FAILURE_THRESHOLD`` consecutive errors, the circuit opens
+        for ``COOLDOWN_SECONDS``. During half-open state, a single
+        trial request determines whether to reset or re-open.
 
     Capability declarations:
         Override ``reads`` and ``writes`` class variables to declare
@@ -70,6 +76,18 @@ class AgentInterface(ABC):
     reads: list[str] = []   # e.g. ["LearnerProfile", "ChapterProgression"]
     writes: list[str] = []  # e.g. ["AgentDecision", "Task"]
 
+    # ── Circuit Breaker Config ───────────────────────────────────────
+    FAILURE_THRESHOLD: int = 3
+    """Consecutive failures before opening circuit."""
+    COOLDOWN_SECONDS: float = 30.0
+    """Seconds to wait before allowing a trial request (half-open)."""
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._cb_failures: int = 0
+        cls._cb_state: str = "closed"  # closed | open | half_open
+        cls._cb_opened_at: float = 0.0
+
     @abstractmethod
     async def _execute(self, context: AgentContext) -> AgentResult:
         """Core agent logic. Must return an AgentResult."""
@@ -77,11 +95,31 @@ class AgentInterface(ABC):
 
     async def run(self, context: AgentContext) -> AgentResult:
         """
-        Execute the agent with tracing, timing, and error handling.
+        Execute the agent with tracing, timing, circuit breaking, and error handling.
 
         Wraps ``_execute()`` with structured trace spans including
         input hash, output hash, duration, and tool calls.
         """
+        # ── Circuit breaker gate ─────────────────────────────────────
+        if self._cb_state == "open":
+            elapsed = time.perf_counter() - self._cb_opened_at
+            if elapsed < self.COOLDOWN_SECONDS:
+                logger.warning(
+                    "agent=%s circuit=OPEN remaining_s=%.1f — returning fallback",
+                    self.name,
+                    self.COOLDOWN_SECONDS - elapsed,
+                )
+                return AgentResult(
+                    success=False,
+                    agent_name=self.name,
+                    decision="circuit_open",
+                    reasoning=f"Circuit breaker open after {self.FAILURE_THRESHOLD} consecutive failures. "
+                              f"Retry in {self.COOLDOWN_SECONDS - elapsed:.0f}s.",
+                )
+            # Transition to half-open: allow one trial request
+            self.__class__._cb_state = "half_open"
+            logger.info("agent=%s circuit=HALF_OPEN — allowing trial request", self.name)
+
         t0 = time.perf_counter()
         try:
             result = await self._execute(context)
@@ -94,6 +132,9 @@ class AgentInterface(ABC):
                 result.duration_ms,
                 result.success,
             )
+            # Success: reset circuit breaker
+            self.__class__._cb_failures = 0
+            self.__class__._cb_state = "closed"
             # Record to agent event log
             _log_agent_event(self.name, context, result)
             return result
@@ -105,6 +146,16 @@ class AgentInterface(ABC):
                 str(exc),
                 duration_ms,
             )
+            # Increment failure counter
+            self.__class__._cb_failures += 1
+            if self.__class__._cb_failures >= self.FAILURE_THRESHOLD:
+                self.__class__._cb_state = "open"
+                self.__class__._cb_opened_at = time.perf_counter()
+                logger.warning(
+                    "agent=%s circuit=OPEN after %d consecutive failures",
+                    self.name,
+                    self.__class__._cb_failures,
+                )
             error_result = AgentResult(
                 success=False,
                 agent_name=self.name,

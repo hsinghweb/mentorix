@@ -4,6 +4,7 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
+from app.core.correlation import get_correlation_id
 from app.core.model_registry import resolve_role
 from app.core.resilience import get_breaker, retry_with_backoff
 from app.core.settings import settings
@@ -60,7 +61,7 @@ class GeminiLLMProvider(BaseLLMProvider):
         }
 
         prompt_tokens = _estimate_tokens(prompt)
-        logger.info("[LLM] Calling %s model=%s role=%s prompt_tokens~%d", self.provider_name, self.model_name, self.role, prompt_tokens)
+        logger.info("[LLM] Calling %s model=%s role=%s prompt_tokens~%d cid=%s", self.provider_name, self.model_name, self.role, prompt_tokens, get_correlation_id())
 
         breaker = get_breaker(f"llm:{self.provider_name}:{self.model_name}:{self.role}")
         if not breaker.can_execute():
@@ -93,7 +94,7 @@ class GeminiLLMProvider(BaseLLMProvider):
                     "total_tokens_estimate": _estimate_tokens(prompt) + _estimate_tokens(text),
                     "cost_estimate_usd": round(((_estimate_tokens(prompt) + _estimate_tokens(text)) / 1000) * self.cost_per_1k, 6),
                 }
-                logger.info("[LLM] Success model=%s role=%s completion_tokens~%d", self.model_name, self.role, _estimate_tokens(text))
+                logger.info("[LLM] Success model=%s role=%s completion_tokens~%d cid=%s", self.model_name, self.role, _estimate_tokens(text), get_correlation_id())
                 return (text or None), usage
 
         try:
@@ -113,7 +114,7 @@ class GeminiLLMProvider(BaseLLMProvider):
             breaker.record_failure()
             record_error_rate(f"llm:{self.provider_name}:{self.model_name}", False)
             record_llm_call(feature=self.role, success=False)
-            logger.warning("[LLM] Error model=%s role=%s error=%s", self.model_name, self.role, str(e)[:200])
+            logger.warning("[LLM] Error model=%s role=%s error=%s cid=%s", self.model_name, self.role, str(e)[:200], get_correlation_id())
             resp = getattr(e, "response", None)
             status = getattr(resp, "status_code", None)
             err_msg = (str(e) or "").lower()

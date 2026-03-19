@@ -85,7 +85,15 @@ router = APIRouter(prefix="/onboarding", tags=["onboarding"])
 logger = get_domain_logger(__name__, DOMAIN_ONBOARDING)
 TIMELINE_MIN_WEEKS = 14
 TIMELINE_MAX_WEEKS = 28
-_idempotency_response_cache: dict[str, dict] = {}
+
+# ── Shared helpers (canonical implementations in services/shared_helpers.py) ──
+from app.services.shared_helpers import (  # noqa: E402
+    get_idempotent_response as _get_idempotent_response,
+    set_idempotent_response as _set_idempotent_response,
+    upsert_revision_queue_item as _upsert_revision_queue_item_shared,
+    compute_login_streak_days as _compute_login_streak_days,
+    log_engagement_event as _log_engagement_event,
+)
 
 
 def _extract_sentence(text: str) -> str:
@@ -107,22 +115,7 @@ def _extract_keywords(text: str, limit: int = 5) -> list[str]:
     return seen or ["concept", "chapter"]
 
 
-async def _get_idempotent_response(cache_key: str) -> dict | None:
-    try:
-        raw = await redis_client.get(cache_key)
-        if raw:
-            return json.loads(raw)
-    except Exception as exc:
-        logger.warning("Redis unavailable for idempotency read. Using degraded cache: %s", exc)
-    return _idempotency_response_cache.get(cache_key)
 
-
-async def _set_idempotent_response(cache_key: str, payload: dict) -> None:
-    _idempotency_response_cache[cache_key] = payload
-    try:
-        await redis_client.set(cache_key, json.dumps(payload), ex=3600)
-    except Exception as exc:
-        logger.warning("Redis unavailable for idempotency write. Using degraded cache: %s", exc)
 
 
 def _build_questions(chunks: list[EmbeddingChunk]) -> tuple[list[DiagnosticQuestion], dict[str, str]]:
@@ -276,28 +269,9 @@ def _adaptive_pace_extend_compress(
 async def _upsert_revision_queue_item(
     *, db: AsyncSession, learner_id: UUID, chapter: str, reason: str, priority: int = 1
 ) -> None:
-    existing = (
-        await db.execute(
-            select(RevisionQueueItem).where(
-                RevisionQueueItem.learner_id == learner_id,
-                RevisionQueueItem.chapter == chapter,
-                RevisionQueueItem.status == "pending",
-            )
-        )
-    ).scalar_one_or_none()
-    if existing:
-        existing.priority = max(existing.priority, priority)
-        existing.reason = reason
-        existing.updated_at = datetime.now(timezone.utc)
-        return
-    db.add(
-        RevisionQueueItem(
-            learner_id=learner_id,
-            chapter=chapter,
-            status="pending",
-            priority=priority,
-            reason=reason,
-        )
+    """Delegate to shared helper for revision queue upsert."""
+    await _upsert_revision_queue_item_shared(
+        db=db, learner_id=learner_id, chapter=chapter, reason=reason, priority=priority,
     )
 
 
@@ -320,6 +294,15 @@ def _log_policy_violation(
 
 
 async def _compute_retention_score(db: AsyncSession, learner_id: UUID) -> float:
+    """Compute average recent assessment score with Redis cache (TTL 5 min)."""
+    cache_key = f"retention_score:{learner_id}"
+    try:
+        from app.memory.cache import redis_client
+        cached = await redis_client.get(cache_key)
+        if cached is not None:
+            return float(cached)
+    except Exception:
+        pass
     recent = (
         await db.execute(
             select(AssessmentResult.score)
@@ -330,7 +313,13 @@ async def _compute_retention_score(db: AsyncSession, learner_id: UUID) -> float:
     ).scalars().all()
     if not recent:
         return 0.5
-    return max(0.0, min(1.0, float(sum(recent) / len(recent))))
+    score = max(0.0, min(1.0, float(sum(recent) / len(recent))))
+    try:
+        from app.memory.cache import redis_client
+        await redis_client.set(cache_key, str(round(score, 6)), ex=300)
+    except Exception:
+        pass
+    return score
 
 
 def _profile_snapshot_payload(profile: LearnerProfile) -> dict:
@@ -370,17 +359,7 @@ def _persist_profile_snapshot(
     )
 
 
-def _log_engagement_event(
-    db: AsyncSession, learner_id: UUID, event_type: str, duration_minutes: int = 0, details: dict | None = None
-) -> None:
-    db.add(
-        EngagementEvent(
-            learner_id=learner_id,
-            event_type=event_type,
-            duration_minutes=max(0, int(duration_minutes)),
-            details=details or {},
-        )
-    )
+
 
 
 async def _compute_adherence_rate_week(db: AsyncSession, learner_id: UUID) -> float:
@@ -450,35 +429,7 @@ async def _update_profile_after_outcome(
     )
 
 
-async def _compute_login_streak_days(db: AsyncSession, learner_id: UUID) -> int:
-    rows = (
-        await db.execute(
-            select(EngagementEvent.created_at)
-            .where(
-                EngagementEvent.learner_id == learner_id,
-                EngagementEvent.event_type == "login",
-            )
-            .order_by(EngagementEvent.created_at.desc())
-            .limit(60)
-        )
-    ).scalars().all()
-    if not rows:
-        return 0
-    dates = sorted({dt.astimezone(timezone.utc).date() for dt in rows}, reverse=True)
-    streak = 0
-    cursor = datetime.now(timezone.utc).date()
-    for login_day in dates:
-        if login_day == cursor:
-            streak += 1
-            cursor = cursor - timedelta(days=1)
-            continue
-        if streak == 0 and login_day == cursor - timedelta(days=1):
-            streak += 1
-            cursor = login_day - timedelta(days=1)
-            continue
-        if login_day < cursor:
-            break
-    return streak
+
 
 
 def _derive_recommendations(*, risk_level: str, misconception_patterns: list[dict], trend: str) -> list[str]:
