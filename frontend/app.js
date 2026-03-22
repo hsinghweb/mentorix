@@ -707,7 +707,12 @@ function renderDashboard(data) {
   // Plan
   const roughPlan = Array.isArray(data.rough_plan) ? data.rough_plan : [];
   renderPlan(roughPlan, currentWeek);
-  if (learnerId) renderPlanHistory(learnerId);
+  if (learnerId) renderPlanHistory(learnerId, {
+    suggestedWeeks: suggestedWeeks,
+    completionEstimateDate: completionEstimateDate,
+    onboardingDate: data.onboarding_date || null,
+    currentTotalWeeks: data.total_weeks || roughPlan.length || null,
+  });
 
   // Revision
   const revisionQueue = Array.isArray(data.revision_queue) ? data.revision_queue : [];
@@ -1873,7 +1878,7 @@ async function explainQuestion(questionId, selectedIndex = -1, regenerate = fals
   }
 }
 
-async function renderPlanHistory(learnerId) {
+async function renderPlanHistory(learnerId, dashCtx) {
   const el = $("plan-history-list");
   if (!el) return;
   try {
@@ -1883,15 +1888,75 @@ async function renderPlanHistory(learnerId) {
       el.innerHTML = `<div style="color:var(--text-muted)">No plan history yet.</div>`;
       return;
     }
-    el.innerHTML = versions.map(v => `
+    // Dashboard context for consistent display
+    const ctx = dashCtx || {};
+    const dashSuggestedWeeks = ctx.suggestedWeeks || ctx.currentTotalWeeks || null;
+    const dashCompletionDate = ctx.completionEstimateDate || null;
+    const onboardingDate = ctx.onboardingDate || null;
+
+    // Build a lookup: version_number → totalWeeks for delta comparison
+    const allVersions = data.versions || [];
+    const maxVersion = Math.max(...allVersions.map(v => v.version_number));
+    const weeksByVersion = {};
+    allVersions.forEach(v => {
+      const pp = v.plan_payload || {};
+      weeksByVersion[v.version_number] = (pp.rough_plan || []).length
+        || pp.timeline?.current_forecast_weeks
+        || null;
+    });
+
+    el.innerHTML = versions.map(v => {
+      const pp = v.plan_payload || {};
+      const roughPlan = pp.rough_plan || [];
+      const timeline = pp.timeline || {};
+      const isLatest = v.version_number === maxVersion;
+
+      // Total weeks: for latest version, prefer dashboard's suggested_weeks
+      const totalWeeks = isLatest && dashSuggestedWeeks
+        ? dashSuggestedWeeks
+        : (roughPlan.length || timeline.current_forecast_weeks || null);
+
+      // Estimated completion: for latest version, use exact dashboard value
+      let estCompletion = null;
+      if (isLatest && dashCompletionDate) {
+        estCompletion = formatIsoDateLabel(dashCompletionDate);
+      } else if (totalWeeks && onboardingDate) {
+        // Same formula the backend uses: onboarding_date + totalWeeks * 7
+        const dt = new Date(onboardingDate);
+        dt.setDate(dt.getDate() + totalWeeks * 7);
+        estCompletion = dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+      } else if (totalWeeks && v.created_at) {
+        // Fallback: version created_at + totalWeeks * 7
+        const dt = new Date(v.created_at);
+        dt.setDate(dt.getDate() + totalWeeks * 7);
+        estCompletion = dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+      }
+
+      // Delta compared to previous version
+      const prevWeeks = v.version_number > 1 ? weeksByVersion[v.version_number - 1] : null;
+      let weeksDelta = "";
+      if (totalWeeks && prevWeeks && prevWeeks !== totalWeeks) {
+        const diff = totalWeeks - prevWeeks;
+        weeksDelta = diff > 0
+          ? ` <span style="color:var(--danger);font-weight:600">↑${diff}</span>`
+          : ` <span style="color:var(--success);font-weight:600">↓${Math.abs(diff)}</span>`;
+      }
+      const weeksLabel = totalWeeks ? `${totalWeeks} weeks${weeksDelta}` : "—";
+      const completionLabel = estCompletion || "—";
+
+      return `
       <div class="revision-item">
         <div class="revision-icon">Plan</div>
         <div class="revision-info">
           <div class="revision-chapter">Version ${v.version_number} • Week ${v.current_week}</div>
           <div class="revision-reason">${v.reason || "plan_update"} • ${(v.created_at || "").replace("T", " ").slice(0, 19)}</div>
+          <div class="revision-reason" style="margin-top:4px;display:flex;gap:16px;flex-wrap:wrap">
+            <span>📅 <strong>Total:</strong> ${weeksLabel}</span>
+            <span>🏁 <strong>Est. Completion:</strong> ${completionLabel}</span>
+          </div>
         </div>
-      </div>
-    `).join("");
+      </div>`;
+    }).join("");
   } catch (err) {
     el.innerHTML = `<div style="color:var(--text-muted)">Plan history unavailable.</div>`;
   }
