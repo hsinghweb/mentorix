@@ -1950,9 +1950,8 @@ async function renderPlanHistory(learnerId, dashCtx) {
         <div class="revision-info">
           <div class="revision-chapter">Version ${v.version_number} • Week ${v.current_week}</div>
           <div class="revision-reason">${v.reason || "plan_update"} • ${(v.created_at || "").replace("T", " ").slice(0, 19)}</div>
-          <div class="revision-reason" style="margin-top:4px;display:flex;gap:16px;flex-wrap:wrap">
+          <div class="revision-reason" style="margin-top:4px">
             <span>📅 <strong>Total:</strong> ${weeksLabel}</span>
-            <span>🏁 <strong>Est. Completion:</strong> ${completionLabel}</span>
           </div>
         </div>
       </div>`;
