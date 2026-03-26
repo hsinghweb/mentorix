@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
+from app.agents.agent_interface import AgentContext
 from app.core.logging import DOMAIN_COMPLIANCE, get_domain_logger
 
 logger = get_domain_logger(__name__, DOMAIN_COMPLIANCE)
@@ -40,20 +42,26 @@ async def dispatch_assessment(
         from app.agents.assessment import AssessmentAgent
 
         agent = AssessmentAgent()
-        result = await agent.evaluate({
-            "learner_id": learner_id,
-            "chapter": chapter,
-            "section_id": section_id,
-            "score": score,
-            "correct": correct,
-            "total": total,
-            "question_results": question_results,
-        })
-        logger.info(
-            "event=agent_dispatch agent=assessment learner=%s chapter=%s score=%.2f",
-            learner_id, chapter, score,
+        context = AgentContext(
+            learner_id=UUID(learner_id) if isinstance(learner_id, str) else learner_id,
+            chapter=chapter,
+            extra={
+                "section_id": section_id,
+                "score": score,
+                "correct": correct,
+                "total": total,
+                "question_results": question_results,
+                "question": f"Chapter test: {chapter}",
+                "student_answer": f"Scored {correct}/{total}",
+                "expected_answer": f"Pass threshold",
+            },
         )
-        return result
+        result = await agent.run(context)
+        logger.info(
+            "event=agent_dispatch agent=assessment learner=%s chapter=%s score=%.2f decision=%s",
+            learner_id, chapter, score, result.decision,
+        )
+        return result.to_dict() if result.success else None
     except Exception as exc:
         logger.warning(
             "event=agent_dispatch_failed agent=assessment learner=%s error=%s",
@@ -82,20 +90,27 @@ async def dispatch_reflection(
         from app.agents.reflection import ReflectionAgent
 
         agent = ReflectionAgent()
-        result = await agent.reflect({
-            "learner_id": learner_id,
-            "chapter": chapter,
-            "score": score,
-            "passed": passed,
-            "attempt_number": attempt_number,
-            "decision": decision,
-        })
+        context = AgentContext(
+            learner_id=UUID(learner_id) if isinstance(learner_id, str) else learner_id,
+            chapter=chapter,
+            extra={
+                "concept": chapter,
+                "current_score": score,
+                "mastery_map": {},
+                "engagement_score": 0.5,
+                "retention_decay": 0.1,
+                "assessment_count": attempt_number,
+                "passed": passed,
+                "decision": decision,
+            },
+        )
+        result = await agent.run(context)
         logger.info(
             "event=agent_dispatch agent=reflection learner=%s recommendation=%s",
             learner_id,
-            result.get("recommendation", "unknown") if result else "none",
+            result.data.get("recommendation", "unknown") if result.success else "none",
         )
-        return result
+        return result.to_dict() if result.success else None
     except Exception as exc:
         logger.warning(
             "event=agent_dispatch_failed agent=reflection learner=%s error=%s",
@@ -121,17 +136,28 @@ async def dispatch_onboarding_analysis(
         from app.agents.onboarding import OnboardingAgent
 
         agent = OnboardingAgent()
-        result = await agent.analyze({
-            "learner_id": learner_id,
-            "diagnostic_results": diagnostic_results,
-            "overall_score": overall_score,
-        })
+        # Build mastery map from diagnostic results
+        mastery_map = {}
+        for dr in diagnostic_results:
+            ch = dr.get("chapter", dr.get("chapter_name", "unknown"))
+            sc = dr.get("score", dr.get("mastery", 0.0))
+            mastery_map[ch] = float(sc)
+
+        context = AgentContext(
+            learner_id=UUID(learner_id) if isinstance(learner_id, str) else learner_id,
+            extra={
+                "mastery_map": mastery_map,
+                "diagnostic_score": overall_score,
+                "selected_timeline_weeks": 16,
+            },
+        )
+        result = await agent.run(context)
         logger.info(
             "event=agent_dispatch agent=onboarding learner=%s risk=%s",
             learner_id,
-            result.get("risk_level", "unknown") if result else "none",
+            result.data.get("risk_level", "unknown") if result.success else "none",
         )
-        return result
+        return result.to_dict() if result.success else None
     except Exception as exc:
         logger.warning(
             "event=agent_dispatch_failed agent=onboarding learner=%s error=%s",
@@ -214,6 +240,60 @@ async def dispatch_interventions(
     except Exception as exc:
         logger.warning(
             "event=intervention_dispatch_failed learner=%s error=%s",
+            learner_id, exc,
+        )
+        return None
+
+
+# ── Adaptation Dispatch ───────────────────────────────────────────────
+
+async def dispatch_adaptation(
+    learner_id: str,
+    chapter: str | None,
+    mastery_map: dict[str, float],
+    engagement_score: float,
+    retention_decay: float,
+    current_difficulty: int,
+    recent_scores: list[float],
+    chapters_completed: int = 0,
+    total_chapters: int = 15,
+) -> dict[str, Any] | None:
+    """
+    Dispatch content adaptation analysis to AdaptationAgent.
+
+    Called after plan adjustments or chapter completion to determine
+    whether content difficulty, tone, or delivery strategy should change.
+
+    Returns the agent's adaptation dict or *None* if unavailable.
+    """
+    try:
+        from app.agents.adaptation import AdaptationAgent
+
+        agent = AdaptationAgent()
+        context = AgentContext(
+            learner_id=UUID(learner_id) if isinstance(learner_id, str) else learner_id,
+            chapter=chapter,
+            extra={
+                "mastery_map": mastery_map,
+                "engagement_score": engagement_score,
+                "retention_decay": retention_decay,
+                "current_difficulty": current_difficulty,
+                "recent_scores": recent_scores,
+                "chapters_completed": chapters_completed,
+                "total_chapters": total_chapters,
+            },
+        )
+        result = await agent.run(context)
+        logger.info(
+            "event=adaptation_dispatched learner=%s strategy=%s chapter=%s",
+            learner_id,
+            result.decision if hasattr(result, "decision") else "unknown",
+            chapter,
+        )
+        return result.data if hasattr(result, "data") else result
+    except Exception as exc:
+        logger.warning(
+            "event=adaptation_dispatch_failed learner=%s error=%s",
             learner_id, exc,
         )
         return None
