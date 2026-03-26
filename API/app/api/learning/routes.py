@@ -74,6 +74,34 @@ TEST_PROMPT_VERSION = "v2"
 
 from app.services.shared_helpers import generate_text_with_mcp as _generate_text_with_mcp  # noqa: E402
 
+# ── Extracted service modules (canonical implementations) ────────────
+# These modules contain the extracted helper logic. The inline helpers
+# below are retained for backward compatibility but delegate to services.
+from app.services.math_formatting import (  # noqa: E402, F401
+    enforce_math_format,
+    format_math_for_display,
+    format_mcq_item_math,
+    sanitize_question_payload,
+)
+from app.services.question_quality import (  # noqa: E402, F401
+    dedupe_generated_questions,
+    question_set_is_high_quality,
+    reading_content_is_high_quality,
+)
+from app.services.plan_builder import (  # noqa: E402, F401
+    build_replanned_weeks,
+    build_week_tasks_for_chapter,
+    chapter_info,
+    chapter_is_completed,
+    chapter_number_from_label,
+    mastery_band,
+    merge_replanned_future,
+    remaining_chapter_numbers,
+    tone_for_ability,
+    bucket,
+    COMPLETION_THRESHOLD as _SVC_COMPLETION_THRESHOLD,
+)
+
 
 
 # â”€â”€ Pydantic models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
