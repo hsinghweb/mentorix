@@ -243,3 +243,57 @@ async def dispatch_interventions(
             learner_id, exc,
         )
         return None
+
+
+# ── Adaptation Dispatch ───────────────────────────────────────────────
+
+async def dispatch_adaptation(
+    learner_id: str,
+    chapter: str | None,
+    mastery_map: dict[str, float],
+    engagement_score: float,
+    retention_decay: float,
+    current_difficulty: int,
+    recent_scores: list[float],
+    chapters_completed: int = 0,
+    total_chapters: int = 15,
+) -> dict[str, Any] | None:
+    """
+    Dispatch content adaptation analysis to AdaptationAgent.
+
+    Called after plan adjustments or chapter completion to determine
+    whether content difficulty, tone, or delivery strategy should change.
+
+    Returns the agent's adaptation dict or *None* if unavailable.
+    """
+    try:
+        from app.agents.adaptation import AdaptationAgent
+
+        agent = AdaptationAgent()
+        context = AgentContext(
+            learner_id=UUID(learner_id) if isinstance(learner_id, str) else learner_id,
+            chapter=chapter,
+            extra={
+                "mastery_map": mastery_map,
+                "engagement_score": engagement_score,
+                "retention_decay": retention_decay,
+                "current_difficulty": current_difficulty,
+                "recent_scores": recent_scores,
+                "chapters_completed": chapters_completed,
+                "total_chapters": total_chapters,
+            },
+        )
+        result = await agent.run(context)
+        logger.info(
+            "event=adaptation_dispatched learner=%s strategy=%s chapter=%s",
+            learner_id,
+            result.decision if hasattr(result, "decision") else "unknown",
+            chapter,
+        )
+        return result.data if hasattr(result, "data") else result
+    except Exception as exc:
+        logger.warning(
+            "event=adaptation_dispatch_failed learner=%s error=%s",
+            learner_id, exc,
+        )
+        return None
